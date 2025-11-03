@@ -27,12 +27,18 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
     error ExcessiveWithdrawAmount();
     error ExcessiveRedeemAmount();
     error NotEnoughAssetsInSilo();
+    error AlreadyBlacklisted();
+    error InvalidToken();
+    error NotBlacklisted();
 
+    event Blacklisted(address target);
+    event UnBlacklisted(address target);
     event Converted(uint256 usdatAmount, uint256 strcAmount);
     event CooldownDurationUpdated(uint24 previousDuration, uint24 newDuration);
+    event RewardsReceived(uint256 amount);
+    event LockedAmountRedistributed(address from, address to, uint256 amount);
 
-    bytes32 public constant CONVERTER_ROLE = keccak256("CONVERTER_ROLE");
-    bytes32 private constant FULL_RESTRICTED_STAKER_ROLE = keccak256("FULL_RESTRICTED_STAKER_ROLE");
+    bytes32 public constant REWARDER_ROLE = keccak256("REWARDER_ROLE");
     bytes32 private constant BLACKLIST_MANAGER_ROLE = keccak256("BLACKLIST_MANAGER_ROLE");
 
     tokenizedSTRC private immutable TSTRC;
@@ -40,6 +46,7 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
 
     uint24 private immutable MAX_COOLDOWN_DURATION;
     uint24 private cooldownDuration;
+    mapping(address => bool) private _blacklisted;
 
     modifier notZero(uint256 amount) {
         _notZero(amount);
@@ -73,19 +80,19 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
     /// @param tstrc tokenizedSTRC contract address
     /// @param silo sUSDatSilo contract address
     /// @param defaultAdmin The default admin of the contract
-    /// @param converterAddress The address of the converter
-    constructor(address defaultAdmin, address converterAddress, IERC20 usdat, tokenizedSTRC tstrc, sUSDatSilo silo)
+    /// @param rewarder The address of the rewarder
+    constructor(address defaultAdmin, address rewarder, IERC20 usdat, tokenizedSTRC tstrc, sUSDatSilo silo)
         ERC20("Staked USDat", "sUSDat")
         ERC4626(usdat)
         ERC20Permit("sUSDat")
     {
-        if (defaultAdmin == address(0) || address(usdat) == address(0) || converterAddress == address(0)) {
+        if (defaultAdmin == address(0) || address(usdat) == address(0) || rewarder == address(0) || address(tstrc) == address(0) || address(silo) == address(0)) {
             revert InvalidZeroAddress();
         }
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
-        _grantRole(CONVERTER_ROLE, converterAddress);
-        TSTRC = tstrc;
-        SILO = silo;
+        _grantRole(REWARDER_ROLE, rewarder);
+        TSTRC = tokenizedSTRC(tstrc);
+        SILO = sUSDatSilo(silo);
     }
 
     /**
@@ -95,7 +102,9 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
     function addToBlacklist(address target) external onlyRole(BLACKLIST_MANAGER_ROLE) {
         if (hasRole(DEFAULT_ADMIN_ROLE, target)) revert CannotBlacklistAdmin();
 
-        _grantRole(FULL_RESTRICTED_STAKER_ROLE, target);
+        if (_blacklisted[target]) revert AlreadyBlacklisted();
+        _blacklisted[target] = true;
+        emit Blacklisted(target);
     }
 
     /**
@@ -103,7 +112,36 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
      * @param target The address to un-blacklist.
      */
     function removeFromBlacklist(address target) external onlyRole(BLACKLIST_MANAGER_ROLE) {
-        _revokeRole(FULL_RESTRICTED_STAKER_ROLE, target);
+        if (!_blacklisted[target]) revert NotBlacklisted();
+        _blacklisted[target] = false;
+        emit UnBlacklisted(target);
+    }
+
+    function _requireNotBlacklisted(address account) internal view {
+        require(!_blacklisted[account], "USDat: recipient blacklisted");
+    }
+
+    function transfer(address to, uint256 amount) public override(ERC20, IERC20) returns (bool) {
+        _requireNotBlacklisted(to);
+        return super.transfer(to, amount);
+    }
+
+    function transferFrom(address from, address to, uint256 amount) public override(ERC20, IERC20) returns (bool) {
+        _requireNotBlacklisted(to);
+        return super.transferFrom(from, to, amount);
+    }
+
+    function redistributeLockedAmount(address from, address to) external nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (_blacklisted[from] && !_blacklisted[to]) {
+            uint256 amountToDistribute = balanceOf(from);
+            _burn(from, amountToDistribute);
+            if (to != address(0)) {
+                _mint(to, amountToDistribute);
+            }
+            emit LockedAmountRedistributed(from, to, amountToDistribute);
+        } else {
+            revert OperationNotAllowed();
+        }
     }
 
     /// @notice ASSUMPTION: asset is USDat and is always 1 dollar backed by treasuries.
@@ -127,8 +165,30 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
         nonReentrant
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
-        // if(token)
+        if(token != address(TSTRC) && token != address(asset())) revert InvalidToken();
+
         IERC20(token).safeTransfer(to, amount);
+    }
+
+    function transferInRewards(uint256 amount) external nonReentrant onlyRole(REWARDER_ROLE) notZero(amount) {
+        TSTRC.mint(address(this), amount);
+
+        emit RewardsReceived(amount);
+    }
+
+    /**
+     * @notice Called by the admin when the entity purchases STRC from the market and sells the Tbills backing USDat.
+     * @param usdatAmount amount of USDat to convert
+     * @param strcAmount amount of STRC to mint
+     */
+    function convert(uint256 usdatAmount, uint256 strcAmount) external onlyRole(REWARDER_ROLE) {
+        require(IERC20(asset()).balanceOf(address(this)) >= usdatAmount, "Not enough USD");
+
+        ERC20Burnable(asset()).burn(usdatAmount);
+
+        TSTRC.mint(address(this), strcAmount);
+
+        emit Converted(usdatAmount, strcAmount);
     }
 
     /**
@@ -145,25 +205,10 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
         notZero(assets)
         notZero(shares)
     {
-        if (hasRole(FULL_RESTRICTED_STAKER_ROLE, caller) || hasRole(FULL_RESTRICTED_STAKER_ROLE, receiver)) {
+        if (_blacklisted[caller] || _blacklisted[receiver]) {
             revert OperationNotAllowed();
         }
         super._deposit(caller, receiver, assets, shares);
-    }
-
-    /**
-     * @notice Called by the admin when the entity purchases STRC from the market and sells the Tbills backing USDat.
-     * @param usdatAmount amount of USDat to convert
-     * @param strcAmount amount of STRC to mint
-     */
-    function convert(uint256 usdatAmount, uint256 strcAmount) external onlyRole(CONVERTER_ROLE) {
-        require(IERC20(asset()).balanceOf(address(this)) >= usdatAmount, "Not enough USD");
-
-        ERC20Burnable(asset()).burn(usdatAmount);
-
-        tokenizedSTRC(TSTRC).mint(address(this), strcAmount);
-
-        emit Converted(usdatAmount, strcAmount);
     }
 
     function withdraw(uint256 assets, address receiver, address _owner)
@@ -232,8 +277,7 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
         notZero(shares)
     {
         if (
-            hasRole(FULL_RESTRICTED_STAKER_ROLE, caller) || hasRole(FULL_RESTRICTED_STAKER_ROLE, receiver)
-                || hasRole(FULL_RESTRICTED_STAKER_ROLE, owner)
+            _blacklisted[caller] || _blacklisted[receiver] || _blacklisted[owner]
         ) {
             revert OperationNotAllowed();
         }
