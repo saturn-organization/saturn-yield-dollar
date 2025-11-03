@@ -86,7 +86,10 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
         ERC4626(usdat)
         ERC20Permit("sUSDat")
     {
-        if (defaultAdmin == address(0) || address(usdat) == address(0) || rewarder == address(0) || address(tstrc) == address(0) || address(silo) == address(0)) {
+        if (
+            defaultAdmin == address(0) || address(usdat) == address(0) || rewarder == address(0)
+                || address(tstrc) == address(0) || address(silo) == address(0)
+        ) {
             revert InvalidZeroAddress();
         }
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
@@ -165,7 +168,7 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
         nonReentrant
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
-        if(token != address(TSTRC) && token != address(asset())) revert InvalidToken();
+        if (token != address(TSTRC) && token != address(asset())) revert InvalidToken();
 
         IERC20(token).safeTransfer(to, amount);
     }
@@ -276,9 +279,7 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
         notZero(assets)
         notZero(shares)
     {
-        if (
-            _blacklisted[caller] || _blacklisted[receiver] || _blacklisted[owner]
-        ) {
+        if (_blacklisted[caller] || _blacklisted[receiver] || _blacklisted[owner]) {
             revert OperationNotAllowed();
         }
 
