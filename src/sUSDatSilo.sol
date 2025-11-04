@@ -60,7 +60,7 @@ contract sUSDatSilo is AccessControl, ReentrancyGuard {
 
     function claim() external nonReentrant {
         uint256 usdatAmount = withdrawalRequests[msg.sender].usdatAmount;
-        if (usdatAmount == 0) revert InvalidWithdrawalRequest();
+        if (usdatAmount == 0  || withdrawalRequests[msg.sender].cooldownEnd > block.timestamp) revert InvalidWithdrawalRequest();
 
         withdrawalRequests[msg.sender].usdatAmount = 0;
 
