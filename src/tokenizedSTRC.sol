@@ -23,13 +23,7 @@ interface IPriceOracle {
 /// process starts with the user calling deposit on the sUSDat contract. At the same time the
 /// sUSDat entity purchases STRC from the market, tSTRC is deposited into the sUSDat contract.
 
-contract tokenizedSTRC is
-    ERC20,
-    ERC20Burnable,
-    ReentrancyGuard,
-    AccessControl,
-    ERC20Permit
-{
+contract tokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, ERC20Permit {
     using SafeERC20 for IERC20;
 
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
@@ -38,11 +32,10 @@ contract tokenizedSTRC is
 
     event OracleUpdated(address indexed oldOracle, address indexed newOracle);
 
-    constructor(
-        address defaultAdmin,
-        address minter,
-        address oracle
-    ) ERC20("tokenizedSTRC", "tSTRC") ERC20Permit("tokenizedSTRC") {
+    constructor(address defaultAdmin, address minter, address oracle)
+        ERC20("tokenizedSTRC", "tSTRC")
+        ERC20Permit("tokenizedSTRC")
+    {
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
         _grantRole(MINTER_ROLE, minter);
 
@@ -53,17 +46,15 @@ contract tokenizedSTRC is
         _mint(to, amount);
     }
 
-    function rescueTokens(
-        address token,
-        uint256 amount,
-        address to
-    ) external nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) {
+    function rescueTokens(address token, uint256 amount, address to)
+        external
+        nonReentrant
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
         IERC20(token).safeTransfer(to, amount);
     }
 
-    function updateOracle(
-        address newOracle
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function updateOracle(address newOracle) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(newOracle != address(0), "Invalid oracle address");
         address oldOracle = address(ORACLE);
         ORACLE = IPriceOracle(newOracle);
