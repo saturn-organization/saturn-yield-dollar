@@ -10,6 +10,13 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
+/// @notice Interface for price oracle
+interface IPriceOracle {
+    function latestAnswer() external view returns (int256);
+
+    function decimals() external view returns (uint8);
+}
+
 /// @title tSTRC
 /// @notice The tSTRC token is used to track the amount of STRC that is held in the off chain entity.
 /// This token is minted and directly transferred to sUSDat during the mint process. The mint
@@ -19,12 +26,20 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 contract tokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, ERC20Permit {
     using SafeERC20 for IERC20;
 
-    /// @notice The minter role is available to the sUSDat contract to mint tSTRC tokens.
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
 
-    constructor(address defaultAdmin, address minter) ERC20("tokenizedSTRC", "tSTRC") ERC20Permit("tokenizedSTRC") {
+    IPriceOracle private ORACLE;
+
+    event OracleUpdated(address indexed oldOracle, address indexed newOracle);
+
+    constructor(address defaultAdmin, address minter, address oracle)
+        ERC20("tokenizedSTRC", "tSTRC")
+        ERC20Permit("tokenizedSTRC")
+    {
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
         _grantRole(MINTER_ROLE, minter);
+
+        ORACLE = IPriceOracle(oracle);
     }
 
     function mint(address to, uint256 amount) public onlyRole(MINTER_ROLE) {
@@ -37,5 +52,30 @@ contract tokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, 
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
         IERC20(token).safeTransfer(to, amount);
+    }
+
+    function updateOracle(address newOracle) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(newOracle != address(0), "Invalid oracle address");
+        address oldOracle = address(ORACLE);
+        ORACLE = IPriceOracle(newOracle);
+        emit OracleUpdated(oldOracle, newOracle);
+    }
+
+    function getOracle() external view returns (address) {
+        return address(ORACLE);
+    }
+
+    /// @notice Fetches the latest STRC price from the oracle
+    /// @return price The latest price from the oracle (scaled by oracle decimals)
+    /// @return decimals The number of decimals in the price
+    function getPrice() external view returns (uint256 price, uint8 decimals) {
+        require(address(ORACLE) != address(0), "Oracle not set");
+
+        int256 answer = ORACLE.latestAnswer();
+
+        require(answer > 0, "Invalid price from oracle");
+
+        price = uint256(answer);
+        decimals = ORACLE.decimals();
     }
 }
