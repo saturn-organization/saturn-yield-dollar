@@ -12,11 +12,18 @@ import {sUSDatSilo} from "./sUSDatSilo.sol";
 import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import {tokenizedSTRC} from "./tokenizedSTRC.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
 /**
  * @title StakedUSDat
  */
-contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
+contract StakedUSDat is
+    AccessControl,
+    ReentrancyGuard,
+    ERC20Permit,
+    ERC4626,
+    Pausable
+{
     using SafeERC20 for IERC20;
 
     error InvalidZeroAddress();
@@ -39,7 +46,9 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
     event LockedAmountRedistributed(address from, address to, uint256 amount);
 
     bytes32 public constant REWARDER_ROLE = keccak256("REWARDER_ROLE");
-    bytes32 private constant BLACKLIST_MANAGER_ROLE = keccak256("BLACKLIST_MANAGER_ROLE");
+    bytes32 private constant BLACKLIST_MANAGER_ROLE =
+        keccak256("BLACKLIST_MANAGER_ROLE");
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
 
     tokenizedSTRC private immutable TSTRC;
     sUSDatSilo private immutable SILO;
@@ -81,19 +90,26 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
     /// @param silo sUSDatSilo contract address
     /// @param defaultAdmin The default admin of the contract
     /// @param rewarder The address of the rewarder
-    constructor(address defaultAdmin, address rewarder, IERC20 usdat, tokenizedSTRC tstrc, sUSDatSilo silo)
-        ERC20("Staked USDat", "sUSDat")
-        ERC4626(usdat)
-        ERC20Permit("sUSDat")
-    {
+    constructor(
+        address defaultAdmin,
+        address rewarder,
+        IERC20 usdat,
+        tokenizedSTRC tstrc,
+        sUSDatSilo silo
+    ) ERC20("Staked USDat", "sUSDat") ERC4626(usdat) ERC20Permit("sUSDat") {
         if (
-            defaultAdmin == address(0) || address(usdat) == address(0) || rewarder == address(0)
-                || address(tstrc) == address(0) || address(silo) == address(0)
+            defaultAdmin == address(0) ||
+            address(usdat) == address(0) ||
+            rewarder == address(0) ||
+            address(tstrc) == address(0) ||
+            address(silo) == address(0)
         ) {
             revert InvalidZeroAddress();
         }
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
         _grantRole(REWARDER_ROLE, rewarder);
+        _grantRole(PAUSER_ROLE, defaultAdmin);
+        _grantRole(BLACKLIST_MANAGER_ROLE, defaultAdmin);
         TSTRC = tokenizedSTRC(tstrc);
         SILO = sUSDatSilo(silo);
     }
@@ -102,7 +118,9 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
      * @notice Allows the owner (DEFAULT_ADMIN_ROLE) and blacklist managers to blacklist addresses.
      * @param target The address to blacklist.
      */
-    function addToBlacklist(address target) external onlyRole(BLACKLIST_MANAGER_ROLE) {
+    function addToBlacklist(
+        address target
+    ) external onlyRole(BLACKLIST_MANAGER_ROLE) {
         if (hasRole(DEFAULT_ADMIN_ROLE, target)) revert CannotBlacklistAdmin();
 
         if (_blacklisted[target]) revert AlreadyBlacklisted();
@@ -114,7 +132,9 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
      * @notice Allows the owner (DEFAULT_ADMIN_ROLE) and blacklist managers to un-blacklist addresses.
      * @param target The address to un-blacklist.
      */
-    function removeFromBlacklist(address target) external onlyRole(BLACKLIST_MANAGER_ROLE) {
+    function removeFromBlacklist(
+        address target
+    ) external onlyRole(BLACKLIST_MANAGER_ROLE) {
         if (!_blacklisted[target]) revert NotBlacklisted();
         _blacklisted[target] = false;
         emit UnBlacklisted(target);
@@ -124,17 +144,27 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
         require(!_blacklisted[account], "USDat: recipient blacklisted");
     }
 
-    function transfer(address to, uint256 amount) public override(ERC20, IERC20) returns (bool) {
+    function transfer(
+        address to,
+        uint256 amount
+    ) public override(ERC20, IERC20) returns (bool) {
         _requireNotBlacklisted(to);
         return super.transfer(to, amount);
     }
 
-    function transferFrom(address from, address to, uint256 amount) public override(ERC20, IERC20) returns (bool) {
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) public override(ERC20, IERC20) returns (bool) {
         _requireNotBlacklisted(to);
         return super.transferFrom(from, to, amount);
     }
 
-    function redistributeLockedAmount(address from, address to) external nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) {
+    function redistributeLockedAmount(
+        address from,
+        address to
+    ) external nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) {
         if (_blacklisted[from] && !_blacklisted[to]) {
             uint256 amountToDistribute = balanceOf(from);
             _burn(from, amountToDistribute);
@@ -153,27 +183,39 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
         return IERC20(asset()).balanceOf(address(this)) + _strcTotalAssets();
     }
 
-    /// @dev TODO: Either replace this with an oracle price feed or dollar amount of STRC.
+    /// @dev Calculates the total value of STRC holdings in USD terms (18 decimals)
     function _strcTotalAssets() internal view returns (uint256) {
-        uint256 strcPrice = 100;
-        return TSTRC.balanceOf(address(this)) * strcPrice;
+        (uint256 strcPrice, uint8 priceDecimals) = TSTRC.getPrice();
+        uint256 strcBalance = TSTRC.balanceOf(address(this));
+
+        // Convert to 18 decimal format: balance * price / 10^priceDecimals
+        return
+            Math.mulDiv(
+                strcBalance,
+                strcPrice,
+                10 ** priceDecimals,
+                Math.Rounding.Floor
+            );
     }
 
     function decimals() public pure override(ERC4626, ERC20) returns (uint8) {
         return 18;
     }
 
-    function rescueTokens(address token, uint256 amount, address to)
-        external
-        nonReentrant
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
-        if (token != address(TSTRC) && token != address(asset())) revert InvalidToken();
+    function rescueTokens(
+        address token,
+        uint256 amount,
+        address to
+    ) external nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (token != address(TSTRC) && token != address(asset()))
+            revert InvalidToken();
 
         IERC20(token).safeTransfer(to, amount);
     }
 
-    function transferInRewards(uint256 amount) external nonReentrant onlyRole(REWARDER_ROLE) notZero(amount) {
+    function transferInRewards(
+        uint256 amount
+    ) external nonReentrant onlyRole(REWARDER_ROLE) notZero(amount) {
         TSTRC.mint(address(this), amount);
 
         emit RewardsReceived(amount);
@@ -184,8 +226,14 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
      * @param usdatAmount amount of USDat to convert
      * @param strcAmount amount of STRC to mint
      */
-    function convert(uint256 usdatAmount, uint256 strcAmount) external onlyRole(REWARDER_ROLE) {
-        require(IERC20(asset()).balanceOf(address(this)) >= usdatAmount, "Not enough USD");
+    function convert(
+        uint256 usdatAmount,
+        uint256 strcAmount
+    ) external onlyRole(REWARDER_ROLE) {
+        require(
+            IERC20(asset()).balanceOf(address(this)) >= usdatAmount,
+            "Not enough USD"
+        );
 
         ERC20Burnable(asset()).burn(usdatAmount);
 
@@ -201,9 +249,15 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
      * @param assets assets to deposit
      * @param shares shares to mint
      */
-    function _deposit(address caller, address receiver, uint256 assets, uint256 shares)
+    function _deposit(
+        address caller,
+        address receiver,
+        uint256 assets,
+        uint256 shares
+    )
         internal
         override
+        whenNotPaused
         nonReentrant
         notZero(assets)
         notZero(shares)
@@ -214,10 +268,15 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
         super._deposit(caller, receiver, assets, shares);
     }
 
-    function withdraw(uint256 assets, address receiver, address _owner)
+    function withdraw(
+        uint256 assets,
+        address receiver,
+        address _owner
+    )
         public
         virtual
         override
+        whenNotPaused
         ensureCooldownOff
         returns (uint256)
     {
@@ -227,17 +286,24 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
     /**
      * @dev See {IERC4626-redeem}.
      */
-    function redeem(uint256 shares, address receiver, address _owner)
+    function redeem(
+        uint256 shares,
+        address receiver,
+        address _owner
+    )
         public
         virtual
         override
+        whenNotPaused
         ensureCooldownOff
         returns (uint256)
     {
         return super.redeem(shares, receiver, _owner);
     }
 
-    function cooldownAssets(uint256 assets) external ensureCooldownOn returns (uint256 shares) {
+    function cooldownAssets(
+        uint256 assets
+    ) external whenNotPaused ensureCooldownOn returns (uint256 shares) {
         if (assets > maxWithdraw(msg.sender)) revert ExcessiveWithdrawAmount();
 
         shares = previewWithdraw(assets);
@@ -245,7 +311,9 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
         _withdraw(msg.sender, address(SILO), msg.sender, assets, shares);
     }
 
-    function cooldownShares(uint256 shares) external ensureCooldownOn returns (uint256 assets) {
+    function cooldownShares(
+        uint256 shares
+    ) external whenNotPaused ensureCooldownOn returns (uint256 assets) {
         if (shares > maxRedeem(msg.sender)) revert ExcessiveRedeemAmount();
 
         assets = previewRedeem(shares);
@@ -272,22 +340,39 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
     // assets / strcPrice = amount of STRC
 
     // Risks: division and oricle pricing!!!
-    function _withdraw(address caller, address receiver, address owner, uint256 assets, uint256 shares)
+    function _withdraw(
+        address caller,
+        address receiver,
+        address owner,
+        uint256 assets,
+        uint256 shares
+    )
         internal
         override
+        whenNotPaused
         nonReentrant
         notZero(assets)
         notZero(shares)
     {
-        if (_blacklisted[caller] || _blacklisted[receiver] || _blacklisted[owner]) {
+        if (
+            _blacklisted[caller] ||
+            _blacklisted[receiver] ||
+            _blacklisted[owner]
+        ) {
             revert OperationNotAllowed();
         }
 
-        //TODO: Replace with an oracle price feed or dollar amount of STRC.
-        uint256 strcPrice = 100;
+        // Get the current STRC price from the oracle
+        (uint256 strcPrice, uint8 priceDecimals) = TSTRC.getPrice();
 
         // Always assume the user is withdrawing STRC not USDat
-        uint256 strcAmount = Math.mulDiv(assets, 10 ** 18, strcPrice, Math.Rounding.Floor);
+        // Calculate: assets (18 decimals) * 10^priceDecimals / price = STRC amount (18 decimals)
+        uint256 strcAmount = Math.mulDiv(
+            assets,
+            10 ** priceDecimals,
+            strcPrice,
+            Math.Rounding.Floor
+        );
 
         // Not enough STRC in the contract to cover please wait.
         if (strcAmount >= TSTRC.balanceOf(address(this))) {
@@ -308,7 +393,9 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
         SafeERC20.safeTransfer(IERC20(TSTRC), receiver, strcAmount);
     }
 
-    function setCooldownDuration(uint24 duration) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setCooldownDuration(
+        uint24 duration
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (duration > MAX_COOLDOWN_DURATION) {
             revert InvalidCooldown();
         }
@@ -317,5 +404,12 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626 {
         cooldownDuration = duration;
         emit CooldownDurationUpdated(previousDuration, cooldownDuration);
     }
-}
 
+    function pause() external onlyRole(PAUSER_ROLE) {
+        _pause();
+    }
+
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _unpause();
+    }
+}
