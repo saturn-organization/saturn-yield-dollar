@@ -23,59 +23,73 @@ interface IPriceOracle {
 /// process starts with the user calling deposit on the sUSDat contract. At the same time the
 /// sUSDat entity purchases STRC from the market, tSTRC is deposited into the sUSDat contract.
 
-contract tokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, ERC20Permit {
+contract tokenizedSTRC is
+    ERC20,
+    ERC20Burnable,
+    ReentrancyGuard,
+    AccessControl,
+    ERC20Permit
+{
     using SafeERC20 for IERC20;
 
-    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+    // sUSDat contract is the only entity that can mint tSTRC
+    bytes32 public constant STAKED_USDAT_ROLE = keccak256("STAKED_USDAT_ROLE");
 
-    IPriceOracle private ORACLE;
+    IPriceOracle private oracle;
 
     event OracleUpdated(address indexed oldOracle, address indexed newOracle);
 
-    constructor(address defaultAdmin, address minter, address oracle)
-        ERC20("tokenizedSTRC", "tSTRC")
-        ERC20Permit("tokenizedSTRC")
-    {
+    constructor(
+        address defaultAdmin,
+        address minter,
+        address oracleAddress
+    ) ERC20("tokenizedSTRC", "tSTRC") ERC20Permit("tokenizedSTRC") {
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
-        _grantRole(MINTER_ROLE, minter);
+        _grantRole(STAKED_USDAT_ROLE, minter);
 
-        ORACLE = IPriceOracle(oracle);
+        oracle = IPriceOracle(oracleAddress);
     }
 
-    function mint(address to, uint256 amount) public onlyRole(MINTER_ROLE) {
+    function mint(
+        address to,
+        uint256 amount
+    ) public onlyRole(STAKED_USDAT_ROLE) {
         _mint(to, amount);
     }
 
-    function rescueTokens(address token, uint256 amount, address to)
-        external
-        nonReentrant
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
+    function rescueTokens(
+        address token,
+        uint256 amount,
+        address to
+    ) external nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) {
         IERC20(token).safeTransfer(to, amount);
     }
 
-    function updateOracle(address newOracle) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function updateOracle(
+        address newOracle
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(newOracle != address(0), "Invalid oracle address");
-        address oldOracle = address(ORACLE);
-        ORACLE = IPriceOracle(newOracle);
+        address oldOracle = address(oracle);
+        oracle = IPriceOracle(newOracle);
         emit OracleUpdated(oldOracle, newOracle);
     }
 
     function getOracle() external view returns (address) {
-        return address(ORACLE);
+        return address(oracle);
     }
 
     /// @notice Fetches the latest STRC price from the oracle
     /// @return price The latest price from the oracle (scaled by oracle decimals)
     /// @return decimals The number of decimals in the price
     function getPrice() external view returns (uint256 price, uint8 decimals) {
-        require(address(ORACLE) != address(0), "Oracle not set");
+        require(address(oracle) != address(0), "Oracle not set");
 
-        int256 answer = ORACLE.latestAnswer();
+        int256 answer = oracle.latestAnswer();
 
         require(answer > 0, "Invalid price from oracle");
 
+        // forge-lint: disable-next-line(unsafe-typecast)
         price = uint256(answer);
-        decimals = ORACLE.decimals();
+        decimals = oracle.decimals();
     }
 }
