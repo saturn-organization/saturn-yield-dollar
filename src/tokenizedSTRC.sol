@@ -27,18 +27,18 @@ contract tokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, 
     using SafeERC20 for IERC20;
 
     // sUSDat contract is the only entity that can mint tSTRC
+    // need to set after deploying sUSDat
     bytes32 public constant STAKED_USDAT_ROLE = keccak256("STAKED_USDAT_ROLE");
 
     IPriceOracle private oracle;
 
     event OracleUpdated(address indexed oldOracle, address indexed newOracle);
 
-    constructor(address defaultAdmin, address minter, address oracleAddress)
+    constructor(address defaultAdmin, address oracleAddress)
         ERC20("tokenizedSTRC", "tSTRC")
         ERC20Permit("tokenizedSTRC")
     {
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
-        _grantRole(STAKED_USDAT_ROLE, minter);
 
         oracle = IPriceOracle(oracleAddress);
     }
