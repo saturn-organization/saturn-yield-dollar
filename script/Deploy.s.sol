@@ -26,6 +26,9 @@ import {IWithdrawalQueue} from "../src/interfaces/IWithdrawalQueue.sol";
  * - WithdrawalQueue: grant PROCESSOR_ROLE to processor
  * - WithdrawalQueue: grant COMPLIANCE_ROLE to compliance
  *
+ * Manual role grants required on external contracts:
+ * - USDat: grant minting role to WithdrawalQueue (for processNext to mint USDat)
+ *
  * Environment variables required:
  * - USDAT: USDat token address
  * - ORACLE: Price oracle address for STRC
@@ -66,31 +69,59 @@ contract DeployScript is Script {
 
         // Step 2: Deploy WithdrawalQueue
         withdrawalQueue = new WithdrawalQueue(address(tstrc), usdat, admin);
-        console.log("2. WithdrawalQueue deployed at:", address(withdrawalQueue));
+        console.log(
+            "2. WithdrawalQueue deployed at:",
+            address(withdrawalQueue)
+        );
 
         // Step 3: Deploy StakedUSDat Implementation
-        stakedUsdatImpl = new StakedUSDat(ITokenizedSTRC(address(tstrc)), IWithdrawalQueue(address(withdrawalQueue)));
-        console.log("3. StakedUSDat Implementation deployed at:", address(stakedUsdatImpl));
+        stakedUsdatImpl = new StakedUSDat(
+            ITokenizedSTRC(address(tstrc)),
+            IWithdrawalQueue(address(withdrawalQueue))
+        );
+        console.log(
+            "3. StakedUSDat Implementation deployed at:",
+            address(stakedUsdatImpl)
+        );
 
         // Step 4: Deploy StakedUSDat Proxy and initialize
-        bytes memory initData = abi.encodeCall(StakedUSDat.initialize, (admin, processor, compliance, IERC20(usdat)));
-        ERC1967Proxy proxy = new ERC1967Proxy(address(stakedUsdatImpl), initData);
+        bytes memory initData = abi.encodeCall(
+            StakedUSDat.initialize,
+            (admin, processor, compliance, IERC20(usdat))
+        );
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(stakedUsdatImpl),
+            initData
+        );
         stakedUsdat = StakedUSDat(address(proxy));
         console.log("4. StakedUSDat Proxy deployed at:", address(stakedUsdat));
 
         // Step 5: Grant roles on TokenizedSTRC
         tstrc.grantRole(tstrc.STAKED_USDAT_ROLE(), address(stakedUsdat));
-        console.log("5. TokenizedSTRC: Granted STAKED_USDAT_ROLE to StakedUSDat");
+        console.log(
+            "5. TokenizedSTRC: Granted STAKED_USDAT_ROLE to StakedUSDat"
+        );
 
         // Step 6: Grant roles on WithdrawalQueue
-        withdrawalQueue.grantRole(withdrawalQueue.STAKED_USDAT_ROLE(), address(stakedUsdat));
-        console.log("6. WithdrawalQueue: Granted STAKED_USDAT_ROLE to StakedUSDat");
+        withdrawalQueue.grantRole(
+            withdrawalQueue.STAKED_USDAT_ROLE(),
+            address(stakedUsdat)
+        );
+        console.log(
+            "6. WithdrawalQueue: Granted STAKED_USDAT_ROLE to StakedUSDat"
+        );
 
         withdrawalQueue.grantRole(withdrawalQueue.PROCESSOR_ROLE(), processor);
         console.log("7. WithdrawalQueue: Granted PROCESSOR_ROLE to", processor);
 
-        withdrawalQueue.grantRole(withdrawalQueue.COMPLIANCE_ROLE(), compliance);
-        console.log("8. WithdrawalQueue: Granted COMPLIANCE_ROLE to", compliance);
+        withdrawalQueue.grantRole(
+            withdrawalQueue.COMPLIANCE_ROLE(),
+            compliance
+        );
+        console.log(
+            "8. WithdrawalQueue: Granted COMPLIANCE_ROLE to",
+            compliance
+        );
 
         vm.stopBroadcast();
 
