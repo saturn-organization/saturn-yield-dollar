@@ -2,8 +2,9 @@
 pragma solidity ^0.8.20;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {IUSDat} from "./interfaces/IUSDat.sol";
+import {IERC20Burnable} from "./interfaces/IERC20Burnable.sol";
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
@@ -30,7 +31,7 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
     bytes32 public constant STAKED_USDAT_ROLE = keccak256("STAKED_USDAT_ROLE");
 
     IERC20 public immutable TSTRC;
-    IERC20 public immutable USDAT;
+    IUSDat public immutable USDAT;
 
     Request[] public queue;
     uint256 public nextToProcess;
@@ -49,7 +50,7 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
 
     constructor(address tstrc, address usdat, address admin) {
         TSTRC = IERC20(tstrc);
-        USDAT = IERC20(usdat);
+        USDAT = IUSDat(usdat);
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
     }
@@ -93,9 +94,9 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
             totalStrc += queue[nextToProcess + i].strcAmount;
         }
 
-        USDAT.safeTransferFrom(msg.sender, address(this), totalUsdat);
+        USDAT.mint(address(this), totalUsdat);
 
-        ERC20Burnable(address(TSTRC)).burn(totalStrc);
+        IERC20Burnable(address(TSTRC)).burn(totalStrc);
 
         for (uint256 i = 0; i < count; i++) {
             uint256 requestId = nextToProcess + i;
@@ -123,7 +124,7 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
         req.claimed = true;
         amount = req.usdatOwed;
 
-        USDAT.safeTransfer(msg.sender, amount);
+        IERC20(address(USDAT)).safeTransfer(msg.sender, amount);
 
         emit Claimed(requestId, msg.sender, amount);
     }
@@ -167,7 +168,7 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
 
         if (totalAmount == 0) revert NothingToClaim();
 
-        USDAT.safeTransfer(user, totalAmount);
+        IERC20(address(USDAT)).safeTransfer(user, totalAmount);
     }
 
     // ============ View Functions ============

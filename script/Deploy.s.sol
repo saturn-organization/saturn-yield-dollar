@@ -7,6 +7,8 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {TokenizedSTRC} from "../src/TokenizedSTRC.sol";
 import {WithdrawalQueue} from "../src/WithdrawalQueue.sol";
 import {StakedUSDat} from "../src/StakedUSDat.sol";
+import {ITokenizedSTRC} from "../src/interfaces/ITokenizedSTRC.sol";
+import {IWithdrawalQueue} from "../src/interfaces/IWithdrawalQueue.sol";
 
 /**
  * @title DeployScript
@@ -67,7 +69,7 @@ contract DeployScript is Script {
         console.log("2. WithdrawalQueue deployed at:", address(withdrawalQueue));
 
         // Step 3: Deploy StakedUSDat Implementation
-        stakedUsdatImpl = new StakedUSDat(tstrc, withdrawalQueue);
+        stakedUsdatImpl = new StakedUSDat(ITokenizedSTRC(address(tstrc)), IWithdrawalQueue(address(withdrawalQueue)));
         console.log("3. StakedUSDat Implementation deployed at:", address(stakedUsdatImpl));
 
         // Step 4: Deploy StakedUSDat Proxy and initialize

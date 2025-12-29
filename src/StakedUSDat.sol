@@ -2,7 +2,6 @@
 pragma solidity ^0.8.20;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
@@ -17,8 +16,9 @@ import {
 } from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PermitUpgradeable.sol";
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 
-import {WithdrawalQueue} from "./WithdrawalQueue.sol";
-import {TokenizedSTRC} from "./TokenizedSTRC.sol";
+import {IWithdrawalQueue} from "./interfaces/IWithdrawalQueue.sol";
+import {ITokenizedSTRC} from "./interfaces/ITokenizedSTRC.sol";
+import {IERC20Burnable} from "./interfaces/IERC20Burnable.sol";
 
 /**
  * @title StakedUSDat
@@ -55,8 +55,8 @@ contract StakedUSDat is
     bytes32 private constant COMPLIANCE_ROLE = keccak256("COMPLIANCE_ROLE");
 
     /// @dev Immutables are stored in the implementation contract's bytecode, not proxy storage
-    TokenizedSTRC private immutable TSTRC;
-    WithdrawalQueue private immutable WITHDRAWAL_QUEUE;
+    ITokenizedSTRC private immutable TSTRC;
+    IWithdrawalQueue private immutable WITHDRAWAL_QUEUE;
 
     mapping(address => bool) private _blacklisted;
 
@@ -72,7 +72,7 @@ contract StakedUSDat is
     /// @custom:oz-upgrades-unsafe-allow constructor
     /// @param tstrc TokenizedSTRC contract address
     /// @param withdrawalQueue WithdrawalQueue contract address
-    constructor(TokenizedSTRC tstrc, WithdrawalQueue withdrawalQueue) {
+    constructor(ITokenizedSTRC tstrc, IWithdrawalQueue withdrawalQueue) {
         if (address(tstrc) == address(0) || address(withdrawalQueue) == address(0)) {
             revert InvalidZeroAddress();
         }
@@ -207,7 +207,7 @@ contract StakedUSDat is
     function convert(uint256 usdatAmount, uint256 strcAmount) external onlyRole(PROCESSOR_ROLE) {
         require(IERC20(asset()).balanceOf(address(this)) >= usdatAmount, "Not enough USD");
 
-        ERC20Burnable(asset()).burn(usdatAmount);
+        IERC20Burnable(asset()).burn(usdatAmount);
 
         TSTRC.mint(address(this), strcAmount);
 
