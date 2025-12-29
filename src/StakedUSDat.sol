@@ -2,22 +2,37 @@
 pragma solidity ^0.8.20;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
-import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
-import {ERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {WithdrawalQueue} from "./WithdrawalQueue.sol";
-import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
-import {tokenizedSTRC} from "./tokenizedSTRC.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {ERC20Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
+import {
+    ERC20PermitUpgradeable
+} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PermitUpgradeable.sol";
+import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
+
+import {IWithdrawalQueue} from "./interfaces/IWithdrawalQueue.sol";
+import {ITokenizedSTRC} from "./interfaces/ITokenizedSTRC.sol";
+import {IERC20Burnable} from "./interfaces/IERC20Burnable.sol";
 
 /**
  * @title StakedUSDat
+ * @notice UUPS upgradeable ERC4626 vault for staking USDat
  */
-contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626, Pausable {
+contract StakedUSDat is
+    Initializable,
+    AccessControlUpgradeable,
+    ReentrancyGuard,
+    ERC20PermitUpgradeable,
+    ERC4626Upgradeable,
+    PausableUpgradeable,
+    UUPSUpgradeable
+{
     using SafeERC20 for IERC20;
 
     error InvalidZeroAddress();
@@ -39,8 +54,10 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626, Pa
     bytes32 public constant PROCESSOR_ROLE = keccak256("PROCESSOR_ROLE");
     bytes32 private constant COMPLIANCE_ROLE = keccak256("COMPLIANCE_ROLE");
 
-    tokenizedSTRC private immutable TSTRC;
-    WithdrawalQueue private immutable WITHDRAWAL_QUEUE;
+    /// @dev Immutables are stored in the implementation contract's bytecode, not proxy storage
+    ITokenizedSTRC private immutable TSTRC;
+    IWithdrawalQueue private immutable WITHDRAWAL_QUEUE;
+
     mapping(address => bool) private _blacklisted;
 
     modifier notZero(uint256 amount) {
@@ -52,31 +69,48 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626, Pa
         if (amount == 0) revert InvalidAmount();
     }
 
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    /// @param tstrc TokenizedSTRC contract address
+    /// @param withdrawalQueue WithdrawalQueue contract address
+    constructor(ITokenizedSTRC tstrc, IWithdrawalQueue withdrawalQueue) {
+        if (address(tstrc) == address(0) || address(withdrawalQueue) == address(0)) {
+            revert InvalidZeroAddress();
+        }
+        TSTRC = tstrc;
+        WITHDRAWAL_QUEUE = withdrawalQueue;
+        _disableInitializers();
+    }
+
+    /// @notice Initializes the contract (called once via proxy)
     /// @param defaultAdmin The default admin of the contract
     /// @param processor The address of the processor
+    /// @param compliance The address of the compliance role
     /// @param usdat USDat contract address
-    /// @param tstrc tokenizedSTRC contract address
-    /// @param withdrawalQueue WithdrawalQueue contract address
-    constructor(
-        address defaultAdmin,
-        address processor,
-        address compliance,
-        IERC20 usdat,
-        tokenizedSTRC tstrc,
-        WithdrawalQueue withdrawalQueue
-    ) ERC20("Staked USDat", "sUSDat") ERC4626(usdat) ERC20Permit("sUSDat") {
+    function initialize(address defaultAdmin, address processor, address compliance, IERC20 usdat)
+        external
+        initializer
+    {
         if (
             defaultAdmin == address(0) || address(usdat) == address(0) || processor == address(0)
-                || address(tstrc) == address(0) || address(withdrawalQueue) == address(0)
+                || compliance == address(0)
         ) {
             revert InvalidZeroAddress();
         }
+
+        __AccessControl_init();
+        __Pausable_init();
+        __ERC20_init("Staked USDat", "sUSDat");
+        __ERC20Permit_init("sUSDat");
+        __ERC4626_init(usdat);
+
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
         _grantRole(PROCESSOR_ROLE, processor);
         _grantRole(COMPLIANCE_ROLE, compliance);
-        TSTRC = tokenizedSTRC(tstrc);
-        WITHDRAWAL_QUEUE = WithdrawalQueue(withdrawalQueue);
     }
+
+    /// @notice Authorizes an upgrade to a new implementation
+    /// @dev Only callable by DEFAULT_ADMIN_ROLE
+    function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
     /**
      * @notice Allows the owner (COMPLIANCE_ROLE) and blacklist managers to blacklist addresses.
@@ -104,12 +138,16 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626, Pa
         require(!_blacklisted[account], "USDat: recipient blacklisted");
     }
 
-    function transfer(address to, uint256 amount) public override(ERC20, IERC20) returns (bool) {
+    function transfer(address to, uint256 amount) public override(ERC20Upgradeable, IERC20) returns (bool) {
         _requireNotBlacklisted(to);
         return super.transfer(to, amount);
     }
 
-    function transferFrom(address from, address to, uint256 amount) public override(ERC20, IERC20) returns (bool) {
+    function transferFrom(address from, address to, uint256 amount)
+        public
+        override(ERC20Upgradeable, IERC20)
+        returns (bool)
+    {
         _requireNotBlacklisted(to);
         return super.transferFrom(from, to, amount);
     }
@@ -139,7 +177,7 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626, Pa
         return Math.mulDiv(strcBalance, strcPrice, 10 ** priceDecimals, Math.Rounding.Floor);
     }
 
-    function decimals() public pure override(ERC4626, ERC20) returns (uint8) {
+    function decimals() public pure override(ERC4626Upgradeable, ERC20Upgradeable) returns (uint8) {
         return 18;
     }
 
@@ -169,7 +207,7 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626, Pa
     function convert(uint256 usdatAmount, uint256 strcAmount) external onlyRole(PROCESSOR_ROLE) {
         require(IERC20(asset()).balanceOf(address(this)) >= usdatAmount, "Not enough USD");
 
-        ERC20Burnable(asset()).burn(usdatAmount);
+        IERC20Burnable(asset()).burn(usdatAmount);
 
         TSTRC.mint(address(this), strcAmount);
 
@@ -279,6 +317,11 @@ contract StakedUSDat is AccessControl, ReentrancyGuard, ERC20Permit, ERC4626, Pa
     /// @notice Get the withdrawal queue address
     function getWithdrawalQueue() external view returns (address) {
         return address(WITHDRAWAL_QUEUE);
+    }
+
+    /// @notice Get the TokenizedSTRC address
+    function getTstrc() external view returns (address) {
+        return address(TSTRC);
     }
 
     function pause() external onlyRole(COMPLIANCE_ROLE) {

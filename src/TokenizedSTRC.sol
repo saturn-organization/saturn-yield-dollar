@@ -23,7 +23,7 @@ interface IPriceOracle {
 /// process starts with the user calling deposit on the sUSDat contract. At the same time the
 /// sUSDat entity purchases STRC from the market, tSTRC is deposited into the sUSDat contract.
 
-contract tokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, ERC20Permit {
+contract TokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, ERC20Permit {
     using SafeERC20 for IERC20;
 
     // sUSDat contract is the only entity that can mint tSTRC
@@ -35,8 +35,8 @@ contract tokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, 
     event OracleUpdated(address indexed oldOracle, address indexed newOracle);
 
     constructor(address defaultAdmin, address oracleAddress)
-        ERC20("tokenizedSTRC", "tSTRC")
-        ERC20Permit("tokenizedSTRC")
+        ERC20("TokenizedSTRC", "tSTRC")
+        ERC20Permit("TokenizedSTRC")
     {
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
 
