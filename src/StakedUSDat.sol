@@ -297,10 +297,6 @@ contract StakedUSDat is
             revert InvalidAmount();
         }
 
-        if (caller != owner) {
-            _spendAllowance(owner, caller, shares);
-        }
-
         _burn(owner, shares);
 
         // Transfer tSTRC to queue and add request
