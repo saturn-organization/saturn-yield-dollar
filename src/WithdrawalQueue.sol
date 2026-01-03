@@ -44,22 +44,9 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
     error NothingToClaim();
     error NotYourRequest();
 
-    event WithdrawalRequested(
-        uint256 indexed requestId,
-        address indexed user,
-        uint256 strcAmount,
-        uint256 timestamp
-    );
-    event WithdrawalProcessed(
-        uint256 indexed requestId,
-        uint256 strcAmount,
-        uint256 usdatAmount
-    );
-    event Claimed(
-        uint256 indexed requestId,
-        address indexed user,
-        uint256 usdatAmount
-    );
+    event WithdrawalRequested(uint256 indexed requestId, address indexed user, uint256 strcAmount, uint256 timestamp);
+    event WithdrawalProcessed(uint256 indexed requestId, uint256 strcAmount, uint256 usdatAmount);
+    event Claimed(uint256 indexed requestId, address indexed user, uint256 usdatAmount);
 
     constructor(address tstrc, address usdat, address admin) {
         TSTRC = IERC20(tstrc);
@@ -73,10 +60,7 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
     /// @param user The user requesting withdrawal
     /// @param strcAmount The amount of tSTRC owed to the user
     /// @return requestId The ID of the withdrawal request
-    function addRequest(
-        address user,
-        uint256 strcAmount
-    )
+    function addRequest(address user, uint256 strcAmount)
         external
         nonReentrant
         whenNotPaused
@@ -87,13 +71,7 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
 
         requestId = queue.length;
         queue.push(
-            Request({
-                user: user,
-                strcAmount: strcAmount,
-                usdatOwed: 0,
-                claimed: false,
-                timestamp: block.timestamp
-            })
+            Request({user: user, strcAmount: strcAmount, usdatOwed: 0, claimed: false, timestamp: block.timestamp})
         );
 
         userRequestIds[user].push(requestId);
@@ -103,9 +81,7 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
 
     /// @notice Process the next batch of withdrawal requests
     /// @param usdatAmounts Array of USDat amounts corresponding to each request
-    function processNext(
-        uint256[] calldata usdatAmounts
-    ) external nonReentrant onlyRole(PROCESSOR_ROLE) {
+    function processNext(uint256[] calldata usdatAmounts) external nonReentrant onlyRole(PROCESSOR_ROLE) {
         uint256 count = usdatAmounts.length;
         require(count != 0, InvalidAmount());
         require(nextToProcess + count <= queue.length, NoRequestsToProcess());
@@ -130,11 +106,7 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
 
             req.usdatOwed = usdatAmounts[i];
 
-            emit WithdrawalProcessed(
-                requestId,
-                req.strcAmount,
-                usdatAmounts[i]
-            );
+            emit WithdrawalProcessed(requestId, req.strcAmount, usdatAmounts[i]);
         }
 
         nextToProcess += count;
@@ -143,9 +115,7 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
     /// @notice Claim a specific withdrawal request
     /// @param requestId The ID of the request to claim
     /// @return amount The amount of USDat claimed
-    function claim(
-        uint256 requestId
-    ) external nonReentrant whenNotPaused returns (uint256 amount) {
+    function claim(uint256 requestId) external nonReentrant whenNotPaused returns (uint256 amount) {
         Request storage req = queue[requestId];
 
         require(req.user == msg.sender, NotYourRequest());
@@ -161,21 +131,14 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
 
     /// @notice Claim all processed withdrawals for the caller
     /// @return totalAmount The total amount of USDat claimed
-    function claimAll()
-        external
-        nonReentrant
-        whenNotPaused
-        returns (uint256 totalAmount)
-    {
+    function claimAll() external nonReentrant whenNotPaused returns (uint256 totalAmount) {
         totalAmount = _claimAll(msg.sender);
     }
 
     /// @notice Claim all processed withdrawals for a user (called by StakedUSDat)
     /// @param user The user to claim for
     /// @return totalAmount The total amount of USDat claimed
-    function claimFor(
-        address user
-    )
+    function claimFor(address user)
         external
         nonReentrant
         whenNotPaused
@@ -216,16 +179,12 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
     }
 
     /// @notice Get all request IDs for any user
-    function getUserRequests(
-        address user
-    ) external view returns (uint256[] memory) {
+    function getUserRequests(address user) external view returns (uint256[] memory) {
         return userRequestIds[user];
     }
 
     /// @notice Get claimable amount and request IDs for a user
-    function getClaimable(
-        address user
-    ) external view returns (uint256 total, uint256[] memory claimableIds) {
+    function getClaimable(address user) external view returns (uint256 total, uint256[] memory claimableIds) {
         uint256[] storage ids = userRequestIds[user];
         uint256 len = ids.length;
 
@@ -251,13 +210,7 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
     }
 
     /// @notice Get pending (unprocessed) requests for a user
-    function getPending(
-        address user
-    )
-        external
-        view
-        returns (uint256 totalStrcAmount, uint256[] memory pendingIds)
-    {
+    function getPending(address user) external view returns (uint256 totalStrcAmount, uint256[] memory pendingIds) {
         uint256[] storage ids = userRequestIds[user];
         uint256 len = ids.length;
 
@@ -283,27 +236,13 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
     }
 
     /// @notice Get a specific request's details
-    function getRequest(
-        uint256 requestId
-    )
+    function getRequest(uint256 requestId)
         external
         view
-        returns (
-            address user,
-            uint256 strcAmount,
-            uint256 usdatOwed,
-            bool claimed,
-            uint256 timestamp
-        )
+        returns (address user, uint256 strcAmount, uint256 usdatOwed, bool claimed, uint256 timestamp)
     {
         Request storage req = queue[requestId];
-        return (
-            req.user,
-            req.strcAmount,
-            req.usdatOwed,
-            req.claimed,
-            req.timestamp
-        );
+        return (req.user, req.strcAmount, req.usdatOwed, req.claimed, req.timestamp);
     }
 
     /// @notice Check if a specific request is claimable
