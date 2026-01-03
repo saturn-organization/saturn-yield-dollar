@@ -23,8 +23,17 @@ interface IPriceOracle {
 /// process starts with the user calling deposit on the sUSDat contract. At the same time the
 /// sUSDat entity purchases STRC from the market, tSTRC is deposited into the sUSDat contract.
 
-contract TokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, ERC20Permit {
+contract TokenizedSTRC is
+    ERC20,
+    ERC20Burnable,
+    ReentrancyGuard,
+    AccessControl,
+    ERC20Permit
+{
     using SafeERC20 for IERC20;
+
+    error InvalidOraclePrice();
+    error InvalidZeroAddress();
 
     // sUSDat contract is the only entity that can mint tSTRC
     // need to set after deploying sUSDat
@@ -34,29 +43,34 @@ contract TokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, 
 
     event OracleUpdated(address indexed oldOracle, address indexed newOracle);
 
-    constructor(address defaultAdmin, address oracleAddress)
-        ERC20("TokenizedSTRC", "tSTRC")
-        ERC20Permit("TokenizedSTRC")
-    {
+    constructor(
+        address defaultAdmin,
+        address oracleAddress
+    ) ERC20("TokenizedSTRC", "tSTRC") ERC20Permit("TokenizedSTRC") {
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
 
         oracle = IPriceOracle(oracleAddress);
     }
 
-    function mint(address to, uint256 amount) public onlyRole(STAKED_USDAT_ROLE) {
+    function mint(
+        address to,
+        uint256 amount
+    ) public onlyRole(STAKED_USDAT_ROLE) {
         _mint(to, amount);
     }
 
-    function rescueTokens(address token, uint256 amount, address to)
-        external
-        nonReentrant
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
+    function rescueTokens(
+        address token,
+        uint256 amount,
+        address to
+    ) external nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) {
         IERC20(token).safeTransfer(to, amount);
     }
 
-    function updateOracle(address newOracle) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(newOracle != address(0), "Invalid oracle address");
+    function updateOracle(
+        address newOracle
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(newOracle != address(0), InvalidZeroAddress());
         address oldOracle = address(oracle);
         oracle = IPriceOracle(newOracle);
         emit OracleUpdated(oldOracle, newOracle);
@@ -70,11 +84,11 @@ contract TokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, 
     /// @return price The latest price from the oracle (scaled by oracle decimals)
     /// @return decimals The number of decimals in the price
     function getPrice() external view returns (uint256 price, uint8 decimals) {
-        require(address(oracle) != address(0), "Oracle not set");
+        require(address(oracle) != address(0), InvalidZeroAddress());
 
         int256 answer = oracle.latestAnswer();
 
-        require(answer > 0, "Invalid price from oracle");
+        require(answer > 0, InvalidOraclePrice());
 
         // forge-lint: disable-next-line(unsafe-typecast)
         price = uint256(answer);
