@@ -26,6 +26,9 @@ interface IPriceOracle {
 contract TokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, ERC20Permit {
     using SafeERC20 for IERC20;
 
+    error InvalidOraclePrice();
+    error InvalidZeroAddress();
+
     // sUSDat contract is the only entity that can mint tSTRC
     // need to set after deploying sUSDat
     bytes32 public constant STAKED_USDAT_ROLE = keccak256("STAKED_USDAT_ROLE");
@@ -56,7 +59,7 @@ contract TokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, 
     }
 
     function updateOracle(address newOracle) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(newOracle != address(0), "Invalid oracle address");
+        require(newOracle != address(0), InvalidZeroAddress());
         address oldOracle = address(oracle);
         oracle = IPriceOracle(newOracle);
         emit OracleUpdated(oldOracle, newOracle);
@@ -70,11 +73,11 @@ contract TokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, 
     /// @return price The latest price from the oracle (scaled by oracle decimals)
     /// @return decimals The number of decimals in the price
     function getPrice() external view returns (uint256 price, uint8 decimals) {
-        require(address(oracle) != address(0), "Oracle not set");
+        require(address(oracle) != address(0), InvalidZeroAddress());
 
         int256 answer = oracle.latestAnswer();
 
-        require(answer > 0, "Invalid price from oracle");
+        require(answer > 0, InvalidOraclePrice());
 
         // forge-lint: disable-next-line(unsafe-typecast)
         price = uint256(answer);
