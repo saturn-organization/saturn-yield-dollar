@@ -100,7 +100,7 @@ contract StakedUSDat is
         __AccessControl_init();
         __Pausable_init();
         __ERC20_init("Staked USDat", "sUSDat");
-        __ERC20Permit_init("sUSDat");
+        __ERC20Permit_init("Staked USDat");
         __ERC4626_init(usdat);
 
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
