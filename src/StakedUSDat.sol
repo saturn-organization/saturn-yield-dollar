@@ -36,7 +36,7 @@ contract StakedUSDat is
     using SafeERC20 for IERC20;
 
     error InvalidZeroAddress();
-    error InvalidAmount();
+    error ZeroAmount();
     error OperationNotAllowed();
     error ExcessiveRequestedAmount();
     error AddressNotBlacklisted();
@@ -65,7 +65,7 @@ contract StakedUSDat is
     }
 
     function _notZero(uint256 amount) internal pure {
-        require(amount != 0, InvalidAmount());
+        require(amount != 0, ZeroAmount());
     }
 
     /// @custom:oz-upgrades-unsafe-allow constructor

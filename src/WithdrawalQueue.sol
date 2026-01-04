@@ -38,7 +38,7 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
 
     mapping(address => uint256[]) private userRequestIds;
 
-    error InvalidAmount();
+    error ZeroAmount();
     error NoRequestsToProcess();
     error AlreadyProcessed();
     error NothingToClaim();
@@ -67,7 +67,7 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
         onlyRole(STAKED_USDAT_ROLE)
         returns (uint256 requestId)
     {
-        require(strcAmount != 0, InvalidAmount());
+        require(strcAmount != 0, ZeroAmount());
 
         requestId = queue.length;
         queue.push(
@@ -83,7 +83,7 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
     /// @param usdatAmounts Array of USDat amounts corresponding to each request
     function processNext(uint256[] calldata usdatAmounts) external nonReentrant onlyRole(PROCESSOR_ROLE) {
         uint256 count = usdatAmounts.length;
-        require(count != 0, InvalidAmount());
+        require(count != 0, ZeroAmount());
         require(nextToProcess + count <= queue.length, NoRequestsToProcess());
 
         uint256 totalUsdat = 0;
