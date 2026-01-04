@@ -134,7 +134,9 @@ contract StakedUSDat is
     }
 
     function transfer(address to, uint256 amount) public override(ERC20Upgradeable, IERC20) returns (bool) {
+        _requireNotBlacklisted(msg.sender);
         _requireNotBlacklisted(to);
+
         return super.transfer(to, amount);
     }
 
@@ -143,7 +145,9 @@ contract StakedUSDat is
         override(ERC20Upgradeable, IERC20)
         returns (bool)
     {
+        _requireNotBlacklisted(from);
         _requireNotBlacklisted(to);
+
         return super.transferFrom(from, to, amount);
     }
 
