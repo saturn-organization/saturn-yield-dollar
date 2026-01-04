@@ -36,7 +36,7 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
     Request[] public queue;
     uint256 public nextToProcess;
 
-    mapping(address => uint256[]) private userRequestIds;
+    mapping(address user => uint256[] requestIds) private userRequestIds;
 
     error ZeroAmount();
     error NoRequestsToProcess();
