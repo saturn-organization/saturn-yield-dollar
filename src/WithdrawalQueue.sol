@@ -38,7 +38,7 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
 
     mapping(address => uint256[]) private userRequestIds;
 
-    error InvalidAmount();
+    error ZeroAmount();
     error NoRequestsToProcess();
     error AlreadyProcessed();
     error NothingToClaim();
@@ -67,7 +67,7 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
         onlyRole(STAKED_USDAT_ROLE)
         returns (uint256 requestId)
     {
-        if (strcAmount == 0) revert InvalidAmount();
+        require(strcAmount != 0, ZeroAmount());
 
         requestId = queue.length;
         queue.push(
@@ -83,8 +83,8 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
     /// @param usdatAmounts Array of USDat amounts corresponding to each request
     function processNext(uint256[] calldata usdatAmounts) external nonReentrant onlyRole(PROCESSOR_ROLE) {
         uint256 count = usdatAmounts.length;
-        if (count == 0) revert InvalidAmount();
-        if (nextToProcess + count > queue.length) revert NoRequestsToProcess();
+        require(count != 0, ZeroAmount());
+        require(nextToProcess + count <= queue.length, NoRequestsToProcess());
 
         uint256 totalUsdat = 0;
         uint256 totalStrc = 0;
@@ -102,7 +102,7 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
             uint256 requestId = nextToProcess + i;
             Request storage req = queue[requestId];
 
-            if (req.usdatOwed != 0) revert AlreadyProcessed();
+            require(req.usdatOwed == 0, AlreadyProcessed());
 
             req.usdatOwed = usdatAmounts[i];
 
@@ -118,8 +118,8 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
     function claim(uint256 requestId) external nonReentrant whenNotPaused returns (uint256 amount) {
         Request storage req = queue[requestId];
 
-        if (req.user != msg.sender) revert NotYourRequest();
-        if (req.usdatOwed == 0 || req.claimed) revert NothingToClaim();
+        require(req.user == msg.sender, NotYourRequest());
+        require(req.usdatOwed != 0 && !req.claimed, NothingToClaim());
 
         req.claimed = true;
         amount = req.usdatOwed;
@@ -166,7 +166,7 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
             }
         }
 
-        if (totalAmount == 0) revert NothingToClaim();
+        require(totalAmount != 0, NothingToClaim());
 
         IERC20(address(USDAT)).safeTransfer(user, totalAmount);
     }

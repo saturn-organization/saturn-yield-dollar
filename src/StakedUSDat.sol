@@ -36,14 +36,13 @@ contract StakedUSDat is
     using SafeERC20 for IERC20;
 
     error InvalidZeroAddress();
-    error CannotBlacklistAdmin();
-    error InvalidAmount();
+    error ZeroAmount();
     error OperationNotAllowed();
-    error ExcessiveWithdrawAmount();
-    error ExcessiveRedeemAmount();
-    error AlreadyBlacklisted();
-    error InvalidToken();
-    error NotBlacklisted();
+    error ExcessiveRequestedAmount();
+    error AddressNotBlacklisted();
+    error AddressBlacklisted();
+    error CannotBlacklistAdmin();
+    error InsufficientBalance();
 
     event Blacklisted(address target);
     event UnBlacklisted(address target);
@@ -66,16 +65,14 @@ contract StakedUSDat is
     }
 
     function _notZero(uint256 amount) internal pure {
-        if (amount == 0) revert InvalidAmount();
+        require(amount != 0, ZeroAmount());
     }
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     /// @param tstrc TokenizedSTRC contract address
     /// @param withdrawalQueue WithdrawalQueue contract address
     constructor(ITokenizedSTRC tstrc, IWithdrawalQueue withdrawalQueue) {
-        if (address(tstrc) == address(0) || address(withdrawalQueue) == address(0)) {
-            revert InvalidZeroAddress();
-        }
+        require(address(tstrc) != address(0) && address(withdrawalQueue) != address(0), InvalidZeroAddress());
         TSTRC = tstrc;
         WITHDRAWAL_QUEUE = withdrawalQueue;
         _disableInitializers();
@@ -90,12 +87,11 @@ contract StakedUSDat is
         external
         initializer
     {
-        if (
-            defaultAdmin == address(0) || address(usdat) == address(0) || processor == address(0)
-                || compliance == address(0)
-        ) {
-            revert InvalidZeroAddress();
-        }
+        require(
+            defaultAdmin != address(0) && address(usdat) != address(0) && processor != address(0)
+                && compliance != address(0),
+            InvalidZeroAddress()
+        );
 
         __AccessControl_init();
         __Pausable_init();
@@ -117,9 +113,8 @@ contract StakedUSDat is
      * @param target The address to blacklist.
      */
     function addToBlacklist(address target) external onlyRole(COMPLIANCE_ROLE) {
-        if (hasRole(DEFAULT_ADMIN_ROLE, target)) revert CannotBlacklistAdmin();
-
-        if (_blacklisted[target]) revert AlreadyBlacklisted();
+        require(!hasRole(DEFAULT_ADMIN_ROLE, target), CannotBlacklistAdmin());
+        require(!_blacklisted[target], AddressBlacklisted());
         _blacklisted[target] = true;
         emit Blacklisted(target);
     }
@@ -129,13 +124,13 @@ contract StakedUSDat is
      * @param target The address to un-blacklist.
      */
     function removeFromBlacklist(address target) external onlyRole(COMPLIANCE_ROLE) {
-        if (!_blacklisted[target]) revert NotBlacklisted();
+        require(_blacklisted[target], AddressNotBlacklisted());
         _blacklisted[target] = false;
         emit UnBlacklisted(target);
     }
 
     function _requireNotBlacklisted(address account) internal view {
-        require(!_blacklisted[account], "USDat: recipient blacklisted");
+        require(!_blacklisted[account], AddressBlacklisted());
     }
 
     function transfer(address to, uint256 amount) public override(ERC20Upgradeable, IERC20) returns (bool) {
@@ -153,13 +148,10 @@ contract StakedUSDat is
     }
 
     function redistributeLockedAmount(address from) external nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (_blacklisted[from]) {
-            uint256 amountToDistribute = balanceOf(from);
-            _burn(from, amountToDistribute);
-            emit LockedAmountRedistributed(from, amountToDistribute);
-        } else {
-            revert OperationNotAllowed();
-        }
+        require(_blacklisted[from], AddressNotBlacklisted());
+        uint256 amountToDistribute = balanceOf(from);
+        _burn(from, amountToDistribute);
+        emit LockedAmountRedistributed(from, amountToDistribute);
     }
 
     /// @notice ASSUMPTION: asset is USDat and is always 1 dollar backed by treasuries.
@@ -186,9 +178,7 @@ contract StakedUSDat is
         nonReentrant
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
-        if (token != address(TSTRC) && token != address(asset())) {
-            revert InvalidToken();
-        }
+        require(token == address(TSTRC) || token == address(asset()), OperationNotAllowed());
 
         IERC20(token).safeTransfer(to, amount);
     }
@@ -205,7 +195,7 @@ contract StakedUSDat is
      * @param strcAmount amount of STRC to mint
      */
     function convert(uint256 usdatAmount, uint256 strcAmount) external onlyRole(PROCESSOR_ROLE) {
-        require(IERC20(asset()).balanceOf(address(this)) >= usdatAmount, "Not enough USD");
+        require(IERC20(asset()).balanceOf(address(this)) >= usdatAmount, InsufficientBalance());
 
         IERC20Burnable(asset()).burn(usdatAmount);
 
@@ -229,9 +219,9 @@ contract StakedUSDat is
         notZero(assets)
         notZero(shares)
     {
-        if (_blacklisted[caller] || _blacklisted[receiver]) {
-            revert OperationNotAllowed();
-        }
+        _requireNotBlacklisted(caller);
+        _requireNotBlacklisted(receiver);
+
         super._deposit(caller, receiver, assets, shares);
     }
 
@@ -250,7 +240,7 @@ contract StakedUSDat is
     /// @return shares The number of shares burned
     /// @return strcAmount The amount of tSTRC added to the withdrawal queue
     function requestWithdraw(uint256 assets) external whenNotPaused returns (uint256 shares, uint256 strcAmount) {
-        if (assets > maxWithdraw(msg.sender)) revert ExcessiveWithdrawAmount();
+        require(assets <= maxWithdraw(msg.sender), ExcessiveRequestedAmount());
 
         shares = previewWithdraw(assets);
 
@@ -262,7 +252,7 @@ contract StakedUSDat is
     /// @return assets The amount of assets being redeemed
     /// @return strcAmount The amount of tSTRC added to the withdrawal queue
     function requestRedeem(uint256 shares) external whenNotPaused returns (uint256 assets, uint256 strcAmount) {
-        if (shares > maxRedeem(msg.sender)) revert ExcessiveRedeemAmount();
+        require(shares <= maxRedeem(msg.sender), ExcessiveRequestedAmount());
 
         assets = previewRedeem(shares);
 
@@ -282,9 +272,8 @@ contract StakedUSDat is
         notZero(shares)
         returns (uint256 strcAmount)
     {
-        if (_blacklisted[caller] || _blacklisted[owner]) {
-            revert OperationNotAllowed();
-        }
+        _requireNotBlacklisted(caller);
+        _requireNotBlacklisted(owner);
 
         // Get the current STRC price from the oracle
         (uint256 strcPrice, uint8 priceDecimals) = TSTRC.getPrice();
@@ -293,9 +282,7 @@ contract StakedUSDat is
         strcAmount = Math.mulDiv(assets, 10 ** priceDecimals, strcPrice, Math.Rounding.Floor);
 
         // Not enough STRC in the contract
-        if (strcAmount > TSTRC.balanceOf(address(this))) {
-            revert InvalidAmount();
-        }
+        require(strcAmount <= TSTRC.balanceOf(address(this)), InsufficientBalance());
 
         _burn(owner, shares);
 
