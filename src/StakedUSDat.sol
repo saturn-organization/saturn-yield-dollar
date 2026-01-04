@@ -57,7 +57,7 @@ contract StakedUSDat is
     ITokenizedSTRC private immutable TSTRC;
     IWithdrawalQueue private immutable WITHDRAWAL_QUEUE;
 
-    mapping(address => bool) private _blacklisted;
+    mapping(address account => bool isBlacklisted) private _blacklisted;
 
     modifier notZero(uint256 amount) {
         _notZero(amount);
