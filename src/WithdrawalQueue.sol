@@ -43,10 +43,12 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
     error AlreadyProcessed();
     error NothingToClaim();
     error NotYourRequest();
+    error NotBlacklisted();
 
     event WithdrawalRequested(uint256 indexed requestId, address indexed user, uint256 strcAmount, uint256 timestamp);
     event WithdrawalProcessed(uint256 indexed requestId, uint256 strcAmount, uint256 usdatAmount);
     event Claimed(uint256 indexed requestId, address indexed user, uint256 usdatAmount);
+    event FundsSeized(uint256 indexed requestId, address indexed user, uint256 usdatAmount, address indexed to);
 
     constructor(address tstrc, address usdat, address admin) {
         TSTRC = IERC20(tstrc);
@@ -269,6 +271,28 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
     }
 
     // ============ Admin Functions ============
+
+    /// @notice Seize all pending funds for a blacklisted user
+    /// @param user The blacklisted user whose funds to seize
+    /// @param to The address to send the seized funds to
+    function seizeBlacklistedFunds(address user, address to) external onlyRole(COMPLIANCE_ROLE) {
+        require(USDAT.isBlacklisted(user), NotBlacklisted());
+
+        uint256[] storage ids = userRequestIds[user];
+        uint256 totalSeized = 0;
+
+        for (uint256 i = 0; i < ids.length; i++) {
+            Request storage req = queue[ids[i]];
+            if (req.usdatOwed > 0 && !req.claimed) {
+                req.claimed = true;
+                totalSeized += req.usdatOwed;
+                emit FundsSeized(ids[i], user, req.usdatOwed, to);
+            }
+        }
+
+        require(totalSeized > 0, NothingToClaim());
+        IERC20(address(USDAT)).safeTransfer(to, totalSeized);
+    }
 
     function pause() external onlyRole(COMPLIANCE_ROLE) {
         _pause();
