@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {IUSDat} from "./interfaces/IUSDat.sol";
 import {IERC20Burnable} from "./interfaces/IERC20Burnable.sol";
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
@@ -13,6 +14,7 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 /// @notice FIFO withdrawal queue tracking tSTRC amounts with user-initiated claims
 contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
+    using EnumerableSet for EnumerableSet.UintSet;
 
     struct Request {
         address user;
@@ -36,7 +38,7 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
     Request[] public queue;
     uint256 public nextToProcess;
 
-    mapping(address user => uint256[] requestIds) private userRequestIds;
+    mapping(address user => EnumerableSet.UintSet requestIds) private userRequestIds;
 
     error ZeroAmount();
     error NoRequestsToProcess();
@@ -83,7 +85,7 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
             Request({user: user, strcAmount: strcAmount, usdatOwed: 0, claimed: false, timestamp: block.timestamp})
         );
 
-        userRequestIds[user].push(requestId);
+        userRequestIds[user].add(requestId);
 
         emit WithdrawalRequested(requestId, user, strcAmount, block.timestamp);
     }
@@ -150,6 +152,8 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
         req.claimed = true;
         amount = req.usdatOwed;
 
+        userRequestIds[msg.sender].remove(requestId);
+
         IERC20(address(USDAT)).safeTransfer(msg.sender, amount);
 
         emit Claimed(requestId, msg.sender, amount);
@@ -178,18 +182,29 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
     /// @param user The user to claim for
     /// @return totalAmount The total amount of USDat claimed
     function _claimAll(address user) internal returns (uint256 totalAmount) {
-        uint256[] storage ids = userRequestIds[user];
-        uint256 len = ids.length;
+        EnumerableSet.UintSet storage ids = userRequestIds[user];
+        uint256 len = ids.length();
+
+        // Collect IDs to remove (can't modify set while iterating)
+        uint256[] memory toRemove = new uint256[](len);
+        uint256 removeCount = 0;
 
         for (uint256 i = 0; i < len; i++) {
-            Request storage req = queue[ids[i]];
+            uint256 requestId = ids.at(i);
+            Request storage req = queue[requestId];
 
             if (req.usdatOwed > 0 && !req.claimed) {
                 req.claimed = true;
                 totalAmount += req.usdatOwed;
+                toRemove[removeCount++] = requestId;
 
-                emit Claimed(ids[i], user, req.usdatOwed);
+                emit Claimed(requestId, user, req.usdatOwed);
             }
+        }
+
+        // Remove claimed entries
+        for (uint256 i = 0; i < removeCount; i++) {
+            ids.remove(toRemove[i]);
         }
 
         require(totalAmount != 0, NothingToClaim());
@@ -201,74 +216,61 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
 
     /// @notice Get all request IDs for the caller
     function getMyRequests() external view returns (uint256[] memory) {
-        return userRequestIds[msg.sender];
+        return userRequestIds[msg.sender].values();
     }
 
     /// @notice Get all request IDs for any user
     function getUserRequests(address user) external view returns (uint256[] memory) {
-        return userRequestIds[user];
+        return userRequestIds[user].values();
     }
 
     /// @notice Get claimable amount and request IDs for a user
     function getClaimable(address user) external view returns (uint256 total, uint256[] memory claimableIds) {
-        uint256[] storage ids = userRequestIds[user];
-        uint256 len = ids.length;
+        uint256[] memory requestIds = userRequestIds[user].values();
+        uint256 len = requestIds.length;
 
+        uint256[] memory temp = new uint256[](len);
         uint256 count = 0;
+
         for (uint256 i = 0; i < len; i++) {
-            Request storage req = queue[ids[i]];
-            if (req.usdatOwed > 0 && !req.claimed) {
-                count++;
+            Request storage req = queue[requestIds[i]];
+            if (req.usdatOwed > 0) {
+                temp[count++] = requestIds[i];
+                total += req.usdatOwed;
             }
         }
 
         claimableIds = new uint256[](count);
-        uint256 idx = 0;
-
-        for (uint256 i = 0; i < len; i++) {
-            Request storage req = queue[ids[i]];
-            if (req.usdatOwed > 0 && !req.claimed) {
-                claimableIds[idx] = ids[i];
-                total += req.usdatOwed;
-                idx++;
-            }
+        for (uint256 i = 0; i < count; i++) {
+            claimableIds[i] = temp[i];
         }
     }
 
     /// @notice Get pending (unprocessed) requests for a user
     function getPending(address user) external view returns (uint256 totalStrcAmount, uint256[] memory pendingIds) {
-        uint256[] storage ids = userRequestIds[user];
-        uint256 len = ids.length;
+        uint256[] memory requestIds = userRequestIds[user].values();
+        uint256 len = requestIds.length;
 
+        uint256[] memory temp = new uint256[](len);
         uint256 count = 0;
+
         for (uint256 i = 0; i < len; i++) {
-            Request storage req = queue[ids[i]];
-            if (req.usdatOwed == 0 && !req.claimed) {
-                count++;
+            Request storage req = queue[requestIds[i]];
+            if (req.usdatOwed == 0) {
+                temp[count++] = requestIds[i];
+                totalStrcAmount += req.strcAmount;
             }
         }
 
         pendingIds = new uint256[](count);
-        uint256 idx = 0;
-
-        for (uint256 i = 0; i < len; i++) {
-            Request storage req = queue[ids[i]];
-            if (req.usdatOwed == 0 && !req.claimed) {
-                pendingIds[idx] = ids[i];
-                totalStrcAmount += req.strcAmount;
-                idx++;
-            }
+        for (uint256 i = 0; i < count; i++) {
+            pendingIds[i] = temp[i];
         }
     }
 
     /// @notice Get a specific request's details
-    function getRequest(uint256 requestId)
-        external
-        view
-        returns (address user, uint256 strcAmount, uint256 usdatOwed, bool claimed, uint256 timestamp)
-    {
-        Request storage req = queue[requestId];
-        return (req.user, req.strcAmount, req.usdatOwed, req.claimed, req.timestamp);
+    function getRequest(uint256 requestId) external view returns (Request memory) {
+        return queue[requestId];
     }
 
     /// @notice Check if a specific request is claimable
@@ -296,22 +298,50 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
 
     // ============ Admin Functions ============
 
+    /// @notice Seize a single request for a blacklisted user
+    /// @param requestId The request ID to seize
+    /// @param to The address to send the seized funds to
+    function seizeRequest(uint256 requestId, address to) external onlyRole(COMPLIANCE_ROLE) {
+        Request storage req = queue[requestId];
+        require(USDAT.isBlacklisted(req.user), NotBlacklisted());
+        require(req.usdatOwed > 0 && !req.claimed, NothingToClaim());
+
+        req.claimed = true;
+        userRequestIds[req.user].remove(requestId);
+
+        emit FundsSeized(requestId, req.user, req.usdatOwed, to);
+
+        IERC20(address(USDAT)).safeTransfer(to, req.usdatOwed);
+    }
+
     /// @notice Seize all pending funds for a blacklisted user
     /// @param user The blacklisted user whose funds to seize
     /// @param to The address to send the seized funds to
     function seizeBlacklistedFunds(address user, address to) external onlyRole(COMPLIANCE_ROLE) {
         require(USDAT.isBlacklisted(user), NotBlacklisted());
 
-        uint256[] storage ids = userRequestIds[user];
+        EnumerableSet.UintSet storage ids = userRequestIds[user];
+        uint256 len = ids.length();
         uint256 totalSeized = 0;
 
-        for (uint256 i = 0; i < ids.length; i++) {
-            Request storage req = queue[ids[i]];
+        // Collect IDs to remove
+        uint256[] memory toRemove = new uint256[](len);
+        uint256 removeCount = 0;
+
+        for (uint256 i = 0; i < len; i++) {
+            uint256 requestId = ids.at(i);
+            Request storage req = queue[requestId];
             if (req.usdatOwed > 0 && !req.claimed) {
                 req.claimed = true;
                 totalSeized += req.usdatOwed;
-                emit FundsSeized(ids[i], user, req.usdatOwed, to);
+                toRemove[removeCount++] = requestId;
+                emit FundsSeized(requestId, user, req.usdatOwed, to);
             }
+        }
+
+        // Remove seized entries
+        for (uint256 i = 0; i < removeCount; i++) {
+            ids.remove(toRemove[i]);
         }
 
         require(totalSeized > 0, NothingToClaim());
