@@ -44,6 +44,13 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
     error NothingToClaim();
     error NotYourRequest();
     error NotBlacklisted();
+    error InvalidRequestOrder();
+    error LengthMismatch();
+    error ToleranceExceeded();
+    error InvalidTolerance();
+
+    /// @notice Maximum allowed tolerance (50% = 5000 basis points)
+    uint256 public constant MAX_TOLERANCE = 5000;
 
     event WithdrawalRequested(uint256 indexed requestId, address indexed user, uint256 strcAmount, uint256 timestamp);
     event WithdrawalProcessed(uint256 indexed requestId, uint256 strcAmount, uint256 usdatAmount);
@@ -82,36 +89,53 @@ contract WithdrawalQueue is AccessControl, ReentrancyGuard, Pausable {
     }
 
     /// @notice Process the next batch of withdrawal requests
+    /// @param requestIds Array of request IDs to process (must match expected order)
     /// @param usdatAmounts Array of USDat amounts corresponding to each request
-    function processNext(uint256[] calldata usdatAmounts) external nonReentrant onlyRole(PROCESSOR_ROLE) {
+    /// @param vwapExecutionPrice Current STRC price (8 decimals)
+    /// @param toleranceBps Tolerance in basis points (e.g., 1000 = 10%)
+    function processNext(
+        uint256[] calldata requestIds,
+        uint256[] calldata usdatAmounts,
+        uint256 vwapExecutionPrice,
+        uint256 toleranceBps
+    ) external nonReentrant onlyRole(PROCESSOR_ROLE) {
         uint256 count = usdatAmounts.length;
-        require(count != 0, ZeroAmount());
+        require(count > 0 && count == requestIds.length, ZeroAmount());
         require(nextToProcess + count <= queue.length, NoRequestsToProcess());
+        require(toleranceBps <= MAX_TOLERANCE, InvalidTolerance());
 
         uint256 totalUsdat = 0;
         uint256 totalStrc = 0;
 
         for (uint256 i = 0; i < count; i++) {
-            totalUsdat += usdatAmounts[i];
-            totalStrc += queue[nextToProcess + i].strcAmount;
-        }
+            require(requestIds[i] == nextToProcess + i, InvalidRequestOrder());
 
-        USDAT.mint(address(this), totalUsdat);
-
-        IERC20Burnable(address(TSTRC)).burn(totalStrc);
-
-        for (uint256 i = 0; i < count; i++) {
-            uint256 requestId = nextToProcess + i;
-            Request storage req = queue[requestId];
+            Request storage req = queue[requestIds[i]];
 
             require(req.usdatOwed == 0, AlreadyProcessed());
 
-            req.usdatOwed = usdatAmounts[i];
+            // Calculate expected USDat amount: strcAmount * strcPrice / 1e8
+            uint256 expectedUsdat = (req.strcAmount * vwapExecutionPrice) / 1e8;
+            uint256 tolerance = (expectedUsdat * toleranceBps) / 10000;
 
-            emit WithdrawalProcessed(requestId, req.strcAmount, usdatAmounts[i]);
+            // Validate amount is within tolerance (avoid underflow)
+            uint256 diff =
+                usdatAmounts[i] > expectedUsdat ? usdatAmounts[i] - expectedUsdat : expectedUsdat - usdatAmounts[i];
+            require(diff <= tolerance, ToleranceExceeded());
+
+            // Update state
+            req.usdatOwed = usdatAmounts[i];
+            totalUsdat += usdatAmounts[i];
+            totalStrc += req.strcAmount;
+
+            emit WithdrawalProcessed(requestIds[i], req.strcAmount, usdatAmounts[i]);
         }
 
         nextToProcess += count;
+
+        // External calls last
+        USDAT.mint(address(this), totalUsdat);
+        IERC20Burnable(address(TSTRC)).burn(totalStrc);
     }
 
     /// @notice Claim a specific withdrawal request
