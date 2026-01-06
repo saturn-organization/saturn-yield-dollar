@@ -43,12 +43,15 @@ contract StakedUSDat is
     error AddressBlacklisted();
     error CannotBlacklistAdmin();
     error InsufficientBalance();
+    error StillVesting();
+    error InvalidVestingPeriod();
 
     event Blacklisted(address target);
     event UnBlacklisted(address target);
     event Converted(uint256 usdatAmount, uint256 strcAmount);
-    event RewardsReceived(uint256 amount);
+    event RewardsReceived(uint256 amount, uint256 newVestingAmount);
     event LockedAmountRedistributed(address from, uint256 amount);
+    event VestingPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
 
     bytes32 public constant PROCESSOR_ROLE = keccak256("PROCESSOR_ROLE");
     bytes32 private constant COMPLIANCE_ROLE = keccak256("COMPLIANCE_ROLE");
@@ -58,6 +61,18 @@ contract StakedUSDat is
     IWithdrawalQueue private immutable WITHDRAWAL_QUEUE;
 
     mapping(address account => bool isBlacklisted) private _blacklisted;
+
+    /// @notice Amount of tSTRC currently vesting
+    uint256 public vestingAmount;
+
+    /// @notice Timestamp of last reward distribution
+    uint256 public lastDistributionTimestamp;
+
+    /// @notice Vesting period duration in seconds
+    uint256 public vestingPeriod;
+
+    /// @notice Maximum allowed vesting period (90 days)
+    uint256 public constant MAX_VESTING_PERIOD = 90 days;
 
     modifier notZero(uint256 amount) {
         _notZero(amount);
@@ -102,6 +117,9 @@ contract StakedUSDat is
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
         _grantRole(PROCESSOR_ROLE, processor);
         _grantRole(COMPLIANCE_ROLE, compliance);
+
+        // Initialize vesting period to 30 days
+        vestingPeriod = 30 days;
     }
 
     /// @notice Authorizes an upgrade to a new implementation
@@ -159,18 +177,35 @@ contract StakedUSDat is
     }
 
     /// @notice ASSUMPTION: asset is USDat and is always 1 dollar backed by treasuries.
-    /// @notice new ERC4626 takes into account the donation attack using an offest on shares.
+    /// @notice new ERC4626 takes into account the donation attack using an offset on shares.
+    /// @notice Excludes unvested rewards to prevent front-running attacks
     function totalAssets() public view override returns (uint256) {
         return IERC20(asset()).balanceOf(address(this)) + _strcTotalAssets();
     }
 
-    /// @dev Calculates the total value of STRC holdings in USD terms (18 decimals)
+    /// @notice Returns the amount of tSTRC that is still vesting
+    /// @dev Rounds up to be conservative (slightly favor protocol over users)
+    /// @return The unvested tSTRC amount
+    function getUnvestedAmount() public view returns (uint256) {
+        uint256 timeSinceLastDistribution = block.timestamp - lastDistributionTimestamp;
+
+        if (timeSinceLastDistribution >= vestingPeriod) {
+            return 0;
+        }
+
+        return Math.mulDiv(vestingPeriod - timeSinceLastDistribution, vestingAmount, vestingPeriod, Math.Rounding.Ceil);
+    }
+
+    /// @dev Calculates the total value of VESTED STRC holdings in USD terms (18 decimals)
     function _strcTotalAssets() internal view returns (uint256) {
         (uint256 strcPrice, uint8 priceDecimals) = TSTRC.getPrice();
         uint256 strcBalance = TSTRC.balanceOf(address(this));
 
+        // Subtract unvested amount - only count vested rewards
+        uint256 vestedBalance = strcBalance - getUnvestedAmount();
+
         // Convert to 18 decimal format: balance * price / 10^priceDecimals
-        return Math.mulDiv(strcBalance, strcPrice, 10 ** priceDecimals, Math.Rounding.Floor);
+        return Math.mulDiv(vestedBalance, strcPrice, 10 ** priceDecimals, Math.Rounding.Floor);
     }
 
     function decimals() public pure override(ERC4626Upgradeable, ERC20Upgradeable) returns (uint8) {
@@ -187,10 +222,21 @@ contract StakedUSDat is
         IERC20(token).safeTransfer(to, amount);
     }
 
+    /// @notice Transfer rewards into the contract with linear vesting
+    /// @dev Rewards vest linearly over vestingPeriod to prevent front-running
+    /// @param amount The amount of tSTRC to mint as rewards
     function transferInRewards(uint256 amount) external nonReentrant onlyRole(PROCESSOR_ROLE) notZero(amount) {
+        // Check if previous rewards are still vesting
+        if (getUnvestedAmount() > 0) revert StillVesting();
+
+        // Mint tSTRC rewards to this contract
         TSTRC.mint(address(this), amount);
 
-        emit RewardsReceived(amount);
+        // Set new vesting amount and reset timestamp
+        vestingAmount = amount;
+        lastDistributionTimestamp = block.timestamp;
+
+        emit RewardsReceived(amount, amount);
     }
 
     /**
@@ -285,8 +331,8 @@ contract StakedUSDat is
         // Calculate: assets (18 decimals) * 10^priceDecimals / price = STRC amount (18 decimals)
         strcAmount = Math.mulDiv(assets, 10 ** priceDecimals, strcPrice, Math.Rounding.Floor);
 
-        // Not enough STRC in the contract
-        require(strcAmount <= TSTRC.balanceOf(address(this)), InsufficientBalance());
+        // Can only transfer the unvested tSTRC in the contract
+        require(strcAmount <= TSTRC.balanceOf(address(this)) - getUnvestedAmount(), InsufficientBalance());
 
         _burn(owner, shares);
 
@@ -317,5 +363,24 @@ contract StakedUSDat is
 
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
+    }
+
+    /// @notice Updates the vesting period for reward distributions
+    /// @dev Only callable by DEFAULT_ADMIN_ROLE. Cannot be changed while rewards are vesting.
+    /// @param newVestingPeriod The new vesting period in seconds
+    function setVestingPeriod(uint256 newVestingPeriod) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(newVestingPeriod > 0 && newVestingPeriod <= MAX_VESTING_PERIOD, InvalidVestingPeriod());
+        require(getUnvestedAmount() == 0, StillVesting());
+
+        uint256 oldPeriod = vestingPeriod;
+        vestingPeriod = newVestingPeriod;
+
+        emit VestingPeriodUpdated(oldPeriod, newVestingPeriod);
+    }
+
+    /// @notice Get the current vesting period
+    /// @return The vesting period in seconds
+    function getVestingPeriod() external view returns (uint256) {
+        return vestingPeriod;
     }
 }
