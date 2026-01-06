@@ -16,7 +16,7 @@ import {
 } from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC20PermitUpgradeable.sol";
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 
-import {IWithdrawalQueue} from "./interfaces/IWithdrawalQueue.sol";
+import {IWithdrawalQueueERC721} from "./interfaces/IWithdrawalQueueERC721.sol";
 import {ITokenizedSTRC} from "./interfaces/ITokenizedSTRC.sol";
 import {IERC20Burnable} from "./interfaces/IERC20Burnable.sol";
 
@@ -59,7 +59,7 @@ contract StakedUSDat is
 
     /// @dev Immutables are stored in the implementation contract's bytecode, not proxy storage
     ITokenizedSTRC private immutable TSTRC;
-    IWithdrawalQueue private immutable WITHDRAWAL_QUEUE;
+    IWithdrawalQueueERC721 private immutable WITHDRAWAL_QUEUE;
 
     mapping(address account => bool isBlacklisted) private _blacklisted;
 
@@ -92,7 +92,7 @@ contract StakedUSDat is
     /// @custom:oz-upgrades-unsafe-allow constructor
     /// @param tstrc TokenizedSTRC contract address
     /// @param withdrawalQueue WithdrawalQueue contract address
-    constructor(ITokenizedSTRC tstrc, IWithdrawalQueue withdrawalQueue) {
+    constructor(ITokenizedSTRC tstrc, IWithdrawalQueueERC721 withdrawalQueue) {
         require(address(tstrc) != address(0) && address(withdrawalQueue) != address(0), InvalidZeroAddress());
         TSTRC = tstrc;
         WITHDRAWAL_QUEUE = withdrawalQueue;
@@ -155,6 +155,13 @@ contract StakedUSDat is
 
     function _requireNotBlacklisted(address account) internal view {
         require(!_blacklisted[account], AddressBlacklisted());
+    }
+
+    /// @notice Check if an address is blacklisted
+    /// @param account The address to check
+    /// @return True if the address is blacklisted
+    function isBlacklisted(address account) external view returns (bool) {
+        return _blacklisted[account];
     }
 
     function transfer(address to, uint256 amount) public override(ERC20Upgradeable, IERC20) returns (bool) {
@@ -352,6 +359,13 @@ contract StakedUSDat is
     /// @return totalAmount The total amount of USDat claimed
     function claim() external returns (uint256 totalAmount) {
         return WITHDRAWAL_QUEUE.claimFor(msg.sender);
+    }
+
+    /// @notice Claim specific withdrawal requests for the caller
+    /// @param tokenIds Array of token IDs to claim
+    /// @return totalAmount The total amount of USDat claimed
+    function claimBatch(uint256[] calldata tokenIds) external returns (uint256 totalAmount) {
+        return WITHDRAWAL_QUEUE.claimBatchFor(msg.sender, tokenIds);
     }
 
     /// @notice Get the withdrawal queue address
