@@ -256,12 +256,45 @@ contract WithdrawalQueueERC721 is
         IERC20(address(USDAT)).safeTransfer(msg.sender, totalAmount);
     }
 
+    /// @notice Claim specific withdrawal requests for a user (called by StakedUSDat)
+    /// @param user The user who owns the NFTs and will receive the USDat
+    /// @param tokenIds Array of token IDs to claim
+    /// @return totalAmount The total amount of USDat claimed
+    function claimBatchFor(address user, uint256[] calldata tokenIds)
+        external
+        nonReentrant
+        whenNotPaused
+        onlyRole(STAKED_USDAT_ROLE)
+        returns (uint256 totalAmount)
+    {
+        _requireNotBlacklisted(user);
+        uint256 len = tokenIds.length;
+        require(len > 0, ZeroAmount());
+
+        for (uint256 i = 0; i < len; i++) {
+            uint256 tokenId = tokenIds[i];
+            require(ownerOf(tokenId) == user, NotOwner());
+
+            Request storage req = requests[tokenId];
+            require(req.status == RequestStatus.Processed, RequestNotProcessed());
+
+            totalAmount += req.usdatOwed;
+            req.status = RequestStatus.Claimed;
+
+            _burn(tokenId);
+
+            emit Claimed(tokenId, user, req.usdatOwed);
+        }
+
+        IERC20(address(USDAT)).safeTransfer(user, totalAmount);
+    }
+
     /// @notice Claim all processed withdrawals for the caller
     /// @dev Iterates through all NFTs owned by caller - gas cost scales with ownership count
     /// @return totalAmount The total amount of USDat claimed
     function claimAll() external nonReentrant whenNotPaused returns (uint256 totalAmount) {
         _requireNotBlacklisted(msg.sender);
-        totalAmount = _claimAllFor(msg.sender, msg.sender);
+        totalAmount = _claimAllFor(msg.sender);
     }
 
     /// @notice Claim all processed withdrawals for a user (called by StakedUSDat)
@@ -275,14 +308,13 @@ contract WithdrawalQueueERC721 is
         returns (uint256 totalAmount)
     {
         _requireNotBlacklisted(user);
-        totalAmount = _claimAllFor(user, user);
+        totalAmount = _claimAllFor(user);
     }
 
     /// @dev Internal function to claim all processed withdrawals for a user
-    /// @param user The user whose NFTs to process
-    /// @param recipient The address to receive the USDat
+    /// @param user The user whose NFTs to process and who receives the USDat
     /// @return totalAmount The total amount of USDat claimed
-    function _claimAllFor(address user, address recipient) internal returns (uint256 totalAmount) {
+    function _claimAllFor(address user) internal returns (uint256 totalAmount) {
         uint256 balance = balanceOf(user);
 
         // Collect claimable token IDs (iterate backwards since we're burning)
@@ -306,7 +338,7 @@ contract WithdrawalQueueERC721 is
             _burn(toClaim[i]);
         }
 
-        IERC20(address(USDAT)).safeTransfer(recipient, totalAmount);
+        IERC20(address(USDAT)).safeTransfer(user, totalAmount);
     }
 
     // ============ View Functions ============

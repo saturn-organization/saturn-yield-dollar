@@ -361,6 +361,13 @@ contract StakedUSDat is
         return WITHDRAWAL_QUEUE.claimFor(msg.sender);
     }
 
+    /// @notice Claim specific withdrawal requests for the caller
+    /// @param tokenIds Array of token IDs to claim
+    /// @return totalAmount The total amount of USDat claimed
+    function claimBatch(uint256[] calldata tokenIds) external returns (uint256 totalAmount) {
+        return WITHDRAWAL_QUEUE.claimBatchFor(msg.sender, tokenIds);
+    }
+
     /// @notice Get the withdrawal queue address
     function getWithdrawalQueue() external view returns (address) {
         return address(WITHDRAWAL_QUEUE);
