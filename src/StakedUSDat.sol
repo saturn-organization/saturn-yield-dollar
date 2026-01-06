@@ -45,6 +45,7 @@ contract StakedUSDat is
     error InsufficientBalance();
     error StillVesting();
     error InvalidVestingPeriod();
+    error WithdrawalTooSmall();
 
     event Blacklisted(address target);
     event UnBlacklisted(address target);
@@ -73,6 +74,11 @@ contract StakedUSDat is
 
     /// @notice Maximum allowed vesting period (90 days)
     uint256 public constant MAX_VESTING_PERIOD = 90 days;
+
+    /// @notice Minimum withdrawal amount (10 USDat)
+    /// If a user has less than $10 they can swap on a DEX
+    /// Or they can purchase more and swap out
+    uint256 public constant MIN_WITHDRAWAL = 10e18;
 
     modifier notZero(uint256 amount) {
         _notZero(amount);
@@ -324,6 +330,7 @@ contract StakedUSDat is
     {
         _requireNotBlacklisted(caller);
         _requireNotBlacklisted(owner);
+        require(assets >= MIN_WITHDRAWAL, WithdrawalTooSmall());
 
         // Get the current STRC price from the oracle
         (uint256 strcPrice, uint8 priceDecimals) = TSTRC.getPrice();
