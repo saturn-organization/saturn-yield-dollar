@@ -10,9 +10,12 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-/// @notice Interface for price oracle
+/// @notice Interface for price oracle (Chainlink-compatible)
 interface IPriceOracle {
-    function latestAnswer() external view returns (int256);
+    function latestRoundData()
+        external
+        view
+        returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound);
 
     function decimals() external view returns (uint8);
 }
@@ -28,6 +31,23 @@ contract TokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, 
 
     error InvalidOraclePrice();
     error InvalidZeroAddress();
+    error InvalidStaleness();
+    error InvalidPriceBounds();
+
+    /// @notice Maximum allowed price staleness (default 5 days to account for weekends/holidays)
+    uint256 public maxPriceStaleness;
+    /// @notice Minimum allowed staleness setting (1 hour)
+    uint256 public constant MIN_STALENESS = 1 hours;
+    /// @notice Maximum allowed staleness setting (7 days)
+    uint256 public constant MAX_STALENESS = 7 days;
+
+    /// @notice Minimum acceptable price from oracle (default $20 with 8 decimals)
+    uint256 public minPrice;
+    /// @notice Maximum acceptable price from oracle (default $150 with 8 decimals)
+    uint256 public maxPrice;
+
+    event MaxPriceStalenessUpdated(uint256 newStaleness);
+    event PriceBoundsUpdated(uint256 newMinPrice, uint256 newMaxPrice);
 
     // sUSDat contract is the only entity that can mint tSTRC
     // need to set after deploying sUSDat
@@ -44,6 +64,9 @@ contract TokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, 
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
 
         oracle = IPriceOracle(oracleAddress);
+        maxPriceStaleness = 5 days;
+        minPrice = 20e8; // $20 with 8 decimals
+        maxPrice = 150e8; // $150 with 8 decimals
     }
 
     function mint(address to, uint256 amount) public onlyRole(STAKED_USDAT_ROLE) {
@@ -65,22 +88,47 @@ contract TokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, 
         emit OracleUpdated(oldOracle, newOracle);
     }
 
+    /// @notice Updates the maximum allowed price staleness
+    /// @param newStaleness The new staleness value in seconds
+    function setMaxPriceStaleness(uint256 newStaleness) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(newStaleness >= MIN_STALENESS && newStaleness <= MAX_STALENESS, InvalidStaleness());
+        maxPriceStaleness = newStaleness;
+        emit MaxPriceStalenessUpdated(newStaleness);
+    }
+
+    /// @notice Updates the acceptable price bounds
+    /// @param newMinPrice The new minimum acceptable price
+    /// @param newMaxPrice The new maximum acceptable price
+    function setPriceBounds(uint256 newMinPrice, uint256 newMaxPrice) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(newMinPrice > 0 && newMinPrice < newMaxPrice, InvalidPriceBounds());
+        minPrice = newMinPrice;
+        maxPrice = newMaxPrice;
+        emit PriceBoundsUpdated(newMinPrice, newMaxPrice);
+    }
+
     function getOracle() external view returns (address) {
         return address(oracle);
     }
 
     /// @notice Fetches the latest STRC price from the oracle
+    /// @dev Uses latestRoundData for staleness checks (Chainlink recommended)
     /// @return price The latest price from the oracle (scaled by oracle decimals)
-    /// @return decimals The number of decimals in the price
-    function getPrice() external view returns (uint256 price, uint8 decimals) {
+    /// @return oracleDecimals The number of decimals in the price
+    function getPrice() external view returns (uint256 price, uint8 oracleDecimals) {
         require(address(oracle) != address(0), InvalidZeroAddress());
 
-        int256 answer = oracle.latestAnswer();
+        (, int256 answer,, uint256 updatedAt,) = oracle.latestRoundData();
 
+        // Staleness check
+        require(block.timestamp - updatedAt <= maxPriceStaleness, InvalidOraclePrice());
         require(answer > 0, InvalidOraclePrice());
 
         // forge-lint: disable-next-line(unsafe-typecast)
         price = uint256(answer);
-        decimals = oracle.decimals();
+
+        // Bounds check
+        require(price >= minPrice && price <= maxPrice, InvalidOraclePrice());
+
+        oracleDecimals = oracle.decimals();
     }
 }
