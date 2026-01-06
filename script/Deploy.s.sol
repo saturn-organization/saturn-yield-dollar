@@ -67,36 +67,79 @@ contract DeployScript is Script {
         tstrc = new TokenizedSTRC(admin, oracle);
         console.log("1. TokenizedSTRC deployed at:", address(tstrc));
 
-        // Step 2: Deploy WithdrawalQueueERC721
-        withdrawalQueue = new WithdrawalQueueERC721(address(tstrc), usdat, admin);
-        console.log("2. WithdrawalQueueERC721 deployed at:", address(withdrawalQueue));
+        // Step 2: Deploy WithdrawalQueueERC721 Implementation and Proxy
+        WithdrawalQueueERC721 withdrawalQueueImpl = new WithdrawalQueueERC721(
+            address(tstrc),
+            usdat
+        );
+        bytes memory withdrawalQueueInitData = abi.encodeCall(
+            WithdrawalQueueERC721.initialize,
+            (admin)
+        );
+        ERC1967Proxy withdrawalQueueProxy = new ERC1967Proxy(
+            address(withdrawalQueueImpl),
+            withdrawalQueueInitData
+        );
+        withdrawalQueue = WithdrawalQueueERC721(address(withdrawalQueueProxy));
+        console.log(
+            "2. WithdrawalQueueERC721 Implementation deployed at:",
+            address(withdrawalQueueImpl)
+        );
+        console.log(
+            "   WithdrawalQueueERC721 Proxy deployed at:",
+            address(withdrawalQueue)
+        );
 
         // Step 3: Deploy StakedUSDat Implementation
-        stakedUsdatImpl =
-            new StakedUSDat(ITokenizedSTRC(address(tstrc)), IWithdrawalQueueERC721(address(withdrawalQueue)));
-        console.log("3. StakedUSDat Implementation deployed at:", address(stakedUsdatImpl));
+        stakedUsdatImpl = new StakedUSDat(
+            ITokenizedSTRC(address(tstrc)),
+            IWithdrawalQueueERC721(address(withdrawalQueue))
+        );
+        console.log(
+            "3. StakedUSDat Implementation deployed at:",
+            address(stakedUsdatImpl)
+        );
 
         // Step 4: Deploy StakedUSDat Proxy and initialize
-        bytes memory initData = abi.encodeCall(StakedUSDat.initialize, (admin, processor, compliance, IERC20(usdat)));
-        ERC1967Proxy proxy = new ERC1967Proxy(address(stakedUsdatImpl), initData);
+        bytes memory initData = abi.encodeCall(
+            StakedUSDat.initialize,
+            (admin, processor, compliance, IERC20(usdat))
+        );
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(stakedUsdatImpl),
+            initData
+        );
         stakedUsdat = StakedUSDat(address(proxy));
         console.log("4. StakedUSDat Proxy deployed at:", address(stakedUsdat));
 
         // Step 5: Grant roles on TokenizedSTRC
         tstrc.grantRole(tstrc.STAKED_USDAT_ROLE(), address(stakedUsdat));
-        console.log("5. TokenizedSTRC: Granted STAKED_USDAT_ROLE to StakedUSDat");
+        console.log(
+            "5. TokenizedSTRC: Granted STAKED_USDAT_ROLE to StakedUSDat"
+        );
 
         // Step 6: Link WithdrawalQueueERC721 to StakedUSDat (also grants STAKED_USDAT_ROLE)
         withdrawalQueue.setStakedUSDat(address(stakedUsdat));
-        console.log("6. WithdrawalQueueERC721: Set StakedUSDat and granted STAKED_USDAT_ROLE");
+        console.log(
+            "6. WithdrawalQueueERC721: Set StakedUSDat and granted STAKED_USDAT_ROLE"
+        );
 
         // Step 7: Grant PROCESSOR_ROLE on WithdrawalQueueERC721
         withdrawalQueue.grantRole(withdrawalQueue.PROCESSOR_ROLE(), processor);
-        console.log("7. WithdrawalQueueERC721: Granted PROCESSOR_ROLE to", processor);
+        console.log(
+            "7. WithdrawalQueueERC721: Granted PROCESSOR_ROLE to",
+            processor
+        );
 
         // Step 8: Grant COMPLIANCE_ROLE on WithdrawalQueueERC721
-        withdrawalQueue.grantRole(withdrawalQueue.COMPLIANCE_ROLE(), compliance);
-        console.log("8. WithdrawalQueueERC721: Granted COMPLIANCE_ROLE to", compliance);
+        withdrawalQueue.grantRole(
+            withdrawalQueue.COMPLIANCE_ROLE(),
+            compliance
+        );
+        console.log(
+            "8. WithdrawalQueueERC721: Granted COMPLIANCE_ROLE to",
+            compliance
+        );
 
         vm.stopBroadcast();
 
