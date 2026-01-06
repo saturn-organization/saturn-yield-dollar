@@ -8,7 +8,7 @@ import {TokenizedSTRC} from "../src/TokenizedSTRC.sol";
 import {WithdrawalQueueERC721} from "../src/WithdrawalQueueERC721.sol";
 import {StakedUSDat} from "../src/StakedUSDat.sol";
 import {ITokenizedSTRC} from "../src/interfaces/ITokenizedSTRC.sol";
-import {IWithdrawalQueue} from "../src/interfaces/IWithdrawalQueue.sol";
+import {IWithdrawalQueueERC721} from "../src/interfaces/IWithdrawalQueueERC721.sol";
 
 /**
  * @title DeployScript
@@ -72,7 +72,8 @@ contract DeployScript is Script {
         console.log("2. WithdrawalQueueERC721 deployed at:", address(withdrawalQueue));
 
         // Step 3: Deploy StakedUSDat Implementation
-        stakedUsdatImpl = new StakedUSDat(ITokenizedSTRC(address(tstrc)), IWithdrawalQueue(address(withdrawalQueue)));
+        stakedUsdatImpl =
+            new StakedUSDat(ITokenizedSTRC(address(tstrc)), IWithdrawalQueueERC721(address(withdrawalQueue)));
         console.log("3. StakedUSDat Implementation deployed at:", address(stakedUsdatImpl));
 
         // Step 4: Deploy StakedUSDat Proxy and initialize
