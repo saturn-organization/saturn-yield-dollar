@@ -8,7 +8,9 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import {ERC721EnumerableUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721EnumerableUpgradeable.sol";
+import {
+    ERC721EnumerableUpgradeable
+} from "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721EnumerableUpgradeable.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 
@@ -78,28 +80,10 @@ contract WithdrawalQueueERC721 is
     error StakedUSDatAlreadySet();
 
     // Events
-    event WithdrawalRequested(
-        uint256 indexed tokenId,
-        address indexed user,
-        uint256 strcAmount,
-        uint256 timestamp
-    );
-    event WithdrawalProcessed(
-        uint256 indexed tokenId,
-        uint256 strcAmount,
-        uint256 usdatAmount
-    );
-    event Claimed(
-        uint256 indexed tokenId,
-        address indexed user,
-        uint256 usdatAmount
-    );
-    event FundsSeized(
-        uint256 indexed tokenId,
-        address indexed user,
-        uint256 usdatAmount,
-        address indexed to
-    );
+    event WithdrawalRequested(uint256 indexed tokenId, address indexed user, uint256 strcAmount, uint256 timestamp);
+    event WithdrawalProcessed(uint256 indexed tokenId, uint256 strcAmount, uint256 usdatAmount);
+    event Claimed(uint256 indexed tokenId, address indexed user, uint256 usdatAmount);
+    event FundsSeized(uint256 indexed tokenId, address indexed user, uint256 usdatAmount, address indexed to);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     /// @param tstrc TokenizedSTRC contract address
@@ -126,16 +110,12 @@ contract WithdrawalQueueERC721 is
 
     /// @notice Authorizes an upgrade to a new implementation
     /// @dev Only callable by DEFAULT_ADMIN_ROLE
-    function _authorizeUpgrade(
-        address
-    ) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
+    function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
     /// @notice Set the StakedUSDat contract address (can only be set once)
     /// @dev Also grants STAKED_USDAT_ROLE to the contract
     /// @param _stakedUSDat The StakedUSDat contract address
-    function setStakedUSDat(
-        address _stakedUSDat
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setStakedUSDat(address _stakedUSDat) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(address(stakedUSDat) == address(0), StakedUSDatAlreadySet());
         require(_stakedUSDat != address(0), ZeroAmount());
         stakedUSDat = IStakedUSDat(_stakedUSDat);
@@ -153,10 +133,7 @@ contract WithdrawalQueueERC721 is
     /// @param user The user requesting withdrawal
     /// @param strcAmount The amount of tSTRC owed to the user
     /// @return tokenId The NFT token ID (same as request ID)
-    function addRequest(
-        address user,
-        uint256 strcAmount
-    )
+    function addRequest(address user, uint256 strcAmount)
         external
         nonReentrant
         whenNotPaused
@@ -168,10 +145,7 @@ contract WithdrawalQueueERC721 is
         tokenId = nextTokenId++;
 
         requests[tokenId] = Request({
-            strcAmount: strcAmount,
-            usdatOwed: 0,
-            timestamp: block.timestamp,
-            status: RequestStatus.Requested
+            strcAmount: strcAmount, usdatOwed: 0, timestamp: block.timestamp, status: RequestStatus.Requested
         });
 
         _mint(user, tokenId);
@@ -211,9 +185,8 @@ contract WithdrawalQueueERC721 is
             uint256 tolerance = (expectedUsdat * toleranceBps) / 10000;
 
             // Validate amount is within tolerance
-            uint256 diff = usdatAmounts[i] > expectedUsdat
-                ? usdatAmounts[i] - expectedUsdat
-                : expectedUsdat - usdatAmounts[i];
+            uint256 diff =
+                usdatAmounts[i] > expectedUsdat ? usdatAmounts[i] - expectedUsdat : expectedUsdat - usdatAmounts[i];
             require(diff <= tolerance, ToleranceExceeded());
 
             // Update state
@@ -222,11 +195,7 @@ contract WithdrawalQueueERC721 is
             totalUsdat += usdatAmounts[i];
             totalStrc += req.strcAmount;
 
-            emit WithdrawalProcessed(
-                tokenIds[i],
-                req.strcAmount,
-                usdatAmounts[i]
-            );
+            emit WithdrawalProcessed(tokenIds[i], req.strcAmount, usdatAmounts[i]);
         }
 
         nextToProcess += count;
@@ -242,9 +211,7 @@ contract WithdrawalQueueERC721 is
     /// @dev Burns the NFT and transfers USDat to the caller
     /// @param tokenId The NFT token ID to claim
     /// @return amount The amount of USDat claimed
-    function claim(
-        uint256 tokenId
-    ) external nonReentrant whenNotPaused returns (uint256 amount) {
+    function claim(uint256 tokenId) external nonReentrant whenNotPaused returns (uint256 amount) {
         _requireNotBlacklisted(msg.sender);
         require(ownerOf(tokenId) == msg.sender, NotOwner());
 
@@ -266,9 +233,7 @@ contract WithdrawalQueueERC721 is
     /// @notice Claim multiple withdrawal requests
     /// @param tokenIds Array of token IDs to claim
     /// @return totalAmount The total amount of USDat claimed
-    function claimBatch(
-        uint256[] calldata tokenIds
-    ) external nonReentrant whenNotPaused returns (uint256 totalAmount) {
+    function claimBatch(uint256[] calldata tokenIds) external nonReentrant whenNotPaused returns (uint256 totalAmount) {
         _requireNotBlacklisted(msg.sender);
         uint256 len = tokenIds.length;
         require(len > 0, ZeroAmount());
@@ -278,10 +243,7 @@ contract WithdrawalQueueERC721 is
             require(ownerOf(tokenId) == msg.sender, NotOwner());
 
             Request storage req = requests[tokenId];
-            require(
-                req.status == RequestStatus.Processed,
-                RequestNotProcessed()
-            );
+            require(req.status == RequestStatus.Processed, RequestNotProcessed());
 
             totalAmount += req.usdatOwed;
             req.status = RequestStatus.Claimed;
@@ -297,12 +259,7 @@ contract WithdrawalQueueERC721 is
     /// @notice Claim all processed withdrawals for the caller
     /// @dev Iterates through all NFTs owned by caller - gas cost scales with ownership count
     /// @return totalAmount The total amount of USDat claimed
-    function claimAll()
-        external
-        nonReentrant
-        whenNotPaused
-        returns (uint256 totalAmount)
-    {
+    function claimAll() external nonReentrant whenNotPaused returns (uint256 totalAmount) {
         _requireNotBlacklisted(msg.sender);
         totalAmount = _claimAllFor(msg.sender, msg.sender);
     }
@@ -310,9 +267,7 @@ contract WithdrawalQueueERC721 is
     /// @notice Claim all processed withdrawals for a user (called by StakedUSDat)
     /// @param user The user to claim for
     /// @return totalAmount The total amount of USDat claimed
-    function claimFor(
-        address user
-    )
+    function claimFor(address user)
         external
         nonReentrant
         whenNotPaused
@@ -327,10 +282,7 @@ contract WithdrawalQueueERC721 is
     /// @param user The user whose NFTs to process
     /// @param recipient The address to receive the USDat
     /// @return totalAmount The total amount of USDat claimed
-    function _claimAllFor(
-        address user,
-        address recipient
-    ) internal returns (uint256 totalAmount) {
+    function _claimAllFor(address user, address recipient) internal returns (uint256 totalAmount) {
         uint256 balance = balanceOf(user);
 
         // Collect claimable token IDs (iterate backwards since we're burning)
@@ -365,16 +317,12 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @notice Get all token IDs owned by a user
-    function getUserRequests(
-        address user
-    ) external view returns (uint256[] memory tokenIds) {
+    function getUserRequests(address user) external view returns (uint256[] memory tokenIds) {
         return _getTokensOf(user);
     }
 
     /// @dev Internal function to get all tokens owned by an address
-    function _getTokensOf(
-        address user
-    ) internal view returns (uint256[] memory tokenIds) {
+    function _getTokensOf(address user) internal view returns (uint256[] memory tokenIds) {
         uint256 balance = balanceOf(user);
         tokenIds = new uint256[](balance);
         for (uint256 i = 0; i < balance; i++) {
@@ -383,9 +331,7 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @notice Get claimable amount and token IDs for a user
-    function getClaimable(
-        address user
-    ) external view returns (uint256 total, uint256[] memory claimableIds) {
+    function getClaimable(address user) external view returns (uint256 total, uint256[] memory claimableIds) {
         uint256 balance = balanceOf(user);
         uint256[] memory temp = new uint256[](balance);
         uint256 count = 0;
@@ -406,13 +352,7 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @notice Get pending (unprocessed) requests for a user
-    function getPending(
-        address user
-    )
-        external
-        view
-        returns (uint256 totalStrcAmount, uint256[] memory pendingIds)
-    {
+    function getPending(address user) external view returns (uint256 totalStrcAmount, uint256[] memory pendingIds) {
         uint256 balance = balanceOf(user);
         uint256[] memory temp = new uint256[](balance);
         uint256 count = 0;
@@ -433,9 +373,7 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @notice Get a specific request's details
-    function getRequest(
-        uint256 tokenId
-    ) external view returns (Request memory) {
+    function getRequest(uint256 tokenId) external view returns (Request memory) {
         return requests[tokenId];
     }
 
@@ -474,10 +412,7 @@ contract WithdrawalQueueERC721 is
     /// @notice Seize a single request for a blacklisted user
     /// @param tokenId The token ID to seize
     /// @param to The address to send the seized funds to
-    function seizeRequest(
-        uint256 tokenId,
-        address to
-    ) external onlyRole(COMPLIANCE_ROLE) {
+    function seizeRequest(uint256 tokenId, address to) external onlyRole(COMPLIANCE_ROLE) {
         address owner = ownerOf(tokenId);
         require(USDAT.isBlacklisted(owner), NotBlacklisted());
 
@@ -497,10 +432,7 @@ contract WithdrawalQueueERC721 is
     /// @notice Seize all claimable funds for a blacklisted user
     /// @param user The blacklisted user whose funds to seize
     /// @param to The address to send the seized funds to
-    function seizeBlacklistedFunds(
-        address user,
-        address to
-    ) external onlyRole(COMPLIANCE_ROLE) {
+    function seizeBlacklistedFunds(address user, address to) external onlyRole(COMPLIANCE_ROLE) {
         require(USDAT.isBlacklisted(user), NotBlacklisted());
 
         uint256 balance = balanceOf(user);
@@ -523,12 +455,7 @@ contract WithdrawalQueueERC721 is
         // Burn seized NFTs
         for (uint256 i = 0; i < seizeCount; i++) {
             requests[toSeize[i]].status = RequestStatus.Claimed;
-            emit FundsSeized(
-                toSeize[i],
-                user,
-                requests[toSeize[i]].usdatOwed,
-                to
-            );
+            emit FundsSeized(toSeize[i], user, requests[toSeize[i]].usdatOwed, to);
             _burn(toSeize[i]);
         }
 
@@ -552,11 +479,7 @@ contract WithdrawalQueueERC721 is
     /// @param tokenId The token ID being transferred
     /// @param auth The address authorized to make the transfer
     /// @return The previous owner of the token
-    function _update(
-        address to,
-        uint256 tokenId,
-        address auth
-    ) internal override returns (address) {
+    function _update(address to, uint256 tokenId, address auth) internal override returns (address) {
         address from = _ownerOf(tokenId);
 
         // Allow minting (from == address(0)) and burning (to == address(0))
@@ -571,9 +494,7 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @dev Override required by Solidity for multiple inheritance
-    function supportsInterface(
-        bytes4 interfaceId
-    )
+    function supportsInterface(bytes4 interfaceId)
         public
         view
         override(ERC721EnumerableUpgradeable, AccessControlUpgradeable)
