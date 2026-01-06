@@ -5,7 +5,7 @@ import {Script, console} from "forge-std/Script.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {TokenizedSTRC} from "../src/TokenizedSTRC.sol";
-import {WithdrawalQueue} from "../src/WithdrawalQueue.sol";
+import {WithdrawalQueueERC721} from "../src/WithdrawalQueueERC721.sol";
 import {StakedUSDat} from "../src/StakedUSDat.sol";
 import {ITokenizedSTRC} from "../src/interfaces/ITokenizedSTRC.sol";
 import {IWithdrawalQueue} from "../src/interfaces/IWithdrawalQueue.sol";
@@ -16,15 +16,15 @@ import {IWithdrawalQueue} from "../src/interfaces/IWithdrawalQueue.sol";
  *
  * Deployment order:
  * 1. TokenizedSTRC - needs oracle address
- * 2. WithdrawalQueue - needs tSTRC and USDat addresses
- * 3. StakedUSDat Implementation - needs tSTRC and WithdrawalQueue (immutables)
+ * 2. WithdrawalQueueERC721 - needs tSTRC and USDat addresses
+ * 3. StakedUSDat Implementation - needs tSTRC and WithdrawalQueueERC721 (immutables)
  * 4. StakedUSDat Proxy - points to implementation, initialized with admin/processor/compliance/usdat
+ * 5. WithdrawalQueueERC721.setStakedUSDat - links queue to StakedUSDat (also grants STAKED_USDAT_ROLE)
  *
  * Post-deployment role grants:
  * - TokenizedSTRC: grant STAKED_USDAT_ROLE to StakedUSDat proxy
- * - WithdrawalQueue: grant STAKED_USDAT_ROLE to StakedUSDat proxy
- * - WithdrawalQueue: grant PROCESSOR_ROLE to processor
- * - WithdrawalQueue: grant COMPLIANCE_ROLE to compliance
+ * - WithdrawalQueueERC721: grant PROCESSOR_ROLE to processor
+ * - WithdrawalQueueERC721: grant COMPLIANCE_ROLE to compliance
  *
  * Manual role grants required on external contracts:
  * - USDat: grant minting role to WithdrawalQueue (for processNext to mint USDat)
@@ -40,7 +40,7 @@ import {IWithdrawalQueue} from "../src/interfaces/IWithdrawalQueue.sol";
  */
 contract DeployScript is Script {
     TokenizedSTRC public tstrc;
-    WithdrawalQueue public withdrawalQueue;
+    WithdrawalQueueERC721 public withdrawalQueue;
     StakedUSDat public stakedUsdatImpl;
     StakedUSDat public stakedUsdat; // proxy
 
@@ -67,9 +67,9 @@ contract DeployScript is Script {
         tstrc = new TokenizedSTRC(admin, oracle);
         console.log("1. TokenizedSTRC deployed at:", address(tstrc));
 
-        // Step 2: Deploy WithdrawalQueue
-        withdrawalQueue = new WithdrawalQueue(address(tstrc), usdat, admin);
-        console.log("2. WithdrawalQueue deployed at:", address(withdrawalQueue));
+        // Step 2: Deploy WithdrawalQueueERC721
+        withdrawalQueue = new WithdrawalQueueERC721(address(tstrc), usdat, admin);
+        console.log("2. WithdrawalQueueERC721 deployed at:", address(withdrawalQueue));
 
         // Step 3: Deploy StakedUSDat Implementation
         stakedUsdatImpl = new StakedUSDat(ITokenizedSTRC(address(tstrc)), IWithdrawalQueue(address(withdrawalQueue)));
@@ -85,22 +85,24 @@ contract DeployScript is Script {
         tstrc.grantRole(tstrc.STAKED_USDAT_ROLE(), address(stakedUsdat));
         console.log("5. TokenizedSTRC: Granted STAKED_USDAT_ROLE to StakedUSDat");
 
-        // Step 6: Grant roles on WithdrawalQueue
-        withdrawalQueue.grantRole(withdrawalQueue.STAKED_USDAT_ROLE(), address(stakedUsdat));
-        console.log("6. WithdrawalQueue: Granted STAKED_USDAT_ROLE to StakedUSDat");
+        // Step 6: Link WithdrawalQueueERC721 to StakedUSDat (also grants STAKED_USDAT_ROLE)
+        withdrawalQueue.setStakedUSDat(address(stakedUsdat));
+        console.log("6. WithdrawalQueueERC721: Set StakedUSDat and granted STAKED_USDAT_ROLE");
 
+        // Step 7: Grant PROCESSOR_ROLE on WithdrawalQueueERC721
         withdrawalQueue.grantRole(withdrawalQueue.PROCESSOR_ROLE(), processor);
-        console.log("7. WithdrawalQueue: Granted PROCESSOR_ROLE to", processor);
+        console.log("7. WithdrawalQueueERC721: Granted PROCESSOR_ROLE to", processor);
 
+        // Step 8: Grant COMPLIANCE_ROLE on WithdrawalQueueERC721
         withdrawalQueue.grantRole(withdrawalQueue.COMPLIANCE_ROLE(), compliance);
-        console.log("8. WithdrawalQueue: Granted COMPLIANCE_ROLE to", compliance);
+        console.log("8. WithdrawalQueueERC721: Granted COMPLIANCE_ROLE to", compliance);
 
         vm.stopBroadcast();
 
         console.log("");
         console.log("=== Deployment Complete ===");
         console.log("TokenizedSTRC:", address(tstrc));
-        console.log("WithdrawalQueue:", address(withdrawalQueue));
+        console.log("WithdrawalQueueERC721:", address(withdrawalQueue));
         console.log("StakedUSDat Implementation:", address(stakedUsdatImpl));
         console.log("StakedUSDat Proxy:", address(stakedUsdat));
     }

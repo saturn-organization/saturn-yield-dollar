@@ -157,6 +157,13 @@ contract StakedUSDat is
         require(!_blacklisted[account], AddressBlacklisted());
     }
 
+    /// @notice Check if an address is blacklisted
+    /// @param account The address to check
+    /// @return True if the address is blacklisted
+    function isBlacklisted(address account) external view returns (bool) {
+        return _blacklisted[account];
+    }
+
     function transfer(address to, uint256 amount) public override(ERC20Upgradeable, IERC20) returns (bool) {
         _requireNotBlacklisted(msg.sender);
         _requireNotBlacklisted(to);
