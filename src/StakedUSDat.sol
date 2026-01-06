@@ -46,6 +46,7 @@ contract StakedUSDat is
     error StillVesting();
     error InvalidVestingPeriod();
     error WithdrawalTooSmall();
+    error SlippageExceeded();
 
     event Blacklisted(address target);
     event UnBlacklisted(address target);
@@ -286,6 +287,28 @@ contract StakedUSDat is
         _requireNotBlacklisted(receiver);
 
         super._deposit(caller, receiver, assets, shares);
+    }
+
+    /// @notice Deposit assets with slippage protection
+    /// @param assets The amount of assets to deposit
+    /// @param receiver The address to receive the shares
+    /// @param minShares The minimum number of shares to receive, reverts if less
+    /// @return shares The number of shares minted
+    function depositWithMinShares(uint256 assets, address receiver, uint256 minShares) public returns (uint256 shares) {
+        shares = previewDeposit(assets);
+        require(shares >= minShares, SlippageExceeded());
+        _deposit(msg.sender, receiver, assets, shares);
+    }
+
+    /// @notice Mint shares with slippage protection
+    /// @param shares The number of shares to mint
+    /// @param receiver The address to receive the shares
+    /// @param maxAssets The maximum amount of assets to spend, reverts if more
+    /// @return assets The amount of assets spent
+    function mintWithMaxAssets(uint256 shares, address receiver, uint256 maxAssets) public returns (uint256 assets) {
+        assets = previewMint(shares);
+        require(assets <= maxAssets, SlippageExceeded());
+        _deposit(msg.sender, receiver, assets, shares);
     }
 
     /// @notice ERC4626 withdraw is disabled - use requestWithdraw instead
