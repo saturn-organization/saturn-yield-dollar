@@ -323,26 +323,36 @@ contract StakedUSDat is
 
     /// @notice Request a withdrawal - burns shares, calculates STRC owed, adds to queue
     /// @param assets The amount of assets to withdraw
+    /// @param minStrcPrice The minimum price of tSTRC to accept
     /// @return shares The number of shares burned
     /// @return strcAmount The amount of tSTRC added to the withdrawal queue
-    function requestWithdraw(uint256 assets) external whenNotPaused returns (uint256 shares, uint256 strcAmount) {
+    function requestWithdraw(uint256 assets, uint256 minStrcPrice)
+        external
+        whenNotPaused
+        returns (uint256 shares, uint256 strcAmount)
+    {
         require(assets <= maxWithdraw(msg.sender), ExcessiveRequestedAmount());
 
         shares = previewWithdraw(assets);
 
-        strcAmount = _processWithdrawal(msg.sender, msg.sender, assets, shares);
+        strcAmount = _processWithdrawal(msg.sender, msg.sender, assets, shares, minStrcPrice);
     }
 
     /// @notice Request a redemption - burns shares, calculates STRC owed, adds to queue
     /// @param shares The number of shares to redeem
+    /// @param minStrcPrice The minimum price of tSTRC to accept
     /// @return assets The amount of assets being redeemed
     /// @return strcAmount The amount of tSTRC added to the withdrawal queue
-    function requestRedeem(uint256 shares) external whenNotPaused returns (uint256 assets, uint256 strcAmount) {
+    function requestRedeem(uint256 shares, uint256 minStrcPrice)
+        external
+        whenNotPaused
+        returns (uint256 assets, uint256 strcAmount)
+    {
         require(shares <= maxRedeem(msg.sender), ExcessiveRequestedAmount());
 
         assets = previewRedeem(shares);
 
-        strcAmount = _processWithdrawal(msg.sender, msg.sender, assets, shares);
+        strcAmount = _processWithdrawal(msg.sender, msg.sender, assets, shares, minStrcPrice);
     }
 
     /// @dev Internal function to process withdrawal request
@@ -350,8 +360,9 @@ contract StakedUSDat is
     /// @param owner The owner of the shares
     /// @param assets The asset value being withdrawn
     /// @param shares The shares to burn
+    /// @param minStrcPrice The minimum price of tSTRC to accept
     /// @return strcAmount The amount of tSTRC sent to the queue
-    function _processWithdrawal(address caller, address owner, uint256 assets, uint256 shares)
+    function _processWithdrawal(address caller, address owner, uint256 assets, uint256 shares, uint256 minStrcPrice)
         internal
         nonReentrant
         notZero(assets)
@@ -375,7 +386,7 @@ contract StakedUSDat is
 
         // Transfer tSTRC to queue and add request
         IERC20(address(TSTRC)).safeTransfer(address(WITHDRAWAL_QUEUE), strcAmount);
-        WITHDRAWAL_QUEUE.addRequest(owner, strcAmount);
+        WITHDRAWAL_QUEUE.addRequest(owner, strcAmount, minStrcPrice);
     }
 
     /// @notice Claim all processed withdrawals for the caller
