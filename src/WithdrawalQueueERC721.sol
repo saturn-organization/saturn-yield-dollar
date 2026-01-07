@@ -13,14 +13,15 @@ import {
 } from "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721EnumerableUpgradeable.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {IUSDat} from "./interfaces/IUSDat.sol";
 import {IERC20Burnable} from "./interfaces/IERC20Burnable.sol";
 import {IStakedUSDat} from "./interfaces/IStakedUSDat.sol";
 
 /// @title WithdrawalQueueERC721
-/// @notice UUPS upgradeable NFT-based FIFO withdrawal queue where each request is an ERC721 token
-/// @dev Each withdrawal request mints an NFT to the user, which is burned on claim
+/// @notice UUPS upgradeable NFT-based withdrawal queue where each request is an ERC721 token
+/// @dev Requests are processed in order when possible, but may be skipped if user's slippage check fails
 contract WithdrawalQueueERC721 is
     Initializable,
     ERC721EnumerableUpgradeable,
@@ -42,6 +43,7 @@ contract WithdrawalQueueERC721 is
         uint256 strcAmount;
         uint256 usdatOwed;
         uint256 timestamp;
+        uint256 minStrcPrice;
         RequestStatus status;
     }
 
@@ -58,7 +60,7 @@ contract WithdrawalQueueERC721 is
     // Queue state
     mapping(uint256 tokenId => Request) public requests;
     uint256 public nextTokenId;
-    uint256 public nextToProcess;
+    uint256 public pendingCount;
 
     // Constants
     uint256 public constant MAX_TOLERANCE = 5000; // 50% in basis points
@@ -78,6 +80,7 @@ contract WithdrawalQueueERC721 is
     error AddressBlacklisted();
     error StakedUSDatNotSet();
     error StakedUSDatAlreadySet();
+    error SlippageExceeded();
 
     // Events
     event WithdrawalRequested(uint256 indexed tokenId, address indexed user, uint256 strcAmount, uint256 timestamp);
@@ -132,8 +135,9 @@ contract WithdrawalQueueERC721 is
     /// @dev Mints an NFT to the user representing their withdrawal request
     /// @param user The user requesting withdrawal
     /// @param strcAmount The amount of tSTRC owed to the user
+    /// @param minStrcPrice The minimum price of tSTRC in USD
     /// @return tokenId The NFT token ID (same as request ID)
-    function addRequest(address user, uint256 strcAmount)
+    function addRequest(address user, uint256 strcAmount, uint256 minStrcPrice)
         external
         nonReentrant
         whenNotPaused
@@ -143,9 +147,14 @@ contract WithdrawalQueueERC721 is
         require(strcAmount != 0, ZeroAmount());
 
         tokenId = nextTokenId++;
+        pendingCount++;
 
         requests[tokenId] = Request({
-            strcAmount: strcAmount, usdatOwed: 0, timestamp: block.timestamp, status: RequestStatus.Requested
+            strcAmount: strcAmount,
+            usdatOwed: 0,
+            timestamp: block.timestamp,
+            status: RequestStatus.Requested,
+            minStrcPrice: minStrcPrice
         });
 
         _mint(user, tokenId);
@@ -155,52 +164,71 @@ contract WithdrawalQueueERC721 is
 
     // ============ Processing ============
 
-    /// @notice Process the next batch of withdrawal requests
-    /// @param tokenIds Array of token IDs to process (must match expected FIFO order)
-    /// @param usdatAmounts Array of USDat amounts corresponding to each request
-    /// @param vwapExecutionPrice Current STRC price (8 decimals)
-    /// @param toleranceBps Tolerance in basis points (e.g., 1000 = 10%)
-    function processNext(
+    function _validateAmount(uint256 strcAmount, uint256 usdatAmount, uint256 minStrcPrice, uint256 executionPrice)
+        internal
+        pure
+    {
+        require(executionPrice >= minStrcPrice, SlippageExceeded());
+        require(usdatAmount >= (minStrcPrice * strcAmount) / 1e8, SlippageExceeded());
+    }
+
+    function _validateUsdat(
+        uint256 totalStrc,
+        uint256 totalUsdatReceived,
+        uint256 executionPrice,
+        uint256 slippageToleranceBps
+    ) internal pure {
+        uint256 expectedUsdat = (totalStrc * executionPrice) / 1e8;
+        uint256 tolerance = (expectedUsdat * slippageToleranceBps) / 10000;
+        uint256 diff = totalUsdatReceived > expectedUsdat
+            ? totalUsdatReceived - expectedUsdat
+            : expectedUsdat - totalUsdatReceived;
+        require(diff <= tolerance, SlippageExceeded());
+    }
+
+    /// @notice Process a batch of withdrawal requests (non-sequential)
+    /// @dev Requests are processed in order when possible, but may be skipped if slippage check fails
+    /// @param tokenIds Array of token IDs to process
+    /// @param totalUsdatReceived Amount of USDat received from selling tSTRC
+    /// @param executionPrice STRC execution price (8 decimals)
+    /// @param slippageToleranceBps Maximum slippage tolerance in basis points
+    function processRequests(
         uint256[] calldata tokenIds,
-        uint256[] calldata usdatAmounts,
-        uint256 vwapExecutionPrice,
-        uint256 toleranceBps
+        uint256 totalUsdatReceived,
+        uint256 executionPrice,
+        uint256 slippageToleranceBps
     ) external nonReentrant onlyRole(PROCESSOR_ROLE) {
-        uint256 count = usdatAmounts.length;
-        require(count > 0 && count == tokenIds.length, InvalidInputs());
-        require(nextToProcess + count <= nextTokenId, NoRequestsToProcess());
-        require(toleranceBps <= MAX_TOLERANCE, InvalidTolerance());
+        uint256 count = tokenIds.length;
+        require(count > 0, InvalidInputs());
+        require(slippageToleranceBps <= MAX_TOLERANCE, InvalidTolerance());
+
+        uint256 totalStrc = 0;
+        for (uint256 i = 0; i < count; i++) {
+            totalStrc += requests[tokenIds[i]].strcAmount;
+        }
 
         uint256 totalUsdat = 0;
-        uint256 totalStrc = 0;
-
         for (uint256 i = 0; i < count; i++) {
-            require(tokenIds[i] == nextToProcess + i, InvalidRequestOrder());
-
             Request storage req = requests[tokenIds[i]];
             require(req.status == RequestStatus.Requested, AlreadyProcessed());
 
-            // Calculate expected USDat amount: strcAmount * strcPrice / 1e8
-            uint256 expectedUsdat = (req.strcAmount * vwapExecutionPrice) / 1e8;
-            uint256 tolerance = (expectedUsdat * toleranceBps) / 10000;
+            // Pro-rata: user gets their share of what was received
+            uint256 usdatAmount = Math.mulDiv(totalUsdatReceived, req.strcAmount, totalStrc, Math.Rounding.Floor);
 
-            // Validate amount is within tolerance
-            uint256 diff =
-                usdatAmounts[i] > expectedUsdat ? usdatAmounts[i] - expectedUsdat : expectedUsdat - usdatAmounts[i];
-            require(diff <= tolerance, ToleranceExceeded());
+            // Validate against user's slippage
+            _validateAmount(req.strcAmount, usdatAmount, req.minStrcPrice, executionPrice);
 
-            // Update state
-            req.usdatOwed = usdatAmounts[i];
+            req.usdatOwed = usdatAmount;
             req.status = RequestStatus.Processed;
-            totalUsdat += usdatAmounts[i];
-            totalStrc += req.strcAmount;
+            totalUsdat += usdatAmount;
 
-            emit WithdrawalProcessed(tokenIds[i], req.strcAmount, usdatAmounts[i]);
+            emit WithdrawalProcessed(tokenIds[i], req.strcAmount, usdatAmount);
         }
 
-        nextToProcess += count;
+        _validateUsdat(totalUsdatReceived, totalStrc, executionPrice, slippageToleranceBps);
 
-        // External calls last
+        pendingCount -= count;
+
         USDAT.mint(address(this), totalUsdat);
         IERC20Burnable(address(TSTRC)).burn(totalStrc);
     }
@@ -424,7 +452,7 @@ contract WithdrawalQueueERC721 is
 
     /// @notice Get the number of pending requests in the queue
     function getPendingCount() external view returns (uint256) {
-        return nextTokenId - nextToProcess;
+        return pendingCount;
     }
 
     /// @notice Get total tSTRC waiting to be processed
@@ -435,6 +463,31 @@ contract WithdrawalQueueERC721 is
     /// @notice Get the total number of requests ever made
     function getTotalRequests() external view returns (uint256) {
         return nextTokenId;
+    }
+
+    /// @notice Get pending request IDs within a range
+    /// @param start Starting tokenId (inclusive)
+    /// @param end Ending tokenId (exclusive)
+    /// @return pendingIds Array of pending tokenIds in the range
+    function getPendingIdsInRange(uint256 start, uint256 end) external view returns (uint256[] memory pendingIds) {
+        require(start < end, InvalidInputs());
+        if (end > nextTokenId) {
+            end = nextTokenId;
+        }
+
+        uint256[] memory temp = new uint256[](end - start);
+        uint256 count = 0;
+
+        for (uint256 i = start; i < end; i++) {
+            if (requests[i].status == RequestStatus.Requested) {
+                temp[count++] = i;
+            }
+        }
+
+        pendingIds = new uint256[](count);
+        for (uint256 i = 0; i < count; i++) {
+            pendingIds[i] = temp[i];
+        }
     }
 
     // ============ Compliance Functions ============

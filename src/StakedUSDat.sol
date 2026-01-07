@@ -46,6 +46,7 @@ contract StakedUSDat is
     error StillVesting();
     error InvalidVestingPeriod();
     error WithdrawalTooSmall();
+    error SlippageExceeded();
 
     event Blacklisted(address target);
     event UnBlacklisted(address target);
@@ -288,6 +289,28 @@ contract StakedUSDat is
         super._deposit(caller, receiver, assets, shares);
     }
 
+    /// @notice Deposit assets with slippage protection
+    /// @param assets The amount of assets to deposit
+    /// @param receiver The address to receive the shares
+    /// @param minShares The minimum number of shares to receive, reverts if less
+    /// @return shares The number of shares minted
+    function depositWithMinShares(uint256 assets, address receiver, uint256 minShares) public returns (uint256 shares) {
+        shares = previewDeposit(assets);
+        require(shares >= minShares, SlippageExceeded());
+        _deposit(msg.sender, receiver, assets, shares);
+    }
+
+    /// @notice Mint shares with slippage protection
+    /// @param shares The number of shares to mint
+    /// @param receiver The address to receive the shares
+    /// @param maxAssets The maximum amount of assets to spend, reverts if more
+    /// @return assets The amount of assets spent
+    function mintWithMaxAssets(uint256 shares, address receiver, uint256 maxAssets) public returns (uint256 assets) {
+        assets = previewMint(shares);
+        require(assets <= maxAssets, SlippageExceeded());
+        _deposit(msg.sender, receiver, assets, shares);
+    }
+
     /// @notice ERC4626 withdraw is disabled - use requestWithdraw instead
     function withdraw(uint256, address, address) public pure override returns (uint256) {
         revert OperationNotAllowed();
@@ -300,26 +323,36 @@ contract StakedUSDat is
 
     /// @notice Request a withdrawal - burns shares, calculates STRC owed, adds to queue
     /// @param assets The amount of assets to withdraw
+    /// @param minStrcPrice The minimum price of tSTRC to accept
     /// @return shares The number of shares burned
     /// @return strcAmount The amount of tSTRC added to the withdrawal queue
-    function requestWithdraw(uint256 assets) external whenNotPaused returns (uint256 shares, uint256 strcAmount) {
+    function requestWithdraw(uint256 assets, uint256 minStrcPrice)
+        external
+        whenNotPaused
+        returns (uint256 shares, uint256 strcAmount)
+    {
         require(assets <= maxWithdraw(msg.sender), ExcessiveRequestedAmount());
 
         shares = previewWithdraw(assets);
 
-        strcAmount = _processWithdrawal(msg.sender, msg.sender, assets, shares);
+        strcAmount = _processWithdrawal(msg.sender, msg.sender, assets, shares, minStrcPrice);
     }
 
     /// @notice Request a redemption - burns shares, calculates STRC owed, adds to queue
     /// @param shares The number of shares to redeem
+    /// @param minStrcPrice The minimum price of tSTRC to accept
     /// @return assets The amount of assets being redeemed
     /// @return strcAmount The amount of tSTRC added to the withdrawal queue
-    function requestRedeem(uint256 shares) external whenNotPaused returns (uint256 assets, uint256 strcAmount) {
+    function requestRedeem(uint256 shares, uint256 minStrcPrice)
+        external
+        whenNotPaused
+        returns (uint256 assets, uint256 strcAmount)
+    {
         require(shares <= maxRedeem(msg.sender), ExcessiveRequestedAmount());
 
         assets = previewRedeem(shares);
 
-        strcAmount = _processWithdrawal(msg.sender, msg.sender, assets, shares);
+        strcAmount = _processWithdrawal(msg.sender, msg.sender, assets, shares, minStrcPrice);
     }
 
     /// @dev Internal function to process withdrawal request
@@ -327,8 +360,9 @@ contract StakedUSDat is
     /// @param owner The owner of the shares
     /// @param assets The asset value being withdrawn
     /// @param shares The shares to burn
+    /// @param minStrcPrice The minimum price of tSTRC to accept
     /// @return strcAmount The amount of tSTRC sent to the queue
-    function _processWithdrawal(address caller, address owner, uint256 assets, uint256 shares)
+    function _processWithdrawal(address caller, address owner, uint256 assets, uint256 shares, uint256 minStrcPrice)
         internal
         nonReentrant
         notZero(assets)
@@ -352,7 +386,7 @@ contract StakedUSDat is
 
         // Transfer tSTRC to queue and add request
         IERC20(address(TSTRC)).safeTransfer(address(WITHDRAWAL_QUEUE), strcAmount);
-        WITHDRAWAL_QUEUE.addRequest(owner, strcAmount);
+        WITHDRAWAL_QUEUE.addRequest(owner, strcAmount, minStrcPrice);
     }
 
     /// @notice Claim all processed withdrawals for the caller
