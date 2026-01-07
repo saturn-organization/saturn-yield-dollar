@@ -2,7 +2,9 @@
 pragma solidity ^0.8.20;
 
 interface IWithdrawalQueueERC721 {
-    function addRequest(address owner, uint256 strcAmount) external;
+    function addRequest(address owner, uint256 shares, uint256 sharePriceAtRequest, uint256 maxSlippageBps)
+        external
+        returns (uint256 tokenId);
 
     function claimFor(address user) external returns (uint256 totalAmount);
 

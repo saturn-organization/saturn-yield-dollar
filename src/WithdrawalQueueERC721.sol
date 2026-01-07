@@ -15,7 +15,6 @@ import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/acce
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 
 import {IUSDat} from "./interfaces/IUSDat.sol";
-import {IERC20Burnable} from "./interfaces/IERC20Burnable.sol";
 import {IStakedUSDat} from "./interfaces/IStakedUSDat.sol";
 
 /// @title WithdrawalQueueERC721
@@ -39,7 +38,9 @@ contract WithdrawalQueueERC721 is
     }
 
     struct Request {
-        uint256 strcAmount;
+        uint256 shares; // sUSDat shares escrowed
+        uint256 sharePriceAtRequest; // price per share at request time (18 decimals)
+        uint256 maxSlippageBps; // max acceptable slippage in basis points
         uint256 usdatOwed;
         uint256 timestamp;
         RequestStatus status;
@@ -51,46 +52,49 @@ contract WithdrawalQueueERC721 is
     bytes32 public constant STAKED_USDAT_ROLE = keccak256("STAKED_USDAT_ROLE");
 
     // Tokens
-    IERC20 public immutable TSTRC;
     IUSDat public immutable USDAT;
     IStakedUSDat public stakedUSDat;
 
     // Queue state
     mapping(uint256 tokenId => Request) public requests;
     uint256 public nextTokenId;
-    uint256 public nextToProcess;
 
     // Constants
-    uint256 public constant MAX_TOLERANCE = 5000; // 50% in basis points
+    uint256 public constant MAX_SLIPPAGE = 5000; // 50% max slippage in basis points
+    uint256 public constant WITHDRAWAL_FEE_BPS = 10; // 10bp (0.1%) withdrawal fee
 
     // Errors
     error ZeroAmount();
-    error NoRequestsToProcess();
     error AlreadyProcessed();
     error NothingToClaim();
     error NotOwner();
     error NotBlacklisted();
-    error InvalidRequestOrder();
     error InvalidInputs();
-    error ToleranceExceeded();
-    error InvalidTolerance();
+    error SlippageExceeded();
+    error InvalidSlippage();
     error RequestNotProcessed();
     error AddressBlacklisted();
     error StakedUSDatNotSet();
     error StakedUSDatAlreadySet();
 
     // Events
-    event WithdrawalRequested(uint256 indexed tokenId, address indexed user, uint256 strcAmount, uint256 timestamp);
-    event WithdrawalProcessed(uint256 indexed tokenId, uint256 strcAmount, uint256 usdatAmount);
+    event WithdrawalRequested(
+        uint256 indexed tokenId,
+        address indexed user,
+        uint256 shares,
+        uint256 sharePriceAtRequest,
+        uint256 maxSlippageBps,
+        uint256 timestamp
+    );
+    event SlippageUpdated(uint256 indexed tokenId, uint256 newMaxSlippageBps);
+    event WithdrawalProcessed(uint256 indexed tokenId, uint256 shares, uint256 usdatAmount);
     event Claimed(uint256 indexed tokenId, address indexed user, uint256 usdatAmount);
     event FundsSeized(uint256 indexed tokenId, address indexed user, uint256 usdatAmount, address indexed to);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
-    /// @param tstrc TokenizedSTRC contract address
     /// @param usdat USDat contract address
-    constructor(address tstrc, address usdat) {
-        require(tstrc != address(0) && usdat != address(0), ZeroAmount());
-        TSTRC = IERC20(tstrc);
+    constructor(address usdat) {
+        require(usdat != address(0), ZeroAmount());
         USDAT = IUSDat(usdat);
         _disableInitializers();
     }
@@ -124,6 +128,7 @@ contract WithdrawalQueueERC721 is
 
     function _requireNotBlacklisted(address account) internal view {
         require(!stakedUSDat.isBlacklisted(account), AddressBlacklisted());
+        require(!USDAT.isBlacklisted(account), AddressBlacklisted());
     }
 
     // ============ Request Creation ============
@@ -131,78 +136,112 @@ contract WithdrawalQueueERC721 is
     /// @notice Called by StakedUSDat to add a withdrawal request
     /// @dev Mints an NFT to the user representing their withdrawal request
     /// @param user The user requesting withdrawal
-    /// @param strcAmount The amount of tSTRC owed to the user
+    /// @param shares The amount of sUSDat shares escrowed
+    /// @param sharePriceAtRequest The price per share at request time (18 decimals)
+    /// @param maxSlippageBps Maximum acceptable slippage in basis points
     /// @return tokenId The NFT token ID (same as request ID)
-    function addRequest(address user, uint256 strcAmount)
+    function addRequest(address user, uint256 shares, uint256 sharePriceAtRequest, uint256 maxSlippageBps)
         external
         nonReentrant
         whenNotPaused
         onlyRole(STAKED_USDAT_ROLE)
         returns (uint256 tokenId)
     {
-        require(strcAmount != 0, ZeroAmount());
+        require(shares != 0, ZeroAmount());
+        require(maxSlippageBps <= MAX_SLIPPAGE, InvalidSlippage());
 
         tokenId = nextTokenId++;
 
         requests[tokenId] = Request({
-            strcAmount: strcAmount, usdatOwed: 0, timestamp: block.timestamp, status: RequestStatus.Requested
+            shares: shares,
+            sharePriceAtRequest: sharePriceAtRequest,
+            maxSlippageBps: maxSlippageBps,
+            usdatOwed: 0,
+            timestamp: block.timestamp,
+            status: RequestStatus.Requested
         });
 
         _mint(user, tokenId);
 
-        emit WithdrawalRequested(tokenId, user, strcAmount, block.timestamp);
+        emit WithdrawalRequested(tokenId, user, shares, sharePriceAtRequest, maxSlippageBps, block.timestamp);
     }
 
     // ============ Processing ============
 
-    /// @notice Process the next batch of withdrawal requests
-    /// @param tokenIds Array of token IDs to process (must match expected FIFO order)
-    /// @param usdatAmounts Array of USDat amounts corresponding to each request
-    /// @param vwapExecutionPrice Current STRC price (8 decimals)
-    /// @param toleranceBps Tolerance in basis points (e.g., 1000 = 10%)
-    function processNext(
-        uint256[] calldata tokenIds,
-        uint256[] calldata usdatAmounts,
-        uint256 vwapExecutionPrice,
-        uint256 toleranceBps
-    ) external nonReentrant onlyRole(PROCESSOR_ROLE) {
-        uint256 count = usdatAmounts.length;
-        require(count > 0 && count == tokenIds.length, InvalidInputs());
-        require(nextToProcess + count <= nextTokenId, NoRequestsToProcess());
-        require(toleranceBps <= MAX_TOLERANCE, InvalidTolerance());
+    /// @dev Validates usdatAmount against user's maxSlippageBps using current share price
+    /// @param shares The number of shares being redeemed
+    /// @param maxSlippageBps User's maximum acceptable slippage in basis points
+    /// @param usdatAmount The USDat amount the processor is providing
+    /// @param currentSharePrice Current price per share (18 decimals)
+    function _validateAmount(uint256 shares, uint256 maxSlippageBps, uint256 usdatAmount, uint256 currentSharePrice)
+        internal
+        pure
+    {
+        // Calculate expected value at current share price
+        uint256 currentValue = (shares * currentSharePrice) / 1e18;
+
+        // Add 10bp fee to usdatAmount (user receives usdatAmount, protocol takes fee)
+        // totalValue = usdatAmount + fee, where fee = usdatAmount * 10 / 10000
+        uint256 totalValue = usdatAmount + (usdatAmount * WITHDRAWAL_FEE_BPS) / 10000;
+
+        // Check that totalValue meets user's slippage tolerance
+        uint256 minAcceptable = (currentValue * (10000 - maxSlippageBps)) / 10000;
+        require(totalValue >= minAcceptable, SlippageExceeded());
+    }
+
+    /// @notice Process withdrawal requests (non-sequential)
+    /// @param tokenIds Array of token IDs to process
+    /// @param usdatAmounts Array of USDat amounts for each request
+    /// @param totalStrcSold Total STRC amount sold off-chain for this batch
+    function processRequests(uint256[] calldata tokenIds, uint256[] calldata usdatAmounts, uint256 totalStrcSold)
+        external
+        nonReentrant
+        onlyRole(PROCESSOR_ROLE)
+    {
+        uint256 count = tokenIds.length;
+        require(count > 0 && count == usdatAmounts.length, InvalidInputs());
 
         uint256 totalUsdat = 0;
-        uint256 totalStrc = 0;
+        uint256 totalShares = 0;
+        uint256 currentSharePrice = stakedUSDat.previewRedeem(1e18);
 
         for (uint256 i = 0; i < count; i++) {
-            require(tokenIds[i] == nextToProcess + i, InvalidRequestOrder());
-
             Request storage req = requests[tokenIds[i]];
             require(req.status == RequestStatus.Requested, AlreadyProcessed());
 
-            // Calculate expected USDat amount: strcAmount * strcPrice / 1e8
-            uint256 expectedUsdat = (req.strcAmount * vwapExecutionPrice) / 1e8;
-            uint256 tolerance = (expectedUsdat * toleranceBps) / 10000;
+            _validateAmount(req.shares, req.maxSlippageBps, usdatAmounts[i], currentSharePrice);
 
-            // Validate amount is within tolerance
-            uint256 diff =
-                usdatAmounts[i] > expectedUsdat ? usdatAmounts[i] - expectedUsdat : expectedUsdat - usdatAmounts[i];
-            require(diff <= tolerance, ToleranceExceeded());
-
-            // Update state
             req.usdatOwed = usdatAmounts[i];
             req.status = RequestStatus.Processed;
             totalUsdat += usdatAmounts[i];
-            totalStrc += req.strcAmount;
+            totalShares += req.shares;
 
-            emit WithdrawalProcessed(tokenIds[i], req.strcAmount, usdatAmounts[i]);
+            emit WithdrawalProcessed(tokenIds[i], req.shares, usdatAmounts[i]);
         }
 
-        nextToProcess += count;
+        // Burn the escrowed shares and tSTRC sold
+        stakedUSDat.burnQueuedShares(totalShares, totalStrcSold);
 
-        // External calls last
+        // Mint USDat to this contract for claims
         USDAT.mint(address(this), totalUsdat);
-        IERC20Burnable(address(TSTRC)).burn(totalStrc);
+    }
+
+    // ============ Update Slippage ============
+
+    /// @notice Update slippage tolerance for a pending request
+    /// @param tokenId The token ID to update
+    /// @param newMaxSlippageBps New maximum slippage in basis points
+    function updateMaxSlippage(uint256 tokenId, uint256 newMaxSlippageBps) external {
+        require(ownerOf(tokenId) == msg.sender, NotOwner());
+        require(newMaxSlippageBps <= MAX_SLIPPAGE, InvalidSlippage());
+        _requireNotBlacklisted(msg.sender);
+
+        Request storage req = requests[tokenId];
+        require(req.status == RequestStatus.Requested, AlreadyProcessed());
+
+        req.maxSlippageBps = newMaxSlippageBps;
+
+        emit SlippageUpdated(tokenId, newMaxSlippageBps);
     }
 
     // ============ Claiming ============
@@ -384,7 +423,7 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @notice Get pending (unprocessed) requests for a user
-    function getPending(address user) external view returns (uint256 totalStrcAmount, uint256[] memory pendingIds) {
+    function getPending(address user) external view returns (uint256 totalShares, uint256[] memory pendingIds) {
         uint256 balance = balanceOf(user);
         uint256[] memory temp = new uint256[](balance);
         uint256 count = 0;
@@ -394,7 +433,7 @@ contract WithdrawalQueueERC721 is
             Request storage req = requests[tokenId];
             if (req.status == RequestStatus.Requested) {
                 temp[count++] = tokenId;
-                totalStrcAmount += req.strcAmount;
+                totalShares += req.shares;
             }
         }
 
@@ -422,19 +461,15 @@ contract WithdrawalQueueERC721 is
         return requests[tokenId].status == RequestStatus.Processed;
     }
 
-    /// @notice Get the number of pending requests in the queue
-    function getPendingCount() external view returns (uint256) {
-        return nextTokenId - nextToProcess;
-    }
-
-    /// @notice Get total tSTRC waiting to be processed
-    function getTotalPendingStrc() external view returns (uint256) {
-        return TSTRC.balanceOf(address(this));
-    }
-
-    /// @notice Get the total number of requests ever made
-    function getTotalRequests() external view returns (uint256) {
+    /// @notice Get the total number of requests created
+    /// @dev Use getTotalPendingShares() to get actual pending value
+    function getTotalRequestCount() external view returns (uint256) {
         return nextTokenId;
+    }
+
+    /// @notice Get total shares waiting to be processed
+    function getTotalPendingShares() external view returns (uint256) {
+        return IERC20(address(stakedUSDat)).balanceOf(address(this));
     }
 
     // ============ Compliance Functions ============
@@ -446,6 +481,7 @@ contract WithdrawalQueueERC721 is
         require(to != address(0), ZeroAmount());
         address owner = ownerOf(tokenId);
         require(USDAT.isBlacklisted(owner), NotBlacklisted());
+        require(stakedUSDat.isBlacklisted(owner), NotBlacklisted());
 
         Request storage req = requests[tokenId];
         require(req.status == RequestStatus.Processed, RequestNotProcessed());
@@ -466,6 +502,7 @@ contract WithdrawalQueueERC721 is
     function seizeBlacklistedFunds(address user, address to) external onlyRole(COMPLIANCE_ROLE) {
         require(to != address(0), ZeroAmount());
         require(USDAT.isBlacklisted(user), NotBlacklisted());
+        require(stakedUSDat.isBlacklisted(user), NotBlacklisted());
 
         uint256 balance = balanceOf(user);
         uint256 totalSeized = 0;

@@ -321,61 +321,65 @@ contract StakedUSDat is
         revert OperationNotAllowed();
     }
 
-    /// @notice Request a withdrawal - burns shares, calculates STRC owed, adds to queue
+    /// @notice Request a withdrawal with slippage protection
     /// @param assets The amount of assets to withdraw
-    /// @return shares The number of shares burned
-    /// @return strcAmount The amount of tSTRC added to the withdrawal queue
-    function requestWithdraw(uint256 assets) external whenNotPaused returns (uint256 shares, uint256 strcAmount) {
+    /// @param maxSlippageBps Maximum acceptable slippage in basis points (e.g., 250 = 2.5%)
+    /// @return shares The number of shares escrowed
+    function requestWithdraw(uint256 assets, uint256 maxSlippageBps)
+        external
+        whenNotPaused
+        nonReentrant
+        returns (uint256 shares)
+    {
         require(assets <= maxWithdraw(msg.sender), ExcessiveRequestedAmount());
+        require(assets >= MIN_WITHDRAWAL, WithdrawalTooSmall());
+        _requireNotBlacklisted(msg.sender);
 
         shares = previewWithdraw(assets);
 
-        strcAmount = _processWithdrawal(msg.sender, msg.sender, assets, shares);
+        // Get current share price for slippage reference
+        uint256 sharePrice = previewRedeem(1e18);
+
+        // Transfer shares to queue (not burn)
+        _transfer(msg.sender, address(WITHDRAWAL_QUEUE), shares);
+
+        // Add request with slippage tolerance
+        WITHDRAWAL_QUEUE.addRequest(msg.sender, shares, sharePrice, maxSlippageBps);
     }
 
-    /// @notice Request a redemption - burns shares, calculates STRC owed, adds to queue
+    /// @notice Request a redemption with slippage protection
     /// @param shares The number of shares to redeem
-    /// @return assets The amount of assets being redeemed
-    /// @return strcAmount The amount of tSTRC added to the withdrawal queue
-    function requestRedeem(uint256 shares) external whenNotPaused returns (uint256 assets, uint256 strcAmount) {
+    /// @param maxSlippageBps Maximum acceptable slippage in basis points (e.g., 250 = 2.5%)
+    /// @return assets The asset value at request time
+    function requestRedeem(uint256 shares, uint256 maxSlippageBps)
+        external
+        whenNotPaused
+        nonReentrant
+        returns (uint256 assets)
+    {
         require(shares <= maxRedeem(msg.sender), ExcessiveRequestedAmount());
+        _requireNotBlacklisted(msg.sender);
 
         assets = previewRedeem(shares);
-
-        strcAmount = _processWithdrawal(msg.sender, msg.sender, assets, shares);
-    }
-
-    /// @dev Internal function to process withdrawal request
-    /// @param caller The address initiating the withdrawal
-    /// @param owner The owner of the shares
-    /// @param assets The asset value being withdrawn
-    /// @param shares The shares to burn
-    /// @return strcAmount The amount of tSTRC sent to the queue
-    function _processWithdrawal(address caller, address owner, uint256 assets, uint256 shares)
-        internal
-        nonReentrant
-        notZero(assets)
-        notZero(shares)
-        returns (uint256 strcAmount)
-    {
-        _requireNotBlacklisted(caller);
-        _requireNotBlacklisted(owner);
         require(assets >= MIN_WITHDRAWAL, WithdrawalTooSmall());
 
-        // Get the current STRC price from the oracle
-        (uint256 strcPrice, uint8 priceDecimals) = TSTRC.getPrice();
+        // Get current share price for slippage reference
+        uint256 sharePrice = previewRedeem(1e18);
 
-        // Calculate: assets (18 decimals) * 10^priceDecimals / price = STRC amount (18 decimals)
-        strcAmount = Math.mulDiv(assets, 10 ** priceDecimals, strcPrice, Math.Rounding.Floor);
+        // Transfer shares to queue (not burn)
+        _transfer(msg.sender, address(WITHDRAWAL_QUEUE), shares);
 
-        // Can only transfer the unvested tSTRC in the contract
-        require(strcAmount <= TSTRC.balanceOf(address(this)) - getUnvestedAmount(), InsufficientBalance());
+        // Add request with slippage tolerance
+        WITHDRAWAL_QUEUE.addRequest(msg.sender, shares, sharePrice, maxSlippageBps);
+    }
 
-        _burn(owner, shares);
-
-        // Transfer tSTRC to queue and add request
-        IERC20(address(TSTRC)).safeTransfer(address(WITHDRAWAL_QUEUE), strcAmount);
-        WITHDRAWAL_QUEUE.addRequest(owner, strcAmount);
+    /// @notice Burns shares and tSTRC held by the withdrawal queue (called during processing)
+    /// @param shares The number of shares to burn
+    /// @param strcAmount The amount of tSTRC to burn (sold off-chain)
+    function burnQueuedShares(uint256 shares, uint256 strcAmount) external {
+        require(msg.sender == address(WITHDRAWAL_QUEUE), OperationNotAllowed());
+        _burn(address(WITHDRAWAL_QUEUE), shares);
+        IERC20Burnable(address(TSTRC)).burn(strcAmount);
     }
 
     /// @notice Claim all processed withdrawals for the caller

@@ -16,7 +16,7 @@ import {IWithdrawalQueueERC721} from "../src/interfaces/IWithdrawalQueueERC721.s
  *
  * Deployment order:
  * 1. TokenizedSTRC - needs oracle address
- * 2. WithdrawalQueueERC721 - needs tSTRC and USDat addresses
+ * 2. WithdrawalQueueERC721 - needs USDat address
  * 3. StakedUSDat Implementation - needs tSTRC and WithdrawalQueueERC721 (immutables)
  * 4. StakedUSDat Proxy - points to implementation, initialized with admin/processor/compliance/usdat
  * 5. WithdrawalQueueERC721.setStakedUSDat - links queue to StakedUSDat (also grants STAKED_USDAT_ROLE)
@@ -68,7 +68,7 @@ contract DeployScript is Script {
         console.log("1. TokenizedSTRC deployed at:", address(tstrc));
 
         // Step 2: Deploy WithdrawalQueueERC721 Implementation and Proxy
-        WithdrawalQueueERC721 withdrawalQueueImpl = new WithdrawalQueueERC721(address(tstrc), usdat);
+        WithdrawalQueueERC721 withdrawalQueueImpl = new WithdrawalQueueERC721(usdat);
         bytes memory withdrawalQueueInitData = abi.encodeCall(WithdrawalQueueERC721.initialize, (admin));
         ERC1967Proxy withdrawalQueueProxy = new ERC1967Proxy(address(withdrawalQueueImpl), withdrawalQueueInitData);
         withdrawalQueue = WithdrawalQueueERC721(address(withdrawalQueueProxy));
