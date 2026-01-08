@@ -448,12 +448,10 @@ contract StakedUSDat is
     /// @dev Only callable by the withdrawal queue during processing
     /// @param shares The number of shares to burn
     /// @param strcAmount The amount of tSTRC that was sold off-chain
-    /// @param usdatAmount The amount of USDat transferred from the vault
-    function burnQueuedShares(uint256 shares, uint256 strcAmount, uint256 usdatAmount) external {
+    function burnQueuedShares(uint256 shares, uint256 strcAmount) external {
         require(msg.sender == address(WITHDRAWAL_QUEUE), OperationNotAllowed());
         IERC20Burnable(address(TSTRC)).burn(strcAmount);
         _burn(address(WITHDRAWAL_QUEUE), shares);
-        IERC20Burnable(asset()).burn(usdatAmount);
     }
 
     /// @notice Get the withdrawal queue address
