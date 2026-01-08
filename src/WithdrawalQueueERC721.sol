@@ -63,8 +63,9 @@ contract WithdrawalQueueERC721 is
     uint256 public pendingCount;
 
     // Constants
-    uint256 public constant PRICE_TOLERANCE_BPS = 1000; // 10% tolerance in basis points
+    uint256 public constant PRICE_TOLERANCE_BPS = 2000; // 20% tolerance in basis points
     uint256 public constant BPS_DENOMINATOR = 10000;
+    uint256 public constant MIN_VAULT_USDAT_BPS = 500; // 5% minimum USDat reserve in vault
 
     // Errors
     error ZeroAmount();
@@ -82,12 +83,14 @@ contract WithdrawalQueueERC721 is
     error StakedUSDatNotSet();
     error StakedUSDatAlreadySet();
     error SlippageExceeded();
+    error InsufficientVaultReserve();
 
     // Events
     event WithdrawalRequested(uint256 indexed tokenId, address indexed user, uint256 shares, uint256 timestamp);
     event WithdrawalProcessed(uint256 indexed tokenId, uint256 shares, uint256 usdatAmount);
     event Claimed(uint256 indexed tokenId, address indexed user, uint256 usdatAmount);
     event FundsSeized(uint256 indexed tokenId, address indexed user, uint256 usdatAmount, address indexed to);
+    event RequestSeized(uint256 indexed tokenId, address indexed user, address indexed to);
     event MinUsdatReceivedUpdated(uint256 indexed tokenId, uint256 newMinUsdatReceived);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -129,6 +132,11 @@ contract WithdrawalQueueERC721 is
 
     function _requireNotBlacklisted(address account) internal view {
         require(!stakedUSDat.isBlacklisted(account), AddressBlacklisted());
+        require(!USDAT.isBlacklisted(account), AddressBlacklisted());
+    }
+
+    function requireBlacklisted(address account) internal view {
+        require(stakedUSDat.isBlacklisted(account) || USDAT.isBlacklisted(account), NotBlacklisted());
     }
 
     // ============ Request Creation ============
@@ -169,6 +177,7 @@ contract WithdrawalQueueERC721 is
     /// @param newMinUsdatReceived The new minimum USDat amount
     function updateMinUsdatReceived(uint256 tokenId, uint256 newMinUsdatReceived) external whenNotPaused {
         require(ownerOf(tokenId) == msg.sender, NotOwner());
+        _requireNotBlacklisted(msg.sender);
         Request storage req = requests[tokenId];
         require(req.status == RequestStatus.Requested, AlreadyProcessed());
 
@@ -193,16 +202,46 @@ contract WithdrawalQueueERC721 is
         return value >= minExpected && value <= maxExpected;
     }
 
+    /// @notice Validates that withdrawing usdatFromVault maintains minimum reserve
+    /// @dev Ensures vault keeps at least 5% of total assets in USDat after withdrawal
+    /// @param usdatFromVault Amount of USDat to withdraw from vault
+    function _validateVaultReserve(uint256 usdatFromVault) internal view {
+        if (usdatFromVault == 0) return;
+
+        uint256 vaultUsdatBalance = IERC20(address(USDAT)).balanceOf(address(stakedUSDat));
+        uint256 totalAssets = stakedUSDat.totalAssets();
+
+        // Ensure balance after withdrawal is positive
+        require(vaultUsdatBalance >= usdatFromVault, InsufficientVaultReserve());
+
+        uint256 balanceAfter = vaultUsdatBalance - usdatFromVault;
+
+        // Ensure at least 5% of total assets remain in USDat
+        uint256 minRequired = Math.mulDiv(totalAssets, MIN_VAULT_USDAT_BPS, BPS_DENOMINATOR);
+        require(balanceAfter >= minRequired, InsufficientVaultReserve());
+    }
+
     /// @notice Validates that totalUsdatReceived and totalStrcSold are consistent
     /// @dev Checks two things:
     ///      1. totalUsdatReceived ≈ totalStrcSold * executionPrice (within ±10%)
     ///      2. executionPrice ≈ oracle price (within ±10%)
     /// @param totalUsdatReceived Amount of USDat received from selling tSTRC
     /// @param totalStrcSold Amount of tSTRC that was sold off-chain
+    /// @param usdatFromVault Amount of USDat received from vault
     /// @param executionPrice The price per tSTRC in USDat terms (8 decimals)
-    function _validateTotals(uint256 totalUsdatReceived, uint256 totalStrcSold, uint256 executionPrice) internal view {
+    function _validateTotals(
+        uint256 totalUsdatReceived,
+        uint256 totalStrcSold,
+        uint256 usdatFromVault,
+        uint256 executionPrice
+    ) internal view {
+        // Validate vault reserve if withdrawing USDat from vault
+        _validateVaultReserve(usdatFromVault);
+
         // Calculate expected USDat from executionPrice (8 decimals)
         uint256 expectedUsdat = Math.mulDiv(totalStrcSold, executionPrice, 1e8);
+
+        if (usdatFromVault > 0) expectedUsdat += usdatFromVault;
 
         // Check totalUsdatReceived is within ±10% of expected
         require(_isWithinTolerance(totalUsdatReceived, expectedUsdat), ExecutionPriceMismatch());
@@ -220,14 +259,16 @@ contract WithdrawalQueueERC721 is
     /// @param totalUsdatReceived Amount of USDat received from selling tSTRC
     /// @param totalStrcSold Amount of tSTRC that was sold off-chain
     /// @param executionPrice The price per tSTRC in USDat terms (8 decimals) for validation
+    /// @param usdatFromVault Amount of USDat received from vault, usually 0
     function processRequests(
         uint256[] calldata tokenIds,
         uint256 totalUsdatReceived,
         uint256 totalStrcSold,
-        uint256 executionPrice
+        uint256 executionPrice,
+        uint256 usdatFromVault
     ) external nonReentrant onlyRole(PROCESSOR_ROLE) {
         // Validate inputs are consistent
-        _validateTotals(totalUsdatReceived, totalStrcSold, executionPrice);
+        _validateTotals(totalUsdatReceived, totalStrcSold, usdatFromVault, executionPrice);
         uint256 count = tokenIds.length;
         require(count > 0, InvalidInputs());
 
@@ -244,6 +285,10 @@ contract WithdrawalQueueERC721 is
             // Pro-rata: user gets their share of what was received
             uint256 usdatAmount = Math.mulDiv(totalUsdatReceived, req.shares, totalShares, Math.Rounding.Floor);
 
+            if (usdatFromVault > 0) {
+                usdatAmount += Math.mulDiv(usdatFromVault, req.shares, totalShares, Math.Rounding.Floor);
+            }
+
             // Validate against user's minimum
             _validateAmount(usdatAmount, req.minUsdatReceived);
 
@@ -257,7 +302,7 @@ contract WithdrawalQueueERC721 is
         pendingCount -= count;
 
         // Burn the escrowed shares and the tSTRC sold off-chain, then mint USDat
-        stakedUSDat.burnQueuedShares(totalShares, totalStrcSold);
+        stakedUSDat.burnQueuedShares(totalShares, totalStrcSold, usdatFromVault);
         USDAT.mint(address(this), totalUsdat);
     }
 
@@ -520,59 +565,61 @@ contract WithdrawalQueueERC721 is
 
     // ============ Compliance Functions ============
 
-    /// @notice Seize a single request for a blacklisted user
-    /// @param tokenId The token ID to seize
-    /// @param to The address to send the seized funds to
-    function seizeRequest(uint256 tokenId, address to) external onlyRole(COMPLIANCE_ROLE) {
+    /// @notice Seize pending requests from blacklisted holders by transferring NFTs
+    /// @dev Only works for Requested status - burns and re-mints to bypass blacklist transfer checks
+    /// @param tokenIds Array of token IDs to seize
+    /// @param to The address to transfer the NFTs to
+    function seizeRequests(uint256[] calldata tokenIds, address to) external onlyRole(COMPLIANCE_ROLE) {
         require(to != address(0), ZeroAmount());
-        address owner = ownerOf(tokenId);
-        require(USDAT.isBlacklisted(owner), NotBlacklisted());
+        _requireNotBlacklisted(to);
 
-        Request storage req = requests[tokenId];
-        require(req.status == RequestStatus.Processed, RequestNotProcessed());
+        uint256 len = tokenIds.length;
+        require(len > 0, ZeroAmount());
 
-        uint256 amount = req.usdatOwed;
-        req.status = RequestStatus.Claimed;
+        for (uint256 i = 0; i < len; i++) {
+            uint256 tokenId = tokenIds[i];
+            address owner = ownerOf(tokenId);
+            requireBlacklisted(owner);
 
-        _burn(tokenId);
+            Request storage req = requests[tokenId];
+            require(req.status == RequestStatus.Requested, AlreadyProcessed());
 
-        emit FundsSeized(tokenId, owner, amount, to);
+            // Burn and re-mint to bypass blacklist transfer checks
+            _burn(tokenId);
+            _mint(to, tokenId);
 
-        IERC20(address(USDAT)).safeTransfer(to, amount);
+            emit RequestSeized(tokenId, owner, to);
+        }
     }
 
-    /// @notice Seize all claimable funds for a blacklisted user
-    /// @param user The blacklisted user whose funds to seize
-    /// @param to The address to send the seized funds to
-    function seizeBlacklistedFunds(address user, address to) external onlyRole(COMPLIANCE_ROLE) {
+    /// @notice Seize processed requests from blacklisted holders by transferring USDat
+    /// @dev Only works for Processed status - burns NFT and transfers USDat to the `to` address
+    /// @param tokenIds Array of token IDs to seize
+    /// @param to The address to transfer the USDat to
+    function seizeBlacklistedFunds(uint256[] calldata tokenIds, address to) external onlyRole(COMPLIANCE_ROLE) {
         require(to != address(0), ZeroAmount());
-        require(USDAT.isBlacklisted(user), NotBlacklisted());
+        uint256 len = tokenIds.length;
+        require(len > 0, ZeroAmount());
 
-        uint256 balance = balanceOf(user);
-        uint256 totalSeized = 0;
+        uint256 totalUsdatSeized = 0;
 
-        // Collect tokens to seize
-        uint256[] memory toSeize = new uint256[](balance);
-        uint256 seizeCount = 0;
+        for (uint256 i = 0; i < len; i++) {
+            uint256 tokenId = tokenIds[i];
+            address owner = ownerOf(tokenId);
+            requireBlacklisted(owner);
 
-        for (uint256 i = 0; i < balance; i++) {
-            uint256 tokenId = tokenOfOwnerByIndex(user, i);
-            if (requests[tokenId].status == RequestStatus.Processed) {
-                toSeize[seizeCount++] = tokenId;
-                totalSeized += requests[tokenId].usdatOwed;
-            }
+            Request storage req = requests[tokenId];
+            require(req.status == RequestStatus.Processed, RequestNotProcessed());
+
+            totalUsdatSeized += req.usdatOwed;
+            req.status = RequestStatus.Claimed;
+
+            _burn(tokenId);
+
+            emit FundsSeized(tokenId, owner, req.usdatOwed, to);
         }
 
-        require(totalSeized > 0, NothingToClaim());
-
-        // Burn seized NFTs
-        for (uint256 i = 0; i < seizeCount; i++) {
-            requests[toSeize[i]].status = RequestStatus.Claimed;
-            emit FundsSeized(toSeize[i], user, requests[toSeize[i]].usdatOwed, to);
-            _burn(toSeize[i]);
-        }
-
-        IERC20(address(USDAT)).safeTransfer(to, totalSeized);
+        IERC20(address(USDAT)).safeTransfer(to, totalUsdatSeized);
     }
 
     // ============ Admin Functions ============
@@ -595,8 +642,7 @@ contract WithdrawalQueueERC721 is
     function _update(address to, uint256 tokenId, address auth) internal override returns (address) {
         address from = _ownerOf(tokenId);
 
-        // Allow minting (from == address(0)) and burning (to == address(0))
-        // Only check blacklist for actual transfers
+        // Only check blacklist for actual transfers (not mint/burn)
         if (from != address(0) && to != address(0)) {
             require(address(stakedUSDat) != address(0), StakedUSDatNotSet());
             _requireNotBlacklisted(from);
