@@ -356,7 +356,7 @@ contract WithdrawalQueueERC721 is
     /// @notice Claim all processed withdrawals for a user (called by StakedUSDat)
     /// @param user The user to claim for
     /// @return totalAmount The total amount of USDat claimed
-    function claimFor(address user)
+    function claimAllFor(address user)
         external
         nonReentrant
         whenNotPaused
