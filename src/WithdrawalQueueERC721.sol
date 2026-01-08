@@ -16,8 +16,8 @@ import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/Pau
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {IUSDat} from "./interfaces/IUSDat.sol";
-import {IERC20Burnable} from "./interfaces/IERC20Burnable.sol";
 import {IStakedUSDat} from "./interfaces/IStakedUSDat.sol";
+import {ITokenizedSTRC} from "./interfaces/ITokenizedSTRC.sol";
 
 /// @title WithdrawalQueueERC721
 /// @notice UUPS upgradeable NFT-based withdrawal queue where each request is an ERC721 token
@@ -40,10 +40,10 @@ contract WithdrawalQueueERC721 is
     }
 
     struct Request {
-        uint256 strcAmount;
+        uint256 shares;
         uint256 usdatOwed;
         uint256 timestamp;
-        uint256 minStrcPrice;
+        uint256 minUsdatReceived;
         RequestStatus status;
     }
 
@@ -53,8 +53,8 @@ contract WithdrawalQueueERC721 is
     bytes32 public constant STAKED_USDAT_ROLE = keccak256("STAKED_USDAT_ROLE");
 
     // Tokens
-    IERC20 public immutable TSTRC;
     IUSDat public immutable USDAT;
+    ITokenizedSTRC public immutable TSTRC;
     IStakedUSDat public stakedUSDat;
 
     // Queue state
@@ -63,7 +63,8 @@ contract WithdrawalQueueERC721 is
     uint256 public pendingCount;
 
     // Constants
-    uint256 public constant MAX_TOLERANCE = 5000; // 50% in basis points
+    uint256 public constant PRICE_TOLERANCE_BPS = 1000; // 10% tolerance in basis points
+    uint256 public constant BPS_DENOMINATOR = 10000;
 
     // Errors
     error ZeroAmount();
@@ -74,8 +75,8 @@ contract WithdrawalQueueERC721 is
     error NotBlacklisted();
     error InvalidRequestOrder();
     error InvalidInputs();
-    error ToleranceExceeded();
-    error InvalidTolerance();
+    error ExecutionPriceMismatch();
+    error OraclePriceMismatch();
     error RequestNotProcessed();
     error AddressBlacklisted();
     error StakedUSDatNotSet();
@@ -83,18 +84,18 @@ contract WithdrawalQueueERC721 is
     error SlippageExceeded();
 
     // Events
-    event WithdrawalRequested(uint256 indexed tokenId, address indexed user, uint256 strcAmount, uint256 timestamp);
-    event WithdrawalProcessed(uint256 indexed tokenId, uint256 strcAmount, uint256 usdatAmount);
+    event WithdrawalRequested(uint256 indexed tokenId, address indexed user, uint256 shares, uint256 timestamp);
+    event WithdrawalProcessed(uint256 indexed tokenId, uint256 shares, uint256 usdatAmount);
     event Claimed(uint256 indexed tokenId, address indexed user, uint256 usdatAmount);
     event FundsSeized(uint256 indexed tokenId, address indexed user, uint256 usdatAmount, address indexed to);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
-    /// @param tstrc TokenizedSTRC contract address
     /// @param usdat USDat contract address
-    constructor(address tstrc, address usdat) {
-        require(tstrc != address(0) && usdat != address(0), ZeroAmount());
-        TSTRC = IERC20(tstrc);
+    /// @param tstrc TokenizedSTRC contract address
+    constructor(address usdat, address tstrc) {
+        require(usdat != address(0) && tstrc != address(0), ZeroAmount());
         USDAT = IUSDat(usdat);
+        TSTRC = ITokenizedSTRC(tstrc);
         _disableInitializers();
     }
 
@@ -134,77 +135,92 @@ contract WithdrawalQueueERC721 is
     /// @notice Called by StakedUSDat to add a withdrawal request
     /// @dev Mints an NFT to the user representing their withdrawal request
     /// @param user The user requesting withdrawal
-    /// @param strcAmount The amount of tSTRC owed to the user
-    /// @param minStrcPrice The minimum price of tSTRC in USD
+    /// @param shares The amount of sUSDat shares escrowed
+    /// @param minUsdatReceived The minimum amount of USDat the user will accept
     /// @return tokenId The NFT token ID (same as request ID)
-    function addRequest(address user, uint256 strcAmount, uint256 minStrcPrice)
+    function addRequest(address user, uint256 shares, uint256 minUsdatReceived)
         external
         nonReentrant
         whenNotPaused
         onlyRole(STAKED_USDAT_ROLE)
         returns (uint256 tokenId)
     {
-        require(strcAmount != 0, ZeroAmount());
+        require(shares != 0, ZeroAmount());
 
         tokenId = nextTokenId++;
         pendingCount++;
 
         requests[tokenId] = Request({
-            strcAmount: strcAmount,
+            shares: shares,
             usdatOwed: 0,
             timestamp: block.timestamp,
             status: RequestStatus.Requested,
-            minStrcPrice: minStrcPrice
+            minUsdatReceived: minUsdatReceived
         });
 
         _mint(user, tokenId);
 
-        emit WithdrawalRequested(tokenId, user, strcAmount, block.timestamp);
+        emit WithdrawalRequested(tokenId, user, shares, block.timestamp);
     }
 
     // ============ Processing ============
 
-    function _validateAmount(uint256 strcAmount, uint256 usdatAmount, uint256 minStrcPrice, uint256 executionPrice)
-        internal
-        pure
-    {
-        require(executionPrice >= minStrcPrice, SlippageExceeded());
-        require(usdatAmount >= (minStrcPrice * strcAmount) / 1e8, SlippageExceeded());
+    function _validateAmount(uint256 usdatAmount, uint256 minUsdatReceived) internal pure {
+        require(usdatAmount >= minUsdatReceived, SlippageExceeded());
     }
 
-    function _validateUsdat(
-        uint256 totalStrc,
-        uint256 totalUsdatReceived,
-        uint256 executionPrice,
-        uint256 slippageToleranceBps
-    ) internal pure {
-        uint256 expectedUsdat = (totalStrc * executionPrice) / 1e8;
-        uint256 tolerance = (expectedUsdat * slippageToleranceBps) / 10000;
-        uint256 diff = totalUsdatReceived > expectedUsdat
-            ? totalUsdatReceived - expectedUsdat
-            : expectedUsdat - totalUsdatReceived;
-        require(diff <= tolerance, SlippageExceeded());
+    /// @notice Checks if a value is within ±PRICE_TOLERANCE_BPS of an expected value
+    /// @param value The actual value to check
+    /// @param expected The expected value
+    /// @return True if value is within tolerance of expected
+    function _isWithinTolerance(uint256 value, uint256 expected) internal pure returns (bool) {
+        uint256 minExpected = Math.mulDiv(expected, BPS_DENOMINATOR - PRICE_TOLERANCE_BPS, BPS_DENOMINATOR);
+        uint256 maxExpected = Math.mulDiv(expected, BPS_DENOMINATOR + PRICE_TOLERANCE_BPS, BPS_DENOMINATOR);
+        return value >= minExpected && value <= maxExpected;
+    }
+
+    /// @notice Validates that totalUsdatReceived and totalStrcSold are consistent
+    /// @dev Checks two things:
+    ///      1. totalUsdatReceived ≈ totalStrcSold * executionPrice (within ±10%)
+    ///      2. executionPrice ≈ oracle price (within ±10%)
+    /// @param totalUsdatReceived Amount of USDat received from selling tSTRC
+    /// @param totalStrcSold Amount of tSTRC that was sold off-chain
+    /// @param executionPrice The price per tSTRC in USDat terms (18 decimals)
+    function _validateTotals(uint256 totalUsdatReceived, uint256 totalStrcSold, uint256 executionPrice) internal view {
+        // Calculate expected USDat from executionPrice
+        uint256 expectedUsdat = Math.mulDiv(totalStrcSold, executionPrice, 1e18);
+
+        // Check totalUsdatReceived is within ±10% of expected
+        require(_isWithinTolerance(totalUsdatReceived, expectedUsdat), ExecutionPriceMismatch());
+
+        // Validate executionPrice against oracle price (within ±10%)
+        (uint256 oraclePrice, uint8 oracleDecimals) = TSTRC.getPrice();
+        // Normalize oracle price to 18 decimals
+        uint256 normalizedOraclePrice = oraclePrice * (10 ** (18 - oracleDecimals));
+
+        require(_isWithinTolerance(executionPrice, normalizedOraclePrice), OraclePriceMismatch());
     }
 
     /// @notice Process a batch of withdrawal requests (non-sequential)
     /// @dev Requests are processed in order when possible, but may be skipped if slippage check fails
     /// @param tokenIds Array of token IDs to process
     /// @param totalUsdatReceived Amount of USDat received from selling tSTRC
-    /// @param executionPrice STRC execution price (8 decimals)
-    /// @param slippageToleranceBps Maximum slippage tolerance in basis points
+    /// @param totalStrcSold Amount of tSTRC that was sold off-chain
+    /// @param executionPrice The price per tSTRC in USDat terms (18 decimals) for validation
     function processRequests(
         uint256[] calldata tokenIds,
         uint256 totalUsdatReceived,
-        uint256 executionPrice,
-        uint256 slippageToleranceBps
+        uint256 totalStrcSold,
+        uint256 executionPrice
     ) external nonReentrant onlyRole(PROCESSOR_ROLE) {
+        // Validate inputs are consistent
+        _validateTotals(totalUsdatReceived, totalStrcSold, executionPrice);
         uint256 count = tokenIds.length;
         require(count > 0, InvalidInputs());
-        require(slippageToleranceBps <= MAX_TOLERANCE, InvalidTolerance());
 
-        uint256 totalStrc = 0;
+        uint256 totalShares = 0;
         for (uint256 i = 0; i < count; i++) {
-            totalStrc += requests[tokenIds[i]].strcAmount;
+            totalShares += requests[tokenIds[i]].shares;
         }
 
         uint256 totalUsdat = 0;
@@ -213,24 +229,23 @@ contract WithdrawalQueueERC721 is
             require(req.status == RequestStatus.Requested, AlreadyProcessed());
 
             // Pro-rata: user gets their share of what was received
-            uint256 usdatAmount = Math.mulDiv(totalUsdatReceived, req.strcAmount, totalStrc, Math.Rounding.Floor);
+            uint256 usdatAmount = Math.mulDiv(totalUsdatReceived, req.shares, totalShares, Math.Rounding.Floor);
 
-            // Validate against user's slippage
-            _validateAmount(req.strcAmount, usdatAmount, req.minStrcPrice, executionPrice);
+            // Validate against user's minimum
+            _validateAmount(usdatAmount, req.minUsdatReceived);
 
             req.usdatOwed = usdatAmount;
             req.status = RequestStatus.Processed;
             totalUsdat += usdatAmount;
 
-            emit WithdrawalProcessed(tokenIds[i], req.strcAmount, usdatAmount);
+            emit WithdrawalProcessed(tokenIds[i], req.shares, usdatAmount);
         }
-
-        _validateUsdat(totalUsdatReceived, totalStrc, executionPrice, slippageToleranceBps);
 
         pendingCount -= count;
 
+        // Burn the escrowed shares and the tSTRC sold off-chain, then mint USDat
+        stakedUSDat.burnQueuedShares(totalShares, totalStrcSold);
         USDAT.mint(address(this), totalUsdat);
-        IERC20Burnable(address(TSTRC)).burn(totalStrc);
     }
 
     // ============ Claiming ============
@@ -412,7 +427,7 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @notice Get pending (unprocessed) requests for a user
-    function getPending(address user) external view returns (uint256 totalStrcAmount, uint256[] memory pendingIds) {
+    function getPending(address user) external view returns (uint256 totalShares, uint256[] memory pendingIds) {
         uint256 balance = balanceOf(user);
         uint256[] memory temp = new uint256[](balance);
         uint256 count = 0;
@@ -422,7 +437,7 @@ contract WithdrawalQueueERC721 is
             Request storage req = requests[tokenId];
             if (req.status == RequestStatus.Requested) {
                 temp[count++] = tokenId;
-                totalStrcAmount += req.strcAmount;
+                totalShares += req.shares;
             }
         }
 
@@ -455,9 +470,9 @@ contract WithdrawalQueueERC721 is
         return pendingCount;
     }
 
-    /// @notice Get total tSTRC waiting to be processed
-    function getTotalPendingStrc() external view returns (uint256) {
-        return TSTRC.balanceOf(address(this));
+    /// @notice Get total sUSDat shares waiting to be processed
+    function getTotalPendingShares() external view returns (uint256) {
+        return IERC20(address(stakedUSDat)).balanceOf(address(this));
     }
 
     /// @notice Get the total number of requests ever made

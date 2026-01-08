@@ -321,72 +321,52 @@ contract StakedUSDat is
         revert OperationNotAllowed();
     }
 
-    /// @notice Request a withdrawal - burns shares, calculates STRC owed, adds to queue
+    /// @notice Request a withdrawal - escrows shares in the queue
     /// @param assets The amount of assets to withdraw
-    /// @param minStrcPrice The minimum price of tSTRC to accept
-    /// @return shares The number of shares burned
-    /// @return strcAmount The amount of tSTRC added to the withdrawal queue
-    function requestWithdraw(uint256 assets, uint256 minStrcPrice)
-        external
-        whenNotPaused
-        returns (uint256 shares, uint256 strcAmount)
-    {
+    /// @param minUsdatReceived The minimum amount of USDat the user will accept
+    /// @return shares The number of shares escrowed
+    function requestWithdraw(uint256 assets, uint256 minUsdatReceived) external whenNotPaused returns (uint256 shares) {
         require(assets <= maxWithdraw(msg.sender), ExcessiveRequestedAmount());
 
         shares = previewWithdraw(assets);
 
-        strcAmount = _processWithdrawal(msg.sender, msg.sender, assets, shares, minStrcPrice);
+        _processWithdrawal(msg.sender, msg.sender, assets, shares, minUsdatReceived);
     }
 
-    /// @notice Request a redemption - burns shares, calculates STRC owed, adds to queue
+    /// @notice Request a redemption - escrows shares in the queue
     /// @param shares The number of shares to redeem
-    /// @param minStrcPrice The minimum price of tSTRC to accept
+    /// @param minUsdatReceived The minimum amount of USDat the user will accept
     /// @return assets The amount of assets being redeemed
-    /// @return strcAmount The amount of tSTRC added to the withdrawal queue
-    function requestRedeem(uint256 shares, uint256 minStrcPrice)
-        external
-        whenNotPaused
-        returns (uint256 assets, uint256 strcAmount)
-    {
+    function requestRedeem(uint256 shares, uint256 minUsdatReceived) external whenNotPaused returns (uint256 assets) {
         require(shares <= maxRedeem(msg.sender), ExcessiveRequestedAmount());
 
         assets = previewRedeem(shares);
 
-        strcAmount = _processWithdrawal(msg.sender, msg.sender, assets, shares, minStrcPrice);
+        _processWithdrawal(msg.sender, msg.sender, assets, shares, minUsdatReceived);
     }
 
     /// @dev Internal function to process withdrawal request
     /// @param caller The address initiating the withdrawal
     /// @param owner The owner of the shares
     /// @param assets The asset value being withdrawn
-    /// @param shares The shares to burn
-    /// @param minStrcPrice The minimum price of tSTRC to accept
-    /// @return strcAmount The amount of tSTRC sent to the queue
-    function _processWithdrawal(address caller, address owner, uint256 assets, uint256 shares, uint256 minStrcPrice)
-        internal
-        nonReentrant
-        notZero(assets)
-        notZero(shares)
-        returns (uint256 strcAmount)
-    {
+    /// @param shares The shares to escrow
+    /// @param minUsdatReceived The minimum amount of USDat the user will accept
+    function _processWithdrawal(
+        address caller,
+        address owner,
+        uint256 assets,
+        uint256 shares,
+        uint256 minUsdatReceived
+    ) internal nonReentrant notZero(assets) notZero(shares) {
         _requireNotBlacklisted(caller);
         _requireNotBlacklisted(owner);
         require(assets >= MIN_WITHDRAWAL, WithdrawalTooSmall());
 
-        // Get the current STRC price from the oracle
-        (uint256 strcPrice, uint8 priceDecimals) = TSTRC.getPrice();
+        // Transfer shares to queue (escrow)
+        _transfer(owner, address(WITHDRAWAL_QUEUE), shares);
 
-        // Calculate: assets (18 decimals) * 10^priceDecimals / price = STRC amount (18 decimals)
-        strcAmount = Math.mulDiv(assets, 10 ** priceDecimals, strcPrice, Math.Rounding.Floor);
-
-        // Can only transfer the unvested tSTRC in the contract
-        require(strcAmount <= TSTRC.balanceOf(address(this)) - getUnvestedAmount(), InsufficientBalance());
-
-        _burn(owner, shares);
-
-        // Transfer tSTRC to queue and add request
-        IERC20(address(TSTRC)).safeTransfer(address(WITHDRAWAL_QUEUE), strcAmount);
-        WITHDRAWAL_QUEUE.addRequest(owner, strcAmount, minStrcPrice);
+        // Add request to queue
+        WITHDRAWAL_QUEUE.addRequest(owner, shares, minUsdatReceived);
     }
 
     /// @notice Claim all processed withdrawals for the caller
@@ -400,6 +380,16 @@ contract StakedUSDat is
     /// @return totalAmount The total amount of USDat claimed
     function claimBatch(uint256[] calldata tokenIds) external returns (uint256 totalAmount) {
         return WITHDRAWAL_QUEUE.claimBatchFor(msg.sender, tokenIds);
+    }
+
+    /// @notice Burns escrowed shares and the corresponding tSTRC sold off-chain
+    /// @dev Only callable by the withdrawal queue during processing
+    /// @param shares The number of shares to burn
+    /// @param strcAmount The amount of tSTRC that was sold off-chain
+    function burnQueuedShares(uint256 shares, uint256 strcAmount) external {
+        require(msg.sender == address(WITHDRAWAL_QUEUE), OperationNotAllowed());
+        _burn(address(WITHDRAWAL_QUEUE), shares);
+        IERC20Burnable(address(TSTRC)).burn(strcAmount);
     }
 
     /// @notice Get the withdrawal queue address

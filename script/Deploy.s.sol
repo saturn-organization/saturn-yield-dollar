@@ -68,7 +68,7 @@ contract DeployScript is Script {
         console.log("1. TokenizedSTRC deployed at:", address(tstrc));
 
         // Step 2: Deploy WithdrawalQueueERC721 Implementation and Proxy
-        WithdrawalQueueERC721 withdrawalQueueImpl = new WithdrawalQueueERC721(address(tstrc), usdat);
+        WithdrawalQueueERC721 withdrawalQueueImpl = new WithdrawalQueueERC721(usdat, address(tstrc));
         bytes memory withdrawalQueueInitData = abi.encodeCall(WithdrawalQueueERC721.initialize, (admin));
         ERC1967Proxy withdrawalQueueProxy = new ERC1967Proxy(address(withdrawalQueueImpl), withdrawalQueueInitData);
         withdrawalQueue = WithdrawalQueueERC721(address(withdrawalQueueProxy));
