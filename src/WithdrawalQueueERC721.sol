@@ -88,6 +88,7 @@ contract WithdrawalQueueERC721 is
     event WithdrawalProcessed(uint256 indexed tokenId, uint256 shares, uint256 usdatAmount);
     event Claimed(uint256 indexed tokenId, address indexed user, uint256 usdatAmount);
     event FundsSeized(uint256 indexed tokenId, address indexed user, uint256 usdatAmount, address indexed to);
+    event MinUsdatReceivedUpdated(uint256 indexed tokenId, uint256 newMinUsdatReceived);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     /// @param usdat USDat contract address
@@ -163,6 +164,19 @@ contract WithdrawalQueueERC721 is
         emit WithdrawalRequested(tokenId, user, shares, block.timestamp);
     }
 
+    /// @notice Update the minimum USDat amount for a pending withdrawal request
+    /// @param tokenId The token ID of the request to update
+    /// @param newMinUsdatReceived The new minimum USDat amount
+    function updateMinUsdatReceived(uint256 tokenId, uint256 newMinUsdatReceived) external whenNotPaused {
+        require(ownerOf(tokenId) == msg.sender, NotOwner());
+        Request storage req = requests[tokenId];
+        require(req.status == RequestStatus.Requested, AlreadyProcessed());
+
+        req.minUsdatReceived = newMinUsdatReceived;
+
+        emit MinUsdatReceivedUpdated(tokenId, newMinUsdatReceived);
+    }
+
     // ============ Processing ============
 
     function _validateAmount(uint256 usdatAmount, uint256 minUsdatReceived) internal pure {
@@ -185,20 +199,19 @@ contract WithdrawalQueueERC721 is
     ///      2. executionPrice ≈ oracle price (within ±10%)
     /// @param totalUsdatReceived Amount of USDat received from selling tSTRC
     /// @param totalStrcSold Amount of tSTRC that was sold off-chain
-    /// @param executionPrice The price per tSTRC in USDat terms (18 decimals)
+    /// @param executionPrice The price per tSTRC in USDat terms (8 decimals)
     function _validateTotals(uint256 totalUsdatReceived, uint256 totalStrcSold, uint256 executionPrice) internal view {
-        // Calculate expected USDat from executionPrice
-        uint256 expectedUsdat = Math.mulDiv(totalStrcSold, executionPrice, 1e18);
+        // Calculate expected USDat from executionPrice (8 decimals)
+        uint256 expectedUsdat = Math.mulDiv(totalStrcSold, executionPrice, 1e8);
 
         // Check totalUsdatReceived is within ±10% of expected
         require(_isWithinTolerance(totalUsdatReceived, expectedUsdat), ExecutionPriceMismatch());
 
         // Validate executionPrice against oracle price (within ±10%)
-        (uint256 oraclePrice, uint8 oracleDecimals) = TSTRC.getPrice();
-        // Normalize oracle price to 18 decimals
-        uint256 normalizedOraclePrice = oraclePrice * (10 ** (18 - oracleDecimals));
+        // Oracle price is already in 8 decimals, so compare directly
+        (uint256 oraclePrice,) = TSTRC.getPrice();
 
-        require(_isWithinTolerance(executionPrice, normalizedOraclePrice), OraclePriceMismatch());
+        require(_isWithinTolerance(executionPrice, oraclePrice), OraclePriceMismatch());
     }
 
     /// @notice Process a batch of withdrawal requests (non-sequential)
@@ -206,7 +219,7 @@ contract WithdrawalQueueERC721 is
     /// @param tokenIds Array of token IDs to process
     /// @param totalUsdatReceived Amount of USDat received from selling tSTRC
     /// @param totalStrcSold Amount of tSTRC that was sold off-chain
-    /// @param executionPrice The price per tSTRC in USDat terms (18 decimals) for validation
+    /// @param executionPrice The price per tSTRC in USDat terms (8 decimals) for validation
     function processRequests(
         uint256[] calldata tokenIds,
         uint256 totalUsdatReceived,
