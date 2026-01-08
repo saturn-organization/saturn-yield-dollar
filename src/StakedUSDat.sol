@@ -19,6 +19,7 @@ import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC2
 import {IWithdrawalQueueERC721} from "./interfaces/IWithdrawalQueueERC721.sol";
 import {ITokenizedSTRC} from "./interfaces/ITokenizedSTRC.sol";
 import {IERC20Burnable} from "./interfaces/IERC20Burnable.sol";
+import {IUSDat} from "./interfaces/IUSDat.sol";
 
 /**
  * @title StakedUSDat
@@ -47,10 +48,12 @@ contract StakedUSDat is
     error InvalidVestingPeriod();
     error WithdrawalTooSmall();
     error SlippageExceeded();
+    error ExecutionPriceMismatch();
+    error OraclePriceMismatch();
 
     event Blacklisted(address target);
     event UnBlacklisted(address target);
-    event Converted(uint256 usdatAmount, uint256 strcAmount);
+    event Converted(uint256 usdatBalance, uint256 strcBalance);
     event RewardsReceived(uint256 amount, uint256 newVestingAmount);
     event LockedAmountRedistributed(address from, uint256 amount);
     event VestingPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
@@ -80,6 +83,10 @@ contract StakedUSDat is
     /// If a user has less than $10 they can swap on a DEX
     /// Or they can purchase more and swap out
     uint256 public constant MIN_WITHDRAWAL = 10e18;
+
+    /// @notice 20% tolerance in basis points for price validation
+    uint256 public constant PRICE_TOLERANCE_BPS = 2000;
+    uint256 public constant BPS_DENOMINATOR = 10000;
 
     modifier notZero(uint256 amount) {
         _notZero(amount);
@@ -231,9 +238,36 @@ contract StakedUSDat is
         nonReentrant
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
-        require(token == address(TSTRC) || token == address(asset()), OperationNotAllowed());
+        require(token != address(TSTRC) && token != address(asset()), OperationNotAllowed());
 
         IERC20(token).safeTransfer(to, amount);
+    }
+
+    /// @notice Checks if a value is within ±PRICE_TOLERANCE_BPS of an expected value
+    /// @param value The actual value to check
+    /// @param expected The expected value
+    /// @return True if value is within tolerance of expected
+    function _isWithinTolerance(uint256 value, uint256 expected) internal pure returns (bool) {
+        uint256 minExpected = Math.mulDiv(expected, BPS_DENOMINATOR - PRICE_TOLERANCE_BPS, BPS_DENOMINATOR);
+        uint256 maxExpected = Math.mulDiv(expected, BPS_DENOMINATOR + PRICE_TOLERANCE_BPS, BPS_DENOMINATOR);
+        return value >= minExpected && value <= maxExpected;
+    }
+
+    /// @notice Validates that strcAmount matches usdatAmount / strcPurchasePrice within tolerance
+    /// @param usdatAmount Amount of USDat being converted
+    /// @param strcAmount Amount of STRC to mint
+    /// @param strcPurchasePrice Price per STRC in USDat terms (8 decimals)
+    function _validateConversion(uint256 usdatAmount, uint256 strcAmount, uint256 strcPurchasePrice) internal view {
+        // Calculate expected STRC: usdatAmount / strcPurchasePrice
+        // usdatAmount is 18 decimals, strcPurchasePrice is 8 decimals, result should be 18 decimals
+        uint256 expectedStrc = Math.mulDiv(usdatAmount, 1e8, strcPurchasePrice);
+
+        // Validate strcAmount is within ±10% of expected
+        require(_isWithinTolerance(strcAmount, expectedStrc), ExecutionPriceMismatch());
+
+        // Validate strcPurchasePrice against oracle price (within ±10%)
+        (uint256 oraclePrice,) = TSTRC.getPrice();
+        require(_isWithinTolerance(strcPurchasePrice, oraclePrice), OraclePriceMismatch());
     }
 
     /// @notice Transfer rewards into the contract with linear vesting
@@ -257,15 +291,44 @@ contract StakedUSDat is
      * @notice Called by the admin when the entity purchases STRC from the market and sells the Tbills backing USDat.
      * @param usdatAmount amount of USDat to convert
      * @param strcAmount amount of STRC to mint
+     * @param strcPurchasePrice price per STRC in USDat terms (8 decimals)
      */
-    function convert(uint256 usdatAmount, uint256 strcAmount) external onlyRole(PROCESSOR_ROLE) {
+    function convertFromUsdat(uint256 usdatAmount, uint256 strcAmount, uint256 strcPurchasePrice)
+        external
+        onlyRole(PROCESSOR_ROLE)
+    {
         require(IERC20(asset()).balanceOf(address(this)) >= usdatAmount, InsufficientBalance());
+
+        // Validate strcAmount matches usdatAmount / strcPurchasePrice within tolerance
+        _validateConversion(usdatAmount, strcAmount, strcPurchasePrice);
 
         IERC20Burnable(asset()).burn(usdatAmount);
 
         TSTRC.mint(address(this), strcAmount);
 
-        emit Converted(usdatAmount, strcAmount);
+        emit Converted(IERC20(asset()).balanceOf(address(this)), TSTRC.balanceOf(address(this)));
+    }
+
+    /**
+     * @notice Called by the admin when the entity sells STRC to the market and purchases Tbills to back USDat.
+     * @param strcAmount amount of STRC to burn
+     * @param usdatAmount amount of USDat to mint
+     * @param strcSalePrice price per STRC in USDat terms (8 decimals)
+     */
+    function convertFromStrc(uint256 strcAmount, uint256 usdatAmount, uint256 strcSalePrice)
+        external
+        onlyRole(PROCESSOR_ROLE)
+    {
+        require(TSTRC.balanceOf(address(this)) >= strcAmount, InsufficientBalance());
+
+        // Validate usdatAmount matches strcAmount * strcSalePrice within tolerance
+        _validateConversion(usdatAmount, strcAmount, strcSalePrice);
+
+        IERC20Burnable(address(TSTRC)).burn(strcAmount);
+
+        IUSDat(asset()).mint(address(this), usdatAmount);
+
+        emit Converted(IERC20(asset()).balanceOf(address(this)), TSTRC.balanceOf(address(this)));
     }
 
     /**
@@ -321,78 +384,57 @@ contract StakedUSDat is
         revert OperationNotAllowed();
     }
 
-    /// @notice Request a withdrawal - burns shares, calculates STRC owed, adds to queue
+    /// @notice Request a withdrawal - escrows shares in the queue
     /// @param assets The amount of assets to withdraw
-    /// @param minStrcPrice The minimum price of tSTRC to accept
-    /// @return shares The number of shares burned
-    /// @return strcAmount The amount of tSTRC added to the withdrawal queue
-    function requestWithdraw(uint256 assets, uint256 minStrcPrice)
-        external
-        whenNotPaused
-        returns (uint256 shares, uint256 strcAmount)
-    {
+    /// @param minUsdatReceived The minimum amount of USDat the user will accept
+    /// @return shares The number of shares escrowed
+    function requestWithdraw(uint256 assets, uint256 minUsdatReceived) external whenNotPaused returns (uint256 shares) {
         require(assets <= maxWithdraw(msg.sender), ExcessiveRequestedAmount());
 
         shares = previewWithdraw(assets);
 
-        strcAmount = _processWithdrawal(msg.sender, msg.sender, assets, shares, minStrcPrice);
+        _processWithdrawal(msg.sender, msg.sender, assets, shares, minUsdatReceived);
     }
 
-    /// @notice Request a redemption - burns shares, calculates STRC owed, adds to queue
+    /// @notice Request a redemption - escrows shares in the queue
     /// @param shares The number of shares to redeem
-    /// @param minStrcPrice The minimum price of tSTRC to accept
+    /// @param minUsdatReceived The minimum amount of USDat the user will accept
     /// @return assets The amount of assets being redeemed
-    /// @return strcAmount The amount of tSTRC added to the withdrawal queue
-    function requestRedeem(uint256 shares, uint256 minStrcPrice)
-        external
-        whenNotPaused
-        returns (uint256 assets, uint256 strcAmount)
-    {
+    function requestRedeem(uint256 shares, uint256 minUsdatReceived) external whenNotPaused returns (uint256 assets) {
         require(shares <= maxRedeem(msg.sender), ExcessiveRequestedAmount());
 
         assets = previewRedeem(shares);
 
-        strcAmount = _processWithdrawal(msg.sender, msg.sender, assets, shares, minStrcPrice);
+        _processWithdrawal(msg.sender, msg.sender, assets, shares, minUsdatReceived);
     }
 
     /// @dev Internal function to process withdrawal request
     /// @param caller The address initiating the withdrawal
     /// @param owner The owner of the shares
     /// @param assets The asset value being withdrawn
-    /// @param shares The shares to burn
-    /// @param minStrcPrice The minimum price of tSTRC to accept
-    /// @return strcAmount The amount of tSTRC sent to the queue
-    function _processWithdrawal(address caller, address owner, uint256 assets, uint256 shares, uint256 minStrcPrice)
+    /// @param shares The shares to escrow
+    /// @param minUsdatReceived The minimum amount of USDat the user will accept
+    function _processWithdrawal(address caller, address owner, uint256 assets, uint256 shares, uint256 minUsdatReceived)
         internal
         nonReentrant
         notZero(assets)
         notZero(shares)
-        returns (uint256 strcAmount)
     {
         _requireNotBlacklisted(caller);
         _requireNotBlacklisted(owner);
         require(assets >= MIN_WITHDRAWAL, WithdrawalTooSmall());
 
-        // Get the current STRC price from the oracle
-        (uint256 strcPrice, uint8 priceDecimals) = TSTRC.getPrice();
+        // Transfer shares to queue (escrow)
+        _transfer(owner, address(WITHDRAWAL_QUEUE), shares);
 
-        // Calculate: assets (18 decimals) * 10^priceDecimals / price = STRC amount (18 decimals)
-        strcAmount = Math.mulDiv(assets, 10 ** priceDecimals, strcPrice, Math.Rounding.Floor);
-
-        // Can only transfer the unvested tSTRC in the contract
-        require(strcAmount <= TSTRC.balanceOf(address(this)) - getUnvestedAmount(), InsufficientBalance());
-
-        _burn(owner, shares);
-
-        // Transfer tSTRC to queue and add request
-        IERC20(address(TSTRC)).safeTransfer(address(WITHDRAWAL_QUEUE), strcAmount);
-        WITHDRAWAL_QUEUE.addRequest(owner, strcAmount, minStrcPrice);
+        // Add request to queue
+        WITHDRAWAL_QUEUE.addRequest(owner, shares, minUsdatReceived);
     }
 
     /// @notice Claim all processed withdrawals for the caller
     /// @return totalAmount The total amount of USDat claimed
     function claim() external returns (uint256 totalAmount) {
-        return WITHDRAWAL_QUEUE.claimFor(msg.sender);
+        return WITHDRAWAL_QUEUE.claimAllFor(msg.sender);
     }
 
     /// @notice Claim specific withdrawal requests for the caller
@@ -400,6 +442,16 @@ contract StakedUSDat is
     /// @return totalAmount The total amount of USDat claimed
     function claimBatch(uint256[] calldata tokenIds) external returns (uint256 totalAmount) {
         return WITHDRAWAL_QUEUE.claimBatchFor(msg.sender, tokenIds);
+    }
+
+    /// @notice Burns escrowed shares and the corresponding tSTRC sold off-chain
+    /// @dev Only callable by the withdrawal queue during processing
+    /// @param shares The number of shares to burn
+    /// @param strcAmount The amount of tSTRC that was sold off-chain
+    function burnQueuedShares(uint256 shares, uint256 strcAmount) external {
+        require(msg.sender == address(WITHDRAWAL_QUEUE), OperationNotAllowed());
+        IERC20Burnable(address(TSTRC)).burn(strcAmount);
+        _burn(address(WITHDRAWAL_QUEUE), shares);
     }
 
     /// @notice Get the withdrawal queue address
