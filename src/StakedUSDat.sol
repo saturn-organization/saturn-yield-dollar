@@ -50,6 +50,7 @@ contract StakedUSDat is
     error SlippageExceeded();
     error ExecutionPriceMismatch();
     error OraclePriceMismatch();
+    error InvalidFee();
 
     event Blacklisted(address target);
     event UnBlacklisted(address target);
@@ -57,6 +58,8 @@ contract StakedUSDat is
     event RewardsReceived(uint256 amount, uint256 newVestingAmount);
     event LockedAmountRedistributed(address from, uint256 amount);
     event VestingPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
+    event DepositFeeUpdated(uint256 newFee);
+    event FeeRecipientUpdated(address newRecipient);
 
     bytes32 public constant PROCESSOR_ROLE = keccak256("PROCESSOR_ROLE");
     bytes32 private constant COMPLIANCE_ROLE = keccak256("COMPLIANCE_ROLE");
@@ -88,6 +91,15 @@ contract StakedUSDat is
     uint256 public constant PRICE_TOLERANCE_BPS = 2000;
     uint256 public constant BPS_DENOMINATOR = 10000;
 
+    /// @notice Maximum deposit fee (5%)
+    uint256 public constant MAX_DEPOSIT_FEE_BPS = 500;
+
+    /// @notice Deposit fee in basis points (defaulxt 10 bps = 0.10%)
+    uint256 public depositFeeBps;
+
+    /// @notice Address that receives deposit fees
+    address public feeRecipient;
+
     modifier notZero(uint256 amount) {
         _notZero(amount);
         _;
@@ -112,10 +124,13 @@ contract StakedUSDat is
     /// @param processor The address of the processor
     /// @param compliance The address of the compliance role
     /// @param usdat USDat contract address
-    function initialize(address defaultAdmin, address processor, address compliance, IERC20 usdat)
-        external
-        initializer
-    {
+    function initialize(
+        address defaultAdmin,
+        address processor,
+        address compliance,
+        address depositFeeRecipient,
+        IERC20 usdat
+    ) external initializer {
         require(
             defaultAdmin != address(0) && address(usdat) != address(0) && processor != address(0)
                 && compliance != address(0),
@@ -134,6 +149,8 @@ contract StakedUSDat is
 
         // Initialize vesting period to 30 days
         vestingPeriod = 30 days;
+        depositFeeBps = 10;
+        feeRecipient = depositFeeRecipient;
     }
 
     /// @notice Authorizes an upgrade to a new implementation
@@ -233,6 +250,29 @@ contract StakedUSDat is
         return 18;
     }
 
+    /// @notice Preview shares received for a deposit, accounting for fees
+    /// @param assets The amount of assets to deposit
+    /// @return shares The amount of shares that would be minted
+    function previewDeposit(uint256 assets) public view override returns (uint256) {
+        if (depositFeeBps == 0) {
+            return super.previewDeposit(assets);
+        }
+        uint256 fee = Math.mulDiv(assets, depositFeeBps, BPS_DENOMINATOR);
+        return super.previewDeposit(assets - fee);
+    }
+
+    /// @notice Preview assets required to mint shares, accounting for fees
+    /// @param shares The amount of shares to mint
+    /// @return assets The amount of assets required (including fee)
+    function previewMint(uint256 shares) public view override returns (uint256) {
+        if (depositFeeBps == 0) {
+            return super.previewMint(shares);
+        }
+        uint256 assets = super.previewMint(shares);
+        // Gross up: assets / (1 - feeRate) = assets * BPS_DENOMINATOR / (BPS_DENOMINATOR - fee)
+        return Math.mulDiv(assets, BPS_DENOMINATOR, BPS_DENOMINATOR - depositFeeBps, Math.Rounding.Ceil);
+    }
+
     function rescueTokens(address token, uint256 amount, address to)
         external
         nonReentrant
@@ -268,23 +308,6 @@ contract StakedUSDat is
         // Validate strcPurchasePrice against oracle price (within ±10%)
         (uint256 oraclePrice,) = TSTRC.getPrice();
         require(_isWithinTolerance(strcPurchasePrice, oraclePrice), OraclePriceMismatch());
-    }
-
-    /// @notice Transfer rewards into the contract with linear vesting
-    /// @dev Rewards vest linearly over vestingPeriod to prevent front-running
-    /// @param amount The amount of tSTRC to mint as rewards
-    function transferInRewards(uint256 amount) external nonReentrant onlyRole(PROCESSOR_ROLE) notZero(amount) {
-        // Check if previous rewards are still vesting
-        if (getUnvestedAmount() > 0) revert StillVesting();
-
-        // Mint tSTRC rewards to this contract
-        TSTRC.mint(address(this), amount);
-
-        // Set new vesting amount and reset timestamp
-        vestingAmount = amount;
-        lastDistributionTimestamp = block.timestamp;
-
-        emit RewardsReceived(amount, amount);
     }
 
     /**
@@ -331,6 +354,23 @@ contract StakedUSDat is
         emit Converted(IERC20(asset()).balanceOf(address(this)), TSTRC.balanceOf(address(this)));
     }
 
+    /// @notice Transfer rewards into the contract with linear vesting
+    /// @dev Rewards vest linearly over vestingPeriod to prevent front-running
+    /// @param amount The amount of tSTRC to mint as rewards
+    function transferInRewards(uint256 amount) external nonReentrant onlyRole(PROCESSOR_ROLE) notZero(amount) {
+        // Check if previous rewards are still vesting
+        if (getUnvestedAmount() > 0) revert StillVesting();
+
+        // Mint tSTRC rewards to this contract
+        TSTRC.mint(address(this), amount);
+
+        // Set new vesting amount and reset timestamp
+        vestingAmount = amount;
+        lastDistributionTimestamp = block.timestamp;
+
+        emit RewardsReceived(amount, amount);
+    }
+
     /**
      * @dev Deposit/mint common workflow.
      * @param caller sender of assets
@@ -349,7 +389,14 @@ contract StakedUSDat is
         _requireNotBlacklisted(caller);
         _requireNotBlacklisted(receiver);
 
-        super._deposit(caller, receiver, assets, shares);
+        // Calculate and transfer fee if applicable
+        uint256 fee = 0;
+        if (depositFeeBps > 0 && feeRecipient != address(0)) {
+            fee = Math.mulDiv(assets, depositFeeBps, BPS_DENOMINATOR);
+            IERC20(asset()).safeTransferFrom(caller, feeRecipient, fee);
+        }
+
+        super._deposit(caller, receiver, assets - fee, shares);
     }
 
     /// @notice Deposit assets with slippage protection
@@ -464,18 +511,10 @@ contract StakedUSDat is
         return address(TSTRC);
     }
 
-    function pause() external onlyRole(COMPLIANCE_ROLE) {
-        _pause();
-    }
-
-    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
-        _unpause();
-    }
-
     /// @notice Updates the vesting period for reward distributions
-    /// @dev Only callable by DEFAULT_ADMIN_ROLE. Cannot be changed while rewards are vesting.
+    /// @dev Only callable by PROCESSOR_ROLE. Cannot be changed while rewards are vesting.
     /// @param newVestingPeriod The new vesting period in seconds
-    function setVestingPeriod(uint256 newVestingPeriod) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setVestingPeriod(uint256 newVestingPeriod) external onlyRole(PROCESSOR_ROLE) {
         require(newVestingPeriod > 0 && newVestingPeriod <= MAX_VESTING_PERIOD, InvalidVestingPeriod());
         require(getUnvestedAmount() == 0, StillVesting());
 
@@ -485,9 +524,31 @@ contract StakedUSDat is
         emit VestingPeriodUpdated(oldPeriod, newVestingPeriod);
     }
 
-    /// @notice Get the current vesting period
-    /// @return The vesting period in seconds
-    function getVestingPeriod() external view returns (uint256) {
-        return vestingPeriod;
+    /// @notice Updates the deposit fee
+    /// @dev Only callable by PROCESSOR_ROLE. Can be set to 0 to disable fees.
+    /// @param newFeeBps The new fee in basis points (0 to MAX_DEPOSIT_FEE_BPS)
+    function setDepositFee(uint256 newFeeBps) external onlyRole(PROCESSOR_ROLE) {
+        require(newFeeBps <= MAX_DEPOSIT_FEE_BPS, InvalidFee());
+
+        depositFeeBps = newFeeBps;
+
+        emit DepositFeeUpdated(newFeeBps);
+    }
+
+    /// @notice Updates the fee recipient address
+    /// @dev Only callable by PROCESSOR_ROLE. Can be set to address(0) to disable fees.
+    /// @param newRecipient The new fee recipient address
+    function setFeeRecipient(address newRecipient) external onlyRole(PROCESSOR_ROLE) {
+        feeRecipient = newRecipient;
+
+        emit FeeRecipientUpdated(newRecipient);
+    }
+
+    function pause() external onlyRole(COMPLIANCE_ROLE) {
+        _pause();
+    }
+
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _unpause();
     }
 }
