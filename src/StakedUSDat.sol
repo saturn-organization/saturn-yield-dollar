@@ -351,13 +351,12 @@ contract StakedUSDat is
     /// @param assets The asset value being withdrawn
     /// @param shares The shares to escrow
     /// @param minUsdatReceived The minimum amount of USDat the user will accept
-    function _processWithdrawal(
-        address caller,
-        address owner,
-        uint256 assets,
-        uint256 shares,
-        uint256 minUsdatReceived
-    ) internal nonReentrant notZero(assets) notZero(shares) {
+    function _processWithdrawal(address caller, address owner, uint256 assets, uint256 shares, uint256 minUsdatReceived)
+        internal
+        nonReentrant
+        notZero(assets)
+        notZero(shares)
+    {
         _requireNotBlacklisted(caller);
         _requireNotBlacklisted(owner);
         require(assets >= MIN_WITHDRAWAL, WithdrawalTooSmall());
