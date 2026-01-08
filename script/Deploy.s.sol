@@ -49,6 +49,7 @@ contract DeployScript is Script {
         address admin = vm.envOr("ADMIN", deployer);
         address processor = vm.envOr("PROCESSOR", deployer);
         address compliance = vm.envOr("COMPLIANCE", deployer);
+        address depositFeeRecipient = vm.envOr("DEPOSIT_FEE_RECIPIENT", deployer);
         address usdat = vm.envAddress("USDAT");
         address oracle = vm.envAddress("ORACLE");
 
@@ -57,6 +58,7 @@ contract DeployScript is Script {
         console.log("Admin:", admin);
         console.log("Processor:", processor);
         console.log("Compliance:", compliance);
+        console.log("Deposit Fee Recipient:", depositFeeRecipient);
         console.log("USDat:", usdat);
         console.log("Oracle:", oracle);
         console.log("");
@@ -81,7 +83,8 @@ contract DeployScript is Script {
         console.log("3. StakedUSDat Implementation deployed at:", address(stakedUsdatImpl));
 
         // Step 4: Deploy StakedUSDat Proxy and initialize
-        bytes memory initData = abi.encodeCall(StakedUSDat.initialize, (admin, processor, compliance, IERC20(usdat)));
+        bytes memory initData =
+            abi.encodeCall(StakedUSDat.initialize, (admin, processor, compliance, depositFeeRecipient, IERC20(usdat)));
         ERC1967Proxy proxy = new ERC1967Proxy(address(stakedUsdatImpl), initData);
         stakedUsdat = StakedUSDat(address(proxy));
         console.log("4. StakedUSDat Proxy deployed at:", address(stakedUsdat));
