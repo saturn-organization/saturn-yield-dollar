@@ -372,7 +372,7 @@ contract StakedUSDat is
     /// @notice Claim all processed withdrawals for the caller
     /// @return totalAmount The total amount of USDat claimed
     function claim() external returns (uint256 totalAmount) {
-        return WITHDRAWAL_QUEUE.claimFor(msg.sender);
+        return WITHDRAWAL_QUEUE.claimAllFor(msg.sender);
     }
 
     /// @notice Claim specific withdrawal requests for the caller
