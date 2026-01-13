@@ -342,7 +342,10 @@ contract StakedUSDat is
         external
         onlyRole(PROCESSOR_ROLE)
     {
-        require(TSTRC.balanceOf(address(this)) >= strcAmount, InsufficientBalance());
+        uint256 strcBalance = TSTRC.balanceOf(address(this));
+        uint256 unvestedAmount = getUnvestedAmount();
+        uint256 vestedBalance = strcBalance - unvestedAmount;
+        require(strcAmount <= vestedBalance, InsufficientBalance());
 
         // Validate usdatAmount matches strcAmount * strcSalePrice within tolerance
         _validateConversion(usdatAmount, strcAmount, strcSalePrice);
