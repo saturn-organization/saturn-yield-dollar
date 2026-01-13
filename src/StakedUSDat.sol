@@ -302,10 +302,10 @@ contract StakedUSDat is
         // usdatAmount is 18 decimals, strcPurchasePrice is 8 decimals, result should be 18 decimals
         uint256 expectedStrc = Math.mulDiv(usdatAmount, 1e8, strcPurchasePrice);
 
-        // Validate strcAmount is within ±10% of expected
+        // Validate strcAmount is within tollerance of expected
         require(_isWithinTolerance(strcAmount, expectedStrc), ExecutionPriceMismatch());
 
-        // Validate strcPurchasePrice against oracle price (within ±10%)
+        // Validate strcPurchasePrice against oracle price (within tollerance)
         (uint256 oraclePrice,) = TSTRC.getPrice();
         require(_isWithinTolerance(strcPurchasePrice, oraclePrice), OraclePriceMismatch());
     }
