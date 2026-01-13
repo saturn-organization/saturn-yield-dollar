@@ -42,6 +42,7 @@ contract StakedUSDat is
     error ExcessiveRequestedAmount();
     error AddressNotBlacklisted();
     error AddressBlacklisted();
+    error NoRecipientsForRedistribution();
     error CannotBlacklistAdmin();
     error InsufficientBalance();
     error StillVesting();
@@ -210,6 +211,10 @@ contract StakedUSDat is
     function redistributeLockedAmount(address from) external nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) {
         require(_blacklisted[from], AddressNotBlacklisted());
         uint256 amountToDistribute = balanceOf(from);
+
+        require(amountToDistribute > 0, ZeroAmount());
+        require(totalSupply() > amountToDistribute, NoRecipientsForRedistribution());
+
         _burn(from, amountToDistribute);
         emit LockedAmountRedistributed(from, amountToDistribute);
     }
