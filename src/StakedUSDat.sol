@@ -54,7 +54,7 @@ contract StakedUSDat is
 
     event Blacklisted(address target);
     event UnBlacklisted(address target);
-    event Converted(uint256 usdatBalance, uint256 strcBalance);
+    event Converted(uint256 usdatAmount, uint256 strcAmount);
     event RewardsReceived(uint256 amount, uint256 newVestingAmount);
     event LockedAmountRedistributed(address from, uint256 amount);
     event VestingPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
@@ -329,7 +329,7 @@ contract StakedUSDat is
 
         TSTRC.mint(address(this), strcAmount);
 
-        emit Converted(IERC20(asset()).balanceOf(address(this)), TSTRC.balanceOf(address(this)));
+        emit Converted(usdatAmount, strcAmount);
     }
 
     /**
@@ -351,7 +351,7 @@ contract StakedUSDat is
 
         IUSDat(asset()).mint(address(this), usdatAmount);
 
-        emit Converted(IERC20(asset()).balanceOf(address(this)), TSTRC.balanceOf(address(this)));
+        emit Converted(usdatAmount, strcAmount);
     }
 
     /// @notice Transfer rewards into the contract with linear vesting
