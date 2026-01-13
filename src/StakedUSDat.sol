@@ -254,7 +254,7 @@ contract StakedUSDat is
     /// @param assets The amount of assets to deposit
     /// @return shares The amount of shares that would be minted
     function previewDeposit(uint256 assets) public view override returns (uint256) {
-        if (depositFeeBps == 0) {
+        if (depositFeeBps == 0 || feeRecipient == address(0)) {
             return super.previewDeposit(assets);
         }
         uint256 fee = Math.mulDiv(assets, depositFeeBps, BPS_DENOMINATOR);
@@ -265,7 +265,7 @@ contract StakedUSDat is
     /// @param shares The amount of shares to mint
     /// @return assets The amount of assets required (including fee)
     function previewMint(uint256 shares) public view override returns (uint256) {
-        if (depositFeeBps == 0) {
+        if (depositFeeBps == 0 || feeRecipient == address(0)) {
             return super.previewMint(shares);
         }
         uint256 assets = super.previewMint(shares);
