@@ -11,4 +11,6 @@ interface IStakedUSDat {
     function asset() external view returns (address);
 
     function getUnvestedAmount() external view returns (uint256);
+
+    function toleranceBps() external view returns (uint256);
 }

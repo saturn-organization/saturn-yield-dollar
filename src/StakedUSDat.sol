@@ -60,6 +60,7 @@ contract StakedUSDat is
     event VestingPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
     event DepositFeeUpdated(uint256 newFee);
     event FeeRecipientUpdated(address newRecipient);
+    event toleranceUpdated(uint256 newToleranceBps);
 
     bytes32 public constant PROCESSOR_ROLE = keccak256("PROCESSOR_ROLE");
     bytes32 private constant COMPLIANCE_ROLE = keccak256("COMPLIANCE_ROLE");
@@ -87,8 +88,10 @@ contract StakedUSDat is
     /// Or they can purchase more and swap out
     uint256 public constant MIN_WITHDRAWAL = 10e18;
 
-    /// @notice 20% tolerance in basis points for price validation
-    uint256 public constant PRICE_TOLERANCE_BPS = 2000;
+    /// @notice Tolerance in basis points for validation
+    uint256 public toleranceBps;
+    uint256 public constant MAX_TOLERANCE_BPS = 10000; // 100% max
+    uint256 public constant MIN_TOLERANCE_BPS = 100; // 1% min
     uint256 public constant BPS_DENOMINATOR = 10000;
 
     /// @notice Maximum deposit fee (5%)
@@ -151,6 +154,7 @@ contract StakedUSDat is
         vestingPeriod = 30 days;
         depositFeeBps = 10;
         feeRecipient = depositFeeRecipient;
+        toleranceBps = 2000; // Default 20%
     }
 
     /// @notice Authorizes an upgrade to a new implementation
@@ -283,13 +287,13 @@ contract StakedUSDat is
         IERC20(token).safeTransfer(to, amount);
     }
 
-    /// @notice Checks if a value is within ±PRICE_TOLERANCE_BPS of an expected value
+    /// @notice Checks if a value is within ±TOLERANCE_BPS of an expected value
     /// @param value The actual value to check
     /// @param expected The expected value
     /// @return True if value is within tolerance of expected
-    function _isWithinTolerance(uint256 value, uint256 expected) internal pure returns (bool) {
-        uint256 minExpected = Math.mulDiv(expected, BPS_DENOMINATOR - PRICE_TOLERANCE_BPS, BPS_DENOMINATOR);
-        uint256 maxExpected = Math.mulDiv(expected, BPS_DENOMINATOR + PRICE_TOLERANCE_BPS, BPS_DENOMINATOR);
+    function _isWithinTolerance(uint256 value, uint256 expected) internal view returns (bool) {
+        uint256 minExpected = Math.mulDiv(expected, BPS_DENOMINATOR - toleranceBps, BPS_DENOMINATOR);
+        uint256 maxExpected = Math.mulDiv(expected, BPS_DENOMINATOR + toleranceBps, BPS_DENOMINATOR);
         return value >= minExpected && value <= maxExpected;
     }
 
@@ -302,10 +306,10 @@ contract StakedUSDat is
         // usdatAmount is 18 decimals, strcPurchasePrice is 8 decimals, result should be 18 decimals
         uint256 expectedStrc = Math.mulDiv(usdatAmount, 1e8, strcPurchasePrice);
 
-        // Validate strcAmount is within tollerance of expected
+        // Validate strcAmount is within tolerance of expected
         require(_isWithinTolerance(strcAmount, expectedStrc), ExecutionPriceMismatch());
 
-        // Validate strcPurchasePrice against oracle price (within tollerance)
+        // Validate strcPurchasePrice against oracle price (within tolerance)
         (uint256 oraclePrice,) = TSTRC.getPrice();
         require(_isWithinTolerance(strcPurchasePrice, oraclePrice), OraclePriceMismatch());
     }
@@ -545,6 +549,17 @@ contract StakedUSDat is
         feeRecipient = newRecipient;
 
         emit FeeRecipientUpdated(newRecipient);
+    }
+
+    /// @notice Update the price tolerance for conversion validation
+    /// @dev Only callable by PROCESSOR_ROLE. Use during black swan events.
+    /// @param newToleranceBps The new tolerance in basis points
+    function setTolerance(uint256 newToleranceBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(newToleranceBps >= MIN_TOLERANCE_BPS && newToleranceBps <= MAX_TOLERANCE_BPS, InvalidFee());
+
+        toleranceBps = newToleranceBps;
+
+        emit toleranceUpdated(newToleranceBps);
     }
 
     function pause() external onlyRole(COMPLIANCE_ROLE) {
