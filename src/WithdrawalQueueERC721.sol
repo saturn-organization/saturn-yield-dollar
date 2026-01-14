@@ -63,9 +63,7 @@ contract WithdrawalQueueERC721 is
     uint256 public pendingCount;
 
     // Constants
-    uint256 public constant PRICE_TOLERANCE_BPS = 2000; // 20% tolerance in basis points
     uint256 public constant BPS_DENOMINATOR = 10000;
-    uint256 public constant MIN_VAULT_USDAT_BPS = 500; // 5% minimum USDat reserve in vault
 
     // Errors
     error ZeroAmount();
@@ -191,13 +189,14 @@ contract WithdrawalQueueERC721 is
         require(usdatAmount >= minUsdatReceived, SlippageExceeded());
     }
 
-    /// @notice Checks if a value is within ±PRICE_TOLERANCE_BPS of an expected value
+    /// @notice Checks if a value is within ±TOLERANCE_BPS of an expected value
     /// @param value The actual value to check
     /// @param expected The expected value
     /// @return True if value is within tolerance of expected
-    function _isWithinTolerance(uint256 value, uint256 expected) internal pure returns (bool) {
-        uint256 minExpected = Math.mulDiv(expected, BPS_DENOMINATOR - PRICE_TOLERANCE_BPS, BPS_DENOMINATOR);
-        uint256 maxExpected = Math.mulDiv(expected, BPS_DENOMINATOR + PRICE_TOLERANCE_BPS, BPS_DENOMINATOR);
+    function _isWithinTolerance(uint256 value, uint256 expected) internal view returns (bool) {
+        uint256 toleranceBps = stakedUSDat.toleranceBps();
+        uint256 minExpected = Math.mulDiv(expected, BPS_DENOMINATOR - toleranceBps, BPS_DENOMINATOR);
+        uint256 maxExpected = Math.mulDiv(expected, BPS_DENOMINATOR + toleranceBps, BPS_DENOMINATOR);
         return value >= minExpected && value <= maxExpected;
     }
 
