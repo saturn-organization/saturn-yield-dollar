@@ -177,6 +177,7 @@ contract WithdrawalQueueERC721 is
         _requireNotBlacklisted(msg.sender);
         Request storage req = requests[tokenId];
         require(req.status == RequestStatus.Requested, AlreadyProcessed());
+        require(newMinUsdatReceived < req.minUsdatReceived, InvalidInputs());
 
         req.minUsdatReceived = newMinUsdatReceived;
 
