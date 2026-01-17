@@ -34,12 +34,10 @@ contract TokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, 
     error InvalidStaleness();
     error InvalidPriceBounds();
 
-    /// @notice Maximum allowed price staleness (default 5 days to account for weekends/holidays)
     uint256 public maxPriceStaleness;
-    /// @notice Minimum allowed staleness setting (1 hour)
-    uint256 public constant MIN_STALENESS = 1 hours;
-    /// @notice Maximum allowed staleness setting (7 days)
-    uint256 public constant MAX_STALENESS = 7 days;
+
+    /// @notice Maximum allowed staleness setting
+    uint256 public constant MAX_STALENESS = 6 hours;
 
     /// @notice Minimum acceptable price from oracle (default $20 with 8 decimals)
     uint256 public minPrice;
@@ -64,7 +62,7 @@ contract TokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, 
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
 
         oracle = IPriceOracle(oracleAddress);
-        maxPriceStaleness = 5 days;
+        maxPriceStaleness = 2 hours; //Oracle heartbeat is 1 hr
         minPrice = 20e8; // $20 with 8 decimals
         maxPrice = 150e8; // $150 with 8 decimals
     }
@@ -91,7 +89,7 @@ contract TokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, 
     /// @notice Updates the maximum allowed price staleness
     /// @param newStaleness The new staleness value in seconds
     function setMaxPriceStaleness(uint256 newStaleness) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(newStaleness >= MIN_STALENESS && newStaleness <= MAX_STALENESS, InvalidStaleness());
+        require(newStaleness <= MAX_STALENESS, InvalidStaleness());
         maxPriceStaleness = newStaleness;
         emit MaxPriceStalenessUpdated(newStaleness);
     }
