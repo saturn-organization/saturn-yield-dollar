@@ -34,6 +34,7 @@ contract WithdrawalQueueERC721 is
 
     /// @notice The lifecycle status of a withdrawal request
     enum RequestStatus {
+        NULL,
         Requested, // Request created, waiting to be processed
         Processed, // Processed by admin, USDat allocated, ready to claim
         Claimed // User has claimed their USDat (NFT burned)
