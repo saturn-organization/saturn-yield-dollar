@@ -442,6 +442,7 @@ contract StakedUSDat is
     /// @param minShares The minimum number of shares to receive, reverts if less
     /// @return shares The number of shares minted
     function depositWithMinShares(uint256 assets, address receiver, uint256 minShares) public returns (uint256 shares) {
+        require(assets <= maxDeposit(receiver), ExcessiveRequestedAmount());
         shares = previewDeposit(assets);
         require(shares >= minShares, SlippageExceeded());
         _deposit(msg.sender, receiver, assets, shares);
@@ -453,6 +454,7 @@ contract StakedUSDat is
     /// @param maxAssets The maximum amount of assets to spend, reverts if more
     /// @return assets The amount of assets spent
     function mintWithMaxAssets(uint256 shares, address receiver, uint256 maxAssets) public returns (uint256 assets) {
+        require(shares <= maxMint(receiver), ExcessiveRequestedAmount());
         assets = previewMint(shares);
         require(assets <= maxAssets, SlippageExceeded());
         _deposit(msg.sender, receiver, assets, shares);
