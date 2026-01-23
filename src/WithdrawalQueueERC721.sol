@@ -203,14 +203,21 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @notice Validates that totalUsdatReceived and totalStrcSold are consistent
-    /// @dev Checks three things:
+    /// @dev Checks four things:
     ///      1. totalStrcSold <= vested tSTRC balance (cannot sell unvested rewards)
     ///      2. totalUsdatReceived ≈ totalStrcSold * executionPrice (within tolerance)
     ///      3. executionPrice ≈ oracle price (within tolerance)
+    ///      4. totalUsdatReceived ≈ expected value of totalShares (within tolerance)
     /// @param totalUsdatReceived Amount of USDat received from selling tSTRC
     /// @param totalStrcSold Amount of tSTRC that was sold off-chain
     /// @param executionPrice The price per tSTRC in USDat terms (8 decimals)
-    function _validateTotals(uint256 totalUsdatReceived, uint256 totalStrcSold, uint256 executionPrice) internal view {
+    /// @param totalShares Total shares being redeemed
+    function _validateTotals(
+        uint256 totalUsdatReceived,
+        uint256 totalStrcSold,
+        uint256 executionPrice,
+        uint256 totalShares
+    ) internal view {
         // Validate totalStrcSold doesn't exceed vested balance
         uint256 strcBalance = TSTRC.balanceOf(address(stakedUSDat));
         uint256 unvestedAmount = stakedUSDat.getUnvestedAmount();
@@ -226,8 +233,11 @@ contract WithdrawalQueueERC721 is
         // Validate executionPrice against oracle price (within tolerance)
         // Oracle price is already in 8 decimals, so compare directly
         (uint256 oraclePrice,) = TSTRC.getPrice();
-
         require(_isWithinTolerance(executionPrice, oraclePrice), OraclePriceMismatch());
+
+        // Validate totalUsdatReceived matches expected value of shares being redeemed
+        uint256 expectedShareValue = stakedUSDat.previewRedeem(totalShares);
+        require(_isWithinTolerance(totalUsdatReceived, expectedShareValue), ExecutionPriceMismatch());
     }
 
     /// @notice Process a batch of withdrawal requests (non-sequential)
@@ -242,8 +252,6 @@ contract WithdrawalQueueERC721 is
         uint256 totalStrcSold,
         uint256 executionPrice
     ) external nonReentrant onlyRole(PROCESSOR_ROLE) {
-        // Validate inputs are consistent
-        _validateTotals(totalUsdatReceived, totalStrcSold, executionPrice);
         uint256 count = tokenIds.length;
         require(count > 0, InvalidInputs());
 
@@ -251,6 +259,9 @@ contract WithdrawalQueueERC721 is
         for (uint256 i = 0; i < count; i++) {
             totalShares += requests[tokenIds[i]].shares;
         }
+
+        // Validate inputs are consistent (including economic value of shares)
+        _validateTotals(totalUsdatReceived, totalStrcSold, executionPrice, totalShares);
 
         uint256 totalUsdat = 0;
         for (uint256 i = 0; i < count; i++) {
