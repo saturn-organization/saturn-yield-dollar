@@ -269,7 +269,7 @@ contract StakedUSDat is
         if (depositFeeBps == 0 || feeRecipient == address(0)) {
             return super.previewDeposit(assets);
         }
-        uint256 fee = Math.mulDiv(assets, depositFeeBps, BPS_DENOMINATOR);
+        uint256 fee = Math.mulDiv(assets, depositFeeBps, BPS_DENOMINATOR, Math.Rounding.Ceil);
         return super.previewDeposit(assets - fee);
     }
 
@@ -416,7 +416,7 @@ contract StakedUSDat is
         // Calculate and transfer fee if applicable
         uint256 fee = 0;
         if (depositFeeBps > 0 && feeRecipient != address(0)) {
-            fee = Math.mulDiv(assets, depositFeeBps, BPS_DENOMINATOR);
+            fee = Math.mulDiv(assets, depositFeeBps, BPS_DENOMINATOR, Math.Rounding.Ceil);
             IERC20(asset()).safeTransferFrom(caller, feeRecipient, fee);
         }
 
