@@ -285,6 +285,16 @@ contract StakedUSDat is
         return Math.mulDiv(assets, BPS_DENOMINATOR, BPS_DENOMINATOR - depositFeeBps, Math.Rounding.Ceil);
     }
 
+    /// @notice Returns 0 when paused per ERC4626 spec
+    function maxDeposit(address) public view override returns (uint256) {
+        return paused() ? 0 : type(uint256).max;
+    }
+
+    /// @notice Returns 0 when paused per ERC4626 spec
+    function maxMint(address) public view override returns (uint256) {
+        return paused() ? 0 : type(uint256).max;
+    }
+
     function rescueTokens(address token, uint256 amount, address to)
         external
         nonReentrant
