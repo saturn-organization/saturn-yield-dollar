@@ -104,6 +104,9 @@ contract StakedUSDat is
     /// @notice Address that receives deposit fees
     address public feeRecipient;
 
+    /// @notice Internally tracked USDat balance
+    uint256 public usdatBalance;
+
     modifier notZero(uint256 amount) {
         _notZero(amount);
         _;
@@ -227,7 +230,7 @@ contract StakedUSDat is
     /// @notice new ERC4626 takes into account the donation attack using an offset on shares.
     /// @notice Excludes unvested rewards to prevent front-running attacks
     function totalAssets() public view override returns (uint256) {
-        return IERC20(asset()).balanceOf(address(this)) + _strcTotalAssets();
+        return usdatBalance + _strcTotalAssets();
     }
 
     /// @notice Returns the amount of tSTRC that is still vesting
@@ -287,7 +290,13 @@ contract StakedUSDat is
         nonReentrant
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
-        require(token != address(TSTRC) && token != address(asset()), OperationNotAllowed());
+        require(token != address(TSTRC), OperationNotAllowed());
+
+        // For USDat, only allow rescuing excess above tracked balance
+        if (token == asset()) {
+            uint256 excessBalance = IERC20(token).balanceOf(address(this)) - usdatBalance;
+            require(amount <= excessBalance, InsufficientBalance());
+        }
 
         IERC20(token).safeTransfer(to, amount);
     }
@@ -329,10 +338,12 @@ contract StakedUSDat is
         external
         onlyRole(PROCESSOR_ROLE)
     {
-        require(IERC20(asset()).balanceOf(address(this)) >= usdatAmount, InsufficientBalance());
+        require(usdatBalance >= usdatAmount, InsufficientBalance());
 
         // Validate strcAmount matches usdatAmount / strcPurchasePrice within tolerance
         _validateConversion(usdatAmount, strcAmount, strcPurchasePrice);
+
+        usdatBalance -= usdatAmount;
 
         IERC20Burnable(asset()).burn(usdatAmount);
 
@@ -361,6 +372,7 @@ contract StakedUSDat is
 
         IERC20Burnable(address(TSTRC)).burn(strcAmount);
 
+        usdatBalance += usdatAmount;
         IUSDat(asset()).mint(address(this), usdatAmount);
 
         emit Converted(usdatAmount, strcAmount);
@@ -408,7 +420,10 @@ contract StakedUSDat is
             IERC20(asset()).safeTransferFrom(caller, feeRecipient, fee);
         }
 
-        super._deposit(caller, receiver, assets - fee, shares);
+        uint256 netAssets = assets - fee;
+        usdatBalance += netAssets;
+
+        super._deposit(caller, receiver, netAssets, shares);
     }
 
     /// @notice Deposit assets with slippage protection
