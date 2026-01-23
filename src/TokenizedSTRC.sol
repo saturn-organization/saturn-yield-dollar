@@ -5,7 +5,6 @@ pragma solidity ^0.8.27;
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
-import {ERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
@@ -26,7 +25,7 @@ interface IPriceOracle {
 /// process starts with the user calling deposit on the sUSDat contract. At the same time the
 /// sUSDat entity purchases STRC from the market, tSTRC is deposited into the sUSDat contract.
 
-contract TokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, ERC20Permit {
+contract TokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl {
     using SafeERC20 for IERC20;
 
     error InvalidOraclePrice();
@@ -55,10 +54,7 @@ contract TokenizedSTRC is ERC20, ERC20Burnable, ReentrancyGuard, AccessControl, 
 
     event OracleUpdated(address indexed oldOracle, address indexed newOracle);
 
-    constructor(address defaultAdmin, address oracleAddress)
-        ERC20("TokenizedSTRC", "tSTRC")
-        ERC20Permit("TokenizedSTRC")
-    {
+    constructor(address defaultAdmin, address oracleAddress) ERC20("TokenizedSTRC", "tSTRC") {
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
 
         oracle = IPriceOracle(oracleAddress);

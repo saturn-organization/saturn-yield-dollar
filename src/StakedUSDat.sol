@@ -61,7 +61,7 @@ contract StakedUSDat is
     event VestingPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
     event DepositFeeUpdated(uint256 newFee);
     event FeeRecipientUpdated(address newRecipient);
-    event toleranceUpdated(uint256 newToleranceBps);
+    event ToleranceUpdated(uint256 newToleranceBps);
 
     bytes32 public constant PROCESSOR_ROLE = keccak256("PROCESSOR_ROLE");
     bytes32 private constant COMPLIANCE_ROLE = keccak256("COMPLIANCE_ROLE");
@@ -579,7 +579,7 @@ contract StakedUSDat is
 
         toleranceBps = newToleranceBps;
 
-        emit toleranceUpdated(newToleranceBps);
+        emit ToleranceUpdated(newToleranceBps);
     }
 
     function pause() external onlyRole(COMPLIANCE_ROLE) {

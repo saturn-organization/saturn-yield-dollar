@@ -13,4 +13,6 @@ interface IStakedUSDat {
     function getUnvestedAmount() external view returns (uint256);
 
     function toleranceBps() external view returns (uint256);
+
+    function previewRedeem(uint256 shares) external view returns (uint256);
 }
