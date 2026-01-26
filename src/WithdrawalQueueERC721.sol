@@ -36,6 +36,7 @@ contract WithdrawalQueueERC721 is
     enum RequestStatus {
         NULL,
         Requested, // Request created, waiting to be processed
+        InProgress, // Locked for processing, cannot be modified
         Processed, // Processed by admin, USDat allocated, ready to claim
         Claimed // User has claimed their USDat (NFT burned)
     }
@@ -82,9 +83,13 @@ contract WithdrawalQueueERC721 is
     error StakedUSDatAlreadySet();
     error SlippageExceeded();
     error ExceedsVestedBalance();
+    error RequestLocked();
+    error RequestNotLocked();
 
     // Events
     event WithdrawalRequested(uint256 indexed tokenId, address indexed user, uint256 shares, uint256 timestamp);
+    event RequestsLocked(uint256[] tokenIds);
+    event RequestsUnlocked(uint256[] tokenIds);
     event WithdrawalProcessed(uint256 indexed tokenId, uint256 shares, uint256 usdatAmount);
     event Claimed(uint256 indexed tokenId, address indexed user, uint256 usdatAmount);
     event FundsSeized(uint256 indexed tokenId, address indexed user, uint256 usdatAmount, address indexed to);
@@ -177,8 +182,13 @@ contract WithdrawalQueueERC721 is
         require(ownerOf(tokenId) == msg.sender, NotOwner());
         _requireNotBlacklisted(msg.sender);
         Request storage req = requests[tokenId];
-        require(req.status == RequestStatus.Requested, AlreadyProcessed());
-        require(newMinUsdatReceived < req.minUsdatReceived, InvalidInputs());
+        require(req.status == RequestStatus.Requested || req.status == RequestStatus.InProgress, AlreadyProcessed());
+
+        // InProgress: can only lower (more lenient slippage)
+        // Requested: can adjust in any direction
+        if (req.status == RequestStatus.InProgress) {
+            require(newMinUsdatReceived < req.minUsdatReceived, InvalidInputs());
+        }
 
         req.minUsdatReceived = newMinUsdatReceived;
 
@@ -186,6 +196,36 @@ contract WithdrawalQueueERC721 is
     }
 
     // ============ Processing ============
+
+    /// @notice Lock requests for processing - prevents user modifications
+    /// @param tokenIds Array of token IDs to lock
+    function lockRequests(uint256[] calldata tokenIds) external onlyRole(PROCESSOR_ROLE) {
+        uint256 count = tokenIds.length;
+        require(count > 0, InvalidInputs());
+
+        for (uint256 i = 0; i < count; i++) {
+            Request storage req = requests[tokenIds[i]];
+            require(req.status == RequestStatus.Requested, AlreadyProcessed());
+            req.status = RequestStatus.InProgress;
+        }
+
+        emit RequestsLocked(tokenIds);
+    }
+
+    /// @notice Unlock requests if processing fails - returns to Requested state
+    /// @param tokenIds Array of token IDs to unlock
+    function unlockRequests(uint256[] calldata tokenIds) external onlyRole(PROCESSOR_ROLE) {
+        uint256 count = tokenIds.length;
+        require(count > 0, InvalidInputs());
+
+        for (uint256 i = 0; i < count; i++) {
+            Request storage req = requests[tokenIds[i]];
+            require(req.status == RequestStatus.InProgress, RequestNotLocked());
+            req.status = RequestStatus.Requested;
+        }
+
+        emit RequestsUnlocked(tokenIds);
+    }
 
     function _validateAmount(uint256 usdatAmount, uint256 minUsdatReceived) internal pure {
         require(usdatAmount >= minUsdatReceived, SlippageExceeded());
@@ -266,7 +306,7 @@ contract WithdrawalQueueERC721 is
         uint256 totalUsdat = 0;
         for (uint256 i = 0; i < count; i++) {
             Request storage req = requests[tokenIds[i]];
-            require(req.status == RequestStatus.Requested, AlreadyProcessed());
+            require(req.status == RequestStatus.InProgress, RequestNotLocked());
 
             // Pro-rata: user gets their share of what was received
             uint256 usdatAmount = Math.mulDiv(totalUsdatReceived, req.shares, totalShares, Math.Rounding.Floor);
@@ -477,7 +517,7 @@ contract WithdrawalQueueERC721 is
         for (uint256 i = 0; i < balance; i++) {
             uint256 tokenId = tokenOfOwnerByIndex(user, i);
             Request storage req = requests[tokenId];
-            if (req.status == RequestStatus.Requested) {
+            if (req.status == RequestStatus.Requested || req.status == RequestStatus.InProgress) {
                 temp[count++] = tokenId;
                 totalShares += req.shares;
             }
@@ -536,7 +576,8 @@ contract WithdrawalQueueERC721 is
         uint256 count = 0;
 
         for (uint256 i = start; i < end; i++) {
-            if (requests[i].status == RequestStatus.Requested) {
+            RequestStatus status = requests[i].status;
+            if (status == RequestStatus.Requested || status == RequestStatus.InProgress) {
                 temp[count++] = i;
             }
         }
@@ -566,7 +607,7 @@ contract WithdrawalQueueERC721 is
             requireBlacklisted(owner);
 
             Request storage req = requests[tokenId];
-            require(req.status == RequestStatus.Requested, AlreadyProcessed());
+            require(req.status == RequestStatus.Requested || req.status == RequestStatus.InProgress, AlreadyProcessed());
 
             _transfer(owner, to, tokenId);
 
