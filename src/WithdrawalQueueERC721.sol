@@ -327,7 +327,11 @@ contract WithdrawalQueueERC721 is
 
         // Burn the escrowed shares and the tSTRC sold off-chain, then mint USDat
         stakedUSDat.burnQueuedShares(totalShares, totalStrcSold);
-        USDAT.mint(address(this), totalUsdat);
+        USDAT.mint(address(this), totalUsdatReceived);
+        uint256 dust = totalUsdatReceived - totalUsdat;
+        if (dust > 0) {
+            IERC20(address(USDAT)).safeTransfer(address(stakedUSDat), dust);
+        }
     }
 
     // ============ Claiming ============
