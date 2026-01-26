@@ -472,14 +472,16 @@ contract StakedUSDat is
 
     /// @notice Request a withdrawal - escrows shares in the queue
     /// @param assets The amount of assets to withdraw
-    /// @param minUsdatReceived The minimum amount of USDat the user will accept
+    /// @param maxSharesBurned The maximum number of shares that can be burned
     /// @return shares The number of shares escrowed
-    function requestWithdraw(uint256 assets, uint256 minUsdatReceived) external whenNotPaused returns (uint256 shares) {
+    function requestWithdraw(uint256 assets, uint256 maxSharesBurned) external whenNotPaused returns (uint256 shares) {
         require(assets <= maxWithdraw(msg.sender), ExcessiveRequestedAmount());
 
         shares = previewWithdraw(assets);
+        require(shares <= maxSharesBurned, SlippageExceeded());
 
-        _processWithdrawal(msg.sender, msg.sender, assets, shares, minUsdatReceived);
+        // Use `assets` as minUsdatReceived to guarantee the asset amount at processing time
+        _processWithdrawal(msg.sender, msg.sender, assets, shares, assets);
     }
 
     /// @notice Request a redemption - escrows shares in the queue
