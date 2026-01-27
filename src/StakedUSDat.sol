@@ -470,18 +470,6 @@ contract StakedUSDat is
         revert OperationNotAllowed();
     }
 
-    /// @notice Request a withdrawal - escrows shares in the queue
-    /// @param assets The amount of assets to withdraw
-    /// @param minUsdatReceived The minimum amount of USDat the user will accept
-    /// @return shares The number of shares escrowed
-    function requestWithdraw(uint256 assets, uint256 minUsdatReceived) external whenNotPaused returns (uint256 shares) {
-        require(assets <= maxWithdraw(msg.sender), ExcessiveRequestedAmount());
-
-        shares = previewWithdraw(assets);
-
-        _processWithdrawal(msg.sender, msg.sender, assets, shares, minUsdatReceived);
-    }
-
     /// @notice Request a redemption - escrows shares in the queue
     /// @param shares The number of shares to redeem
     /// @param minUsdatReceived The minimum amount of USDat the user will accept
