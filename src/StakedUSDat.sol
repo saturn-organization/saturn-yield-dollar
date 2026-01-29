@@ -473,13 +473,17 @@ contract StakedUSDat is
     /// @notice Request a redemption - escrows shares in the queue
     /// @param shares The number of shares to redeem
     /// @param minUsdatReceived The minimum amount of USDat the user will accept
-    /// @return assets The amount of assets being redeemed
-    function requestRedeem(uint256 shares, uint256 minUsdatReceived) external whenNotPaused returns (uint256 assets) {
+    /// @return requestId The ID of the withdrawal request NFT
+    function requestRedeem(uint256 shares, uint256 minUsdatReceived)
+        external
+        whenNotPaused
+        returns (uint256 requestId)
+    {
         require(shares <= maxRedeem(msg.sender), ExcessiveRequestedAmount());
 
-        assets = previewRedeem(shares);
+        uint256 assets = previewRedeem(shares);
 
-        _processWithdrawal(msg.sender, msg.sender, assets, shares, minUsdatReceived);
+        requestId = _processWithdrawal(msg.sender, msg.sender, assets, shares, minUsdatReceived);
     }
 
     /// @dev Internal function to process withdrawal request
@@ -488,11 +492,13 @@ contract StakedUSDat is
     /// @param assets The asset value being withdrawn
     /// @param shares The shares to escrow
     /// @param minUsdatReceived The minimum amount of USDat the user will accept
+    /// @return requestId The ID of the withdrawal request NFT
     function _processWithdrawal(address caller, address owner, uint256 assets, uint256 shares, uint256 minUsdatReceived)
         internal
         nonReentrant
         notZero(assets)
         notZero(shares)
+        returns (uint256 requestId)
     {
         _requireNotBlacklisted(caller);
         _requireNotBlacklisted(owner);
@@ -502,7 +508,7 @@ contract StakedUSDat is
         _transfer(owner, address(WITHDRAWAL_QUEUE), shares);
 
         // Add request to queue
-        WITHDRAWAL_QUEUE.addRequest(owner, shares, minUsdatReceived);
+        requestId = WITHDRAWAL_QUEUE.addRequest(owner, shares, minUsdatReceived);
     }
 
     /// @notice Claim all processed withdrawals for the caller
