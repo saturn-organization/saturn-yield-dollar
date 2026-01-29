@@ -261,6 +261,11 @@ contract StakedUSDat is
         return 18;
     }
 
+    /// @dev Returns a non-zero offset to protect against ERC4626 inflation attacks
+    function _decimalsOffset() internal pure override returns (uint8) {
+        return 6;
+    }
+
     /// @notice Preview shares received for a deposit, accounting for fees
     /// @param assets The amount of assets to deposit
     /// @return shares The amount of shares that would be minted
