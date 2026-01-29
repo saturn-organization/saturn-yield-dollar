@@ -39,7 +39,6 @@ contract StakedUSDat is
     error InvalidZeroAddress();
     error ZeroAmount();
     error OperationNotAllowed();
-    error ExcessiveRequestedAmount();
     error AddressNotBlacklisted();
     error AddressBlacklisted();
     error NoRecipientsForRedistribution();
@@ -442,7 +441,10 @@ contract StakedUSDat is
     /// @param minShares The minimum number of shares to receive, reverts if less
     /// @return shares The number of shares minted
     function depositWithMinShares(uint256 assets, address receiver, uint256 minShares) public returns (uint256 shares) {
-        require(assets <= maxDeposit(receiver), ExcessiveRequestedAmount());
+        uint256 maxAssets = maxDeposit(receiver);
+        if (assets > maxAssets) {
+            revert ERC4626ExceededMaxDeposit(receiver, assets, maxAssets);
+        }
         shares = previewDeposit(assets);
         require(shares >= minShares, SlippageExceeded());
         _deposit(msg.sender, receiver, assets, shares);
@@ -454,7 +456,10 @@ contract StakedUSDat is
     /// @param maxAssets The maximum amount of assets to spend, reverts if more
     /// @return assets The amount of assets spent
     function mintWithMaxAssets(uint256 shares, address receiver, uint256 maxAssets) public returns (uint256 assets) {
-        require(shares <= maxMint(receiver), ExcessiveRequestedAmount());
+        uint256 maxShares = maxMint(receiver);
+        if (shares > maxShares) {
+            revert ERC4626ExceededMaxMint(receiver, shares, maxShares);
+        }
         assets = previewMint(shares);
         require(assets <= maxAssets, SlippageExceeded());
         _deposit(msg.sender, receiver, assets, shares);
@@ -479,7 +484,10 @@ contract StakedUSDat is
         whenNotPaused
         returns (uint256 requestId)
     {
-        require(shares <= maxRedeem(msg.sender), ExcessiveRequestedAmount());
+        uint256 maxShares = maxRedeem(msg.sender);
+        if (shares > maxShares) {
+            revert ERC4626ExceededMaxRedeem(msg.sender, shares, maxShares);
+        }
 
         uint256 assets = previewRedeem(shares);
 
