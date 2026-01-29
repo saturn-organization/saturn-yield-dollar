@@ -328,7 +328,8 @@ contract WithdrawalQueueERC721 is
         USDAT.mint(address(this), totalUsdatReceived);
         uint256 dust = totalUsdatReceived - totalUsdat;
         if (dust > 0) {
-            IERC20(address(USDAT)).safeTransfer(address(stakedUSDat), dust);
+            IERC20(address(USDAT)).approve(address(stakedUSDat), dust);
+            stakedUSDat.collectDust(dust);
         }
     }
 
