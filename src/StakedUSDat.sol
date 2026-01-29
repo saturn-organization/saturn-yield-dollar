@@ -299,6 +299,16 @@ contract StakedUSDat is
         return paused() ? 0 : type(uint256).max;
     }
 
+    /// @notice Returns 0 since withdraw is disabled - use requestRedeem instead
+    function maxWithdraw(address) public pure override returns (uint256) {
+        return 0;
+    }
+
+    /// @notice Returns 0 when paused per ERC4626 spec
+    function maxRedeem(address owner) public view override returns (uint256) {
+        return paused() ? 0 : balanceOf(owner);
+    }
+
     function rescueTokens(address token, uint256 amount, address to)
         external
         nonReentrant
