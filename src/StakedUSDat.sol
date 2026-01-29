@@ -460,7 +460,7 @@ contract StakedUSDat is
         _deposit(msg.sender, receiver, assets, shares);
     }
 
-    /// @notice ERC4626 withdraw is disabled - use requestWithdraw instead
+    /// @notice ERC4626 withdraw is disabled - use requestRedeem instead
     function withdraw(uint256, address, address) public pure override returns (uint256) {
         revert OperationNotAllowed();
     }
