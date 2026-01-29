@@ -542,6 +542,15 @@ contract StakedUSDat is
         _burn(address(WITHDRAWAL_QUEUE), shares);
     }
 
+    /// @notice Collect dust from withdrawal queue processing
+    /// @dev Pulls USDat dust from the withdrawal queue and adds to internal accounting
+    /// @param amount The amount of USDat dust to collect
+    function collectDust(uint256 amount) external {
+        require(msg.sender == address(WITHDRAWAL_QUEUE), OperationNotAllowed());
+        IERC20(asset()).safeTransferFrom(address(WITHDRAWAL_QUEUE), address(this), amount);
+        usdatBalance += amount;
+    }
+
     /// @notice Get the withdrawal queue address
     function getWithdrawalQueue() external view returns (address) {
         return address(WITHDRAWAL_QUEUE);

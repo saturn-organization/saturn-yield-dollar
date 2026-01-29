@@ -6,6 +6,8 @@ interface IStakedUSDat {
 
     function burnQueuedShares(uint256 shares, uint256 strcAmount) external;
 
+    function collectDust(uint256 amount) external;
+
     function totalAssets() external view returns (uint256);
 
     function asset() external view returns (address);
