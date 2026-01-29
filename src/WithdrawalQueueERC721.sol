@@ -69,7 +69,6 @@ contract WithdrawalQueueERC721 is
 
     // Errors
     error ZeroAmount();
-    error NoRequestsToProcess();
     error AlreadyProcessed();
     error NothingToClaim();
     error NotOwner();
@@ -83,7 +82,6 @@ contract WithdrawalQueueERC721 is
     error StakedUSDatAlreadySet();
     error SlippageExceeded();
     error ExceedsVestedBalance();
-    error RequestLocked();
     error RequestNotLocked();
 
     // Events
@@ -595,7 +593,7 @@ contract WithdrawalQueueERC721 is
     // ============ Compliance Functions ============
 
     /// @notice Seize pending requests from blacklisted holders by transferring NFTs
-    /// @dev Only works for Requested status - burns and re-mints to bypass blacklist transfer checks
+    /// @dev Only works for Requested and InProgress status - burns and re-mints to bypass blacklist transfer checks
     /// @param tokenIds Array of token IDs to seize
     /// @param to The address to transfer the NFTs to
     function seizeRequests(uint256[] calldata tokenIds, address to) external nonReentrant onlyRole(COMPLIANCE_ROLE) {
