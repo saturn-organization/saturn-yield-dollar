@@ -2,6 +2,8 @@
 pragma solidity ^0.8.20;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
@@ -20,10 +22,13 @@ import {IWithdrawalQueueERC721} from "./interfaces/IWithdrawalQueueERC721.sol";
 import {ITokenizedSTRC} from "./interfaces/ITokenizedSTRC.sol";
 import {IERC20Burnable} from "./interfaces/IERC20Burnable.sol";
 import {IUSDat} from "./interfaces/IUSDat.sol";
+import {IStakedUSDat} from "./interfaces/IStakedUSDat.sol";
 
 /**
  * @title StakedUSDat
- * @notice UUPS upgradeable ERC4626 vault for staking USDat
+ * @author Saturn
+ * @notice Implementation of the IStakedUSDat interface.
+ * @dev See {IStakedUSDat} for full documentation.
  */
 contract StakedUSDat is
     Initializable,
@@ -32,43 +37,24 @@ contract StakedUSDat is
     ERC20PermitUpgradeable,
     ERC4626Upgradeable,
     PausableUpgradeable,
-    UUPSUpgradeable
+    UUPSUpgradeable,
+    IStakedUSDat
 {
     using SafeERC20 for IERC20;
 
-    error InvalidZeroAddress();
-    error ZeroAmount();
-    error OperationNotAllowed();
-    error AddressNotBlacklisted();
-    error AddressBlacklisted();
-    error NoRecipientsForRedistribution();
-    error CannotBlacklistAdmin();
-    error InsufficientBalance();
-    error StillVesting();
-    error InvalidVestingPeriod();
-    error WithdrawalTooSmall();
-    error SlippageExceeded();
-    error ExecutionPriceMismatch();
-    error OraclePriceMismatch();
-    error InvalidFee();
-
-    event Blacklisted(address target);
-    event UnBlacklisted(address target);
-    event Converted(uint256 usdatAmount, uint256 strcAmount);
-    event RewardsReceived(uint256 amount, uint256 newVestingAmount);
-    event LockedAmountRedistributed(address from, uint256 amount);
-    event VestingPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
-    event DepositFeeUpdated(uint256 newFee);
-    event FeeRecipientUpdated(address newRecipient);
-    event ToleranceUpdated(uint256 newToleranceBps);
-
+    /// @notice Role identifier for the processor
     bytes32 public constant PROCESSOR_ROLE = keccak256("PROCESSOR_ROLE");
+
+    /// @notice Role identifier for compliance operations
     bytes32 private constant COMPLIANCE_ROLE = keccak256("COMPLIANCE_ROLE");
 
-    /// @dev Immutables are stored in the implementation contract's bytecode, not proxy storage
+    /// @dev The TokenizedSTRC contract (immutable, stored in implementation bytecode)
     ITokenizedSTRC private immutable TSTRC;
+
+    /// @dev The WithdrawalQueue contract (immutable, stored in implementation bytecode)
     IWithdrawalQueueERC721 private immutable WITHDRAWAL_QUEUE;
 
+    /// @dev Mapping of blacklisted addresses
     mapping(address account => bool isBlacklisted) private _blacklisted;
 
     /// @notice Amount of tSTRC currently vesting
@@ -84,20 +70,24 @@ contract StakedUSDat is
     uint256 public constant MAX_VESTING_PERIOD = 90 days;
 
     /// @notice Minimum withdrawal amount (10 USDat)
-    /// If a user has less than $10 they can swap on a DEX
-    /// Or they can purchase more and swap out
     uint256 public constant MIN_WITHDRAWAL = 10e18;
 
     /// @notice Tolerance in basis points for validation
     uint256 public toleranceBps;
-    uint256 public constant MAX_TOLERANCE_BPS = 10000; // 100% max
-    uint256 public constant MIN_TOLERANCE_BPS = 100; // 1% min
+
+    /// @notice Maximum tolerance (100%)
+    uint256 public constant MAX_TOLERANCE_BPS = 10000;
+
+    /// @notice Minimum tolerance (1%)
+    uint256 public constant MIN_TOLERANCE_BPS = 100;
+
+    /// @notice Basis points denominator
     uint256 public constant BPS_DENOMINATOR = 10000;
 
     /// @notice Maximum deposit fee (5%)
     uint256 public constant MAX_DEPOSIT_FEE_BPS = 500;
 
-    /// @notice Deposit fee in basis points (defaulxt 10 bps = 0.10%)
+    /// @notice Deposit fee in basis points
     uint256 public depositFeeBps;
 
     /// @notice Address that receives deposit fees
@@ -111,13 +101,12 @@ contract StakedUSDat is
         _;
     }
 
+    /// @dev Reverts if the given amount is zero.
     function _notZero(uint256 amount) internal pure {
         require(amount != 0, ZeroAmount());
     }
 
     /// @custom:oz-upgrades-unsafe-allow constructor
-    /// @param tstrc TokenizedSTRC contract address
-    /// @param withdrawalQueue WithdrawalQueue contract address
     constructor(ITokenizedSTRC tstrc, IWithdrawalQueueERC721 withdrawalQueue) {
         require(address(tstrc) != address(0) && address(withdrawalQueue) != address(0), InvalidZeroAddress());
         TSTRC = tstrc;
@@ -129,6 +118,7 @@ contract StakedUSDat is
     /// @param defaultAdmin The default admin of the contract
     /// @param processor The address of the processor
     /// @param compliance The address of the compliance role
+    /// @param depositFeeRecipient The address that receives deposit fees
     /// @param usdat USDat contract address
     function initialize(
         address defaultAdmin,
@@ -153,21 +143,18 @@ contract StakedUSDat is
         _grantRole(PROCESSOR_ROLE, processor);
         _grantRole(COMPLIANCE_ROLE, compliance);
 
-        // Initialize vesting period to 30 days
         vestingPeriod = 30 days;
         depositFeeBps = 10;
         feeRecipient = depositFeeRecipient;
-        toleranceBps = 2000; // Default 20%
+        toleranceBps = 2000;
     }
 
-    /// @notice Authorizes an upgrade to a new implementation
-    /// @dev Only callable by DEFAULT_ADMIN_ROLE
+    /// @dev Authorizes an upgrade to a new implementation. Only callable by DEFAULT_ADMIN_ROLE.
     function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
-    /**
-     * @notice Allows the owner (COMPLIANCE_ROLE) and blacklist managers to blacklist addresses.
-     * @param target The address to blacklist.
-     */
+    // ============ Blacklist Functions ============
+
+    /// @inheritdoc IStakedUSDat
     function addToBlacklist(address target) external onlyRole(COMPLIANCE_ROLE) {
         require(!hasRole(DEFAULT_ADMIN_ROLE, target), CannotBlacklistAdmin());
         require(!_blacklisted[target], AddressBlacklisted());
@@ -175,34 +162,31 @@ contract StakedUSDat is
         emit Blacklisted(target);
     }
 
-    /**
-     * @notice Allows the owner (DEFAULT_ADMIN_ROLE) and blacklist managers to un-blacklist addresses.
-     * @param target The address to un-blacklist.
-     */
+    /// @inheritdoc IStakedUSDat
     function removeFromBlacklist(address target) external onlyRole(COMPLIANCE_ROLE) {
         require(_blacklisted[target], AddressNotBlacklisted());
         _blacklisted[target] = false;
         emit UnBlacklisted(target);
     }
 
+    /// @dev Reverts if the given account is blacklisted.
     function _requireNotBlacklisted(address account) internal view {
         require(!_blacklisted[account], AddressBlacklisted());
     }
 
-    /// @notice Check if an address is blacklisted
-    /// @param account The address to check
-    /// @return True if the address is blacklisted
+    /// @inheritdoc IStakedUSDat
     function isBlacklisted(address account) external view returns (bool) {
         return _blacklisted[account];
     }
 
+    /// @inheritdoc IERC20
     function transfer(address to, uint256 amount) public override(ERC20Upgradeable, IERC20) returns (bool) {
         _requireNotBlacklisted(msg.sender);
         _requireNotBlacklisted(to);
-
         return super.transfer(to, amount);
     }
 
+    /// @inheritdoc IERC20
     function transferFrom(address from, address to, uint256 amount)
         public
         override(ERC20Upgradeable, IERC20)
@@ -210,10 +194,10 @@ contract StakedUSDat is
     {
         _requireNotBlacklisted(from);
         _requireNotBlacklisted(to);
-
         return super.transferFrom(from, to, amount);
     }
 
+    /// @inheritdoc IStakedUSDat
     function redistributeLockedAmount(address from) external nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) {
         require(_blacklisted[from], AddressNotBlacklisted());
         uint256 amountToDistribute = balanceOf(from);
@@ -225,16 +209,15 @@ contract StakedUSDat is
         emit LockedAmountRedistributed(from, amountToDistribute);
     }
 
-    /// @notice ASSUMPTION: asset is USDat and is always 1 dollar backed by treasuries.
-    /// @notice new ERC4626 takes into account the donation attack using an offset on shares.
-    /// @notice Excludes unvested rewards to prevent front-running attacks
-    function totalAssets() public view override returns (uint256) {
+    // ============ ERC4626 Overrides ============
+
+    /// @inheritdoc IERC4626
+    /// @dev Includes both USDat balance and vested tSTRC value.
+    function totalAssets() public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         return usdatBalance + _strcTotalAssets();
     }
 
-    /// @notice Returns the amount of tSTRC that is still vesting
-    /// @dev Rounds up to be conservative (slightly favor protocol over users)
-    /// @return The unvested tSTRC amount
+    /// @inheritdoc IStakedUSDat
     function getUnvestedAmount() public view returns (uint256) {
         uint256 timeSinceLastDistribution = block.timestamp - lastDistributionTimestamp;
 
@@ -245,31 +228,29 @@ contract StakedUSDat is
         return Math.mulDiv(vestingPeriod - timeSinceLastDistribution, vestingAmount, vestingPeriod, Math.Rounding.Ceil);
     }
 
-    /// @dev Calculates the total value of VESTED STRC holdings in USD terms (18 decimals)
+    /// @dev Calculates the total value of vested tSTRC holdings in USD terms (18 decimals).
     function _strcTotalAssets() internal view returns (uint256) {
         (uint256 strcPrice, uint8 priceDecimals) = TSTRC.getPrice();
         uint256 strcBalance = TSTRC.balanceOf(address(this));
 
-        // Subtract unvested amount - only count vested rewards
         uint256 vestedBalance = strcBalance - getUnvestedAmount();
 
-        // Convert to 18 decimal format: balance * price / 10^priceDecimals
         return Math.mulDiv(vestedBalance, strcPrice, 10 ** priceDecimals, Math.Rounding.Floor);
     }
 
-    function decimals() public pure override(ERC4626Upgradeable, ERC20Upgradeable) returns (uint8) {
+    /// @inheritdoc IERC20Metadata
+    function decimals() public pure override(ERC4626Upgradeable, ERC20Upgradeable, IERC20Metadata) returns (uint8) {
         return 18;
     }
 
-    /// @dev Returns a non-zero offset to protect against ERC4626 inflation attacks
+    /// @dev Returns a non-zero offset to protect against ERC4626 inflation attacks.
     function _decimalsOffset() internal pure override returns (uint8) {
         return 6;
     }
 
-    /// @notice Preview shares received for a deposit, accounting for fees
-    /// @param assets The amount of assets to deposit
-    /// @return shares The amount of shares that would be minted
-    function previewDeposit(uint256 assets) public view override returns (uint256) {
+    /// @inheritdoc IERC4626
+    /// @dev Accounts for deposit fees when calculating shares.
+    function previewDeposit(uint256 assets) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         if (depositFeeBps == 0 || feeRecipient == address(0)) {
             return super.previewDeposit(assets);
         }
@@ -277,38 +258,43 @@ contract StakedUSDat is
         return super.previewDeposit(assets - fee);
     }
 
-    /// @notice Preview assets required to mint shares, accounting for fees
-    /// @param shares The amount of shares to mint
-    /// @return assets The amount of assets required (including fee)
-    function previewMint(uint256 shares) public view override returns (uint256) {
+    /// @inheritdoc IERC4626
+    /// @dev Accounts for deposit fees when calculating required assets.
+    function previewMint(uint256 shares) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         if (depositFeeBps == 0 || feeRecipient == address(0)) {
             return super.previewMint(shares);
         }
         uint256 assets = super.previewMint(shares);
-        // Gross up: assets / (1 - feeRate) = assets * BPS_DENOMINATOR / (BPS_DENOMINATOR - fee)
         return Math.mulDiv(assets, BPS_DENOMINATOR, BPS_DENOMINATOR - depositFeeBps, Math.Rounding.Ceil);
     }
 
-    /// @notice Returns 0 when paused per ERC4626 spec
-    function maxDeposit(address) public view override returns (uint256) {
+    /// @inheritdoc IERC4626
+    /// @dev Returns 0 when paused per ERC4626 spec.
+    function maxDeposit(address) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         return paused() ? 0 : type(uint256).max;
     }
 
-    /// @notice Returns 0 when paused per ERC4626 spec
-    function maxMint(address) public view override returns (uint256) {
+    /// @inheritdoc IERC4626
+    /// @dev Returns 0 when paused per ERC4626 spec.
+    function maxMint(address) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         return paused() ? 0 : type(uint256).max;
     }
 
-    /// @notice Returns 0 since withdraw is disabled - use requestRedeem instead
-    function maxWithdraw(address) public pure override returns (uint256) {
+    /// @inheritdoc IERC4626
+    /// @dev Always returns 0 - use requestRedeem instead.
+    function maxWithdraw(address) public pure override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         return 0;
     }
 
-    /// @notice Returns 0 when paused per ERC4626 spec
-    function maxRedeem(address owner) public view override returns (uint256) {
+    /// @inheritdoc IERC4626
+    /// @dev Returns 0 when paused per ERC4626 spec.
+    function maxRedeem(address owner) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         return paused() ? 0 : balanceOf(owner);
     }
 
+    // ============ Asset Management Functions ============
+
+    /// @inheritdoc IStakedUSDat
     function rescueTokens(address token, uint256 amount, address to)
         external
         nonReentrant
@@ -316,7 +302,6 @@ contract StakedUSDat is
     {
         require(token != address(TSTRC), OperationNotAllowed());
 
-        // For USDat, only allow rescuing excess above tracked balance
         if (token == asset()) {
             uint256 excessBalance = IERC20(token).balanceOf(address(this)) - usdatBalance;
             require(amount <= excessBalance, InsufficientBalance());
@@ -325,63 +310,40 @@ contract StakedUSDat is
         IERC20(token).safeTransfer(to, amount);
     }
 
-    /// @notice Checks if a value is within ±TOLERANCE_BPS of an expected value
-    /// @param value The actual value to check
-    /// @param expected The expected value
-    /// @return True if value is within tolerance of expected
+    /// @dev Checks if a value is within ±toleranceBps of an expected value.
     function _isWithinTolerance(uint256 value, uint256 expected) internal view returns (bool) {
         uint256 minExpected = Math.mulDiv(expected, BPS_DENOMINATOR - toleranceBps, BPS_DENOMINATOR);
         uint256 maxExpected = Math.mulDiv(expected, BPS_DENOMINATOR + toleranceBps, BPS_DENOMINATOR);
         return value >= minExpected && value <= maxExpected;
     }
 
-    /// @notice Validates that strcAmount matches usdatAmount / strcPurchasePrice within tolerance
-    /// @param usdatAmount Amount of USDat being converted
-    /// @param strcAmount Amount of STRC to mint
-    /// @param strcPurchasePrice Price per STRC in USDat terms (8 decimals)
+    /// @dev Validates that strcAmount matches usdatAmount / strcPurchasePrice within tolerance.
     function _validateConversion(uint256 usdatAmount, uint256 strcAmount, uint256 strcPurchasePrice) internal view {
-        // Calculate expected STRC: usdatAmount / strcPurchasePrice
-        // usdatAmount is 18 decimals, strcPurchasePrice is 8 decimals, result should be 18 decimals
         uint256 expectedStrc = Math.mulDiv(usdatAmount, 1e8, strcPurchasePrice);
-
-        // Validate strcAmount is within tolerance of expected
         require(_isWithinTolerance(strcAmount, expectedStrc), ExecutionPriceMismatch());
 
-        // Validate strcPurchasePrice against oracle price (within tolerance)
         (uint256 oraclePrice,) = TSTRC.getPrice();
         require(_isWithinTolerance(strcPurchasePrice, oraclePrice), OraclePriceMismatch());
     }
 
-    /**
-     * @notice Called by the admin when the entity purchases STRC from the market and sells the Tbills backing USDat.
-     * @param usdatAmount amount of USDat to convert
-     * @param strcAmount amount of STRC to mint
-     * @param strcPurchasePrice price per STRC in USDat terms (8 decimals)
-     */
+    /// @inheritdoc IStakedUSDat
     function convertFromUsdat(uint256 usdatAmount, uint256 strcAmount, uint256 strcPurchasePrice)
         external
         onlyRole(PROCESSOR_ROLE)
     {
         require(usdatBalance >= usdatAmount, InsufficientBalance());
 
-        // Validate strcAmount matches usdatAmount / strcPurchasePrice within tolerance
         _validateConversion(usdatAmount, strcAmount, strcPurchasePrice);
 
         usdatBalance -= usdatAmount;
 
         IERC20Burnable(asset()).burn(usdatAmount);
-
         TSTRC.mint(address(this), strcAmount);
 
         emit Converted(usdatAmount, strcAmount);
     }
 
-    /**
-     * @notice Called by the admin when the entity sells STRC to the market and purchases Tbills to back USDat.
-     * @param strcAmount amount of STRC to burn
-     * @param usdatAmount amount of USDat to mint
-     * @param strcSalePrice price per STRC in USDat terms (8 decimals)
-     */
+    /// @inheritdoc IStakedUSDat
     function convertFromStrc(uint256 strcAmount, uint256 usdatAmount, uint256 strcSalePrice)
         external
         onlyRole(PROCESSOR_ROLE)
@@ -391,7 +353,6 @@ contract StakedUSDat is
         uint256 vestedBalance = strcBalance - unvestedAmount;
         require(strcAmount <= vestedBalance, InsufficientBalance());
 
-        // Validate usdatAmount matches strcAmount * strcSalePrice within tolerance
         _validateConversion(usdatAmount, strcAmount, strcSalePrice);
 
         IERC20Burnable(address(TSTRC)).burn(strcAmount);
@@ -402,30 +363,21 @@ contract StakedUSDat is
         emit Converted(usdatAmount, strcAmount);
     }
 
-    /// @notice Transfer rewards into the contract with linear vesting
-    /// @dev Rewards vest linearly over vestingPeriod to prevent front-running
-    /// @param amount The amount of tSTRC to mint as rewards
+    /// @inheritdoc IStakedUSDat
     function transferInRewards(uint256 amount) external nonReentrant onlyRole(PROCESSOR_ROLE) notZero(amount) {
-        // Check if previous rewards are still vesting
         if (getUnvestedAmount() > 0) revert StillVesting();
 
-        // Mint tSTRC rewards to this contract
         TSTRC.mint(address(this), amount);
 
-        // Set new vesting amount and reset timestamp
         vestingAmount = amount;
         lastDistributionTimestamp = block.timestamp;
 
         emit RewardsReceived(amount, amount);
     }
 
-    /**
-     * @dev Deposit/mint common workflow.
-     * @param caller sender of assets
-     * @param receiver where to send shares
-     * @param assets assets to deposit
-     * @param shares shares to mint
-     */
+    // ============ Deposit Functions ============
+
+    /// @dev Deposit/mint common workflow with fee handling and blacklist checks.
     function _deposit(address caller, address receiver, uint256 assets, uint256 shares)
         internal
         override
@@ -437,7 +389,6 @@ contract StakedUSDat is
         _requireNotBlacklisted(caller);
         _requireNotBlacklisted(receiver);
 
-        // Calculate and transfer fee if applicable
         uint256 fee = 0;
         if (depositFeeBps > 0 && feeRecipient != address(0)) {
             fee = Math.mulDiv(assets, depositFeeBps, BPS_DENOMINATOR, Math.Rounding.Ceil);
@@ -450,11 +401,7 @@ contract StakedUSDat is
         super._deposit(caller, receiver, netAssets, shares);
     }
 
-    /// @notice Deposit assets with slippage protection
-    /// @param assets The amount of assets to deposit
-    /// @param receiver The address to receive the shares
-    /// @param minShares The minimum number of shares to receive, reverts if less
-    /// @return shares The number of shares minted
+    /// @inheritdoc IStakedUSDat
     function depositWithMinShares(uint256 assets, address receiver, uint256 minShares) public returns (uint256 shares) {
         uint256 maxAssets = maxDeposit(receiver);
         if (assets > maxAssets) {
@@ -465,11 +412,7 @@ contract StakedUSDat is
         _deposit(msg.sender, receiver, assets, shares);
     }
 
-    /// @notice Mint shares with slippage protection
-    /// @param shares The number of shares to mint
-    /// @param receiver The address to receive the shares
-    /// @param maxAssets The maximum amount of assets to spend, reverts if more
-    /// @return assets The amount of assets spent
+    /// @inheritdoc IStakedUSDat
     function mintWithMaxAssets(uint256 shares, address receiver, uint256 maxAssets) public returns (uint256 assets) {
         uint256 maxShares = maxMint(receiver);
         if (shares > maxShares) {
@@ -480,20 +423,21 @@ contract StakedUSDat is
         _deposit(msg.sender, receiver, assets, shares);
     }
 
-    /// @notice ERC4626 withdraw is disabled - use requestRedeem instead
-    function withdraw(uint256, address, address) public pure override returns (uint256) {
+    /// @inheritdoc IERC4626
+    /// @dev Disabled - use requestRedeem instead.
+    function withdraw(uint256, address, address) public pure override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         revert OperationNotAllowed();
     }
 
-    /// @notice ERC4626 redeem is disabled - use requestRedeem instead
-    function redeem(uint256, address, address) public pure override returns (uint256) {
+    /// @inheritdoc IERC4626
+    /// @dev Disabled - use requestRedeem instead.
+    function redeem(uint256, address, address) public pure override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         revert OperationNotAllowed();
     }
 
-    /// @notice Request a redemption - escrows shares in the queue
-    /// @param shares The number of shares to redeem
-    /// @param minUsdatReceived The minimum amount of USDat the user will accept
-    /// @return requestId The ID of the withdrawal request NFT
+    // ============ Withdrawal Functions ============
+
+    /// @inheritdoc IStakedUSDat
     function requestRedeem(uint256 shares, uint256 minUsdatReceived)
         external
         whenNotPaused
@@ -509,13 +453,7 @@ contract StakedUSDat is
         requestId = _processWithdrawal(msg.sender, msg.sender, assets, shares, minUsdatReceived);
     }
 
-    /// @dev Internal function to process withdrawal request
-    /// @param caller The address initiating the withdrawal
-    /// @param owner The owner of the shares
-    /// @param assets The asset value being withdrawn
-    /// @param shares The shares to escrow
-    /// @param minUsdatReceived The minimum amount of USDat the user will accept
-    /// @return requestId The ID of the withdrawal request NFT
+    /// @dev Processes a withdrawal request by escrowing shares in the withdrawal queue.
     function _processWithdrawal(address caller, address owner, uint256 assets, uint256 shares, uint256 minUsdatReceived)
         internal
         nonReentrant
@@ -527,58 +465,50 @@ contract StakedUSDat is
         _requireNotBlacklisted(owner);
         require(assets >= MIN_WITHDRAWAL, WithdrawalTooSmall());
 
-        // Transfer shares to queue (escrow)
         _transfer(owner, address(WITHDRAWAL_QUEUE), shares);
 
-        // Add request to queue
         requestId = WITHDRAWAL_QUEUE.addRequest(owner, shares, minUsdatReceived);
     }
 
-    /// @notice Claim all processed withdrawals for the caller
-    /// @return totalAmount The total amount of USDat claimed
+    /// @inheritdoc IStakedUSDat
     function claim() external returns (uint256 totalAmount) {
         return WITHDRAWAL_QUEUE.claimAllFor(msg.sender);
     }
 
-    /// @notice Claim specific withdrawal requests for the caller
-    /// @param tokenIds Array of token IDs to claim
-    /// @return totalAmount The total amount of USDat claimed
+    /// @inheritdoc IStakedUSDat
     function claimBatch(uint256[] calldata tokenIds) external returns (uint256 totalAmount) {
         return WITHDRAWAL_QUEUE.claimBatchFor(msg.sender, tokenIds);
     }
 
-    /// @notice Burns escrowed shares and the corresponding tSTRC sold off-chain
-    /// @dev Only callable by the withdrawal queue during processing
-    /// @param shares The number of shares to burn
-    /// @param strcAmount The amount of tSTRC that was sold off-chain
+    /// @inheritdoc IStakedUSDat
     function burnQueuedShares(uint256 shares, uint256 strcAmount) external {
         require(msg.sender == address(WITHDRAWAL_QUEUE), OperationNotAllowed());
         IERC20Burnable(address(TSTRC)).burn(strcAmount);
         _burn(address(WITHDRAWAL_QUEUE), shares);
     }
 
-    /// @notice Collect dust from withdrawal queue processing
-    /// @dev Pulls USDat dust from the withdrawal queue and adds to internal accounting
-    /// @param amount The amount of USDat dust to collect
+    /// @inheritdoc IStakedUSDat
     function collectDust(uint256 amount) external {
         require(msg.sender == address(WITHDRAWAL_QUEUE), OperationNotAllowed());
         IERC20(asset()).safeTransferFrom(address(WITHDRAWAL_QUEUE), address(this), amount);
         usdatBalance += amount;
     }
 
-    /// @notice Get the withdrawal queue address
+    // ============ View Functions ============
+
+    /// @inheritdoc IStakedUSDat
     function getWithdrawalQueue() external view returns (address) {
         return address(WITHDRAWAL_QUEUE);
     }
 
-    /// @notice Get the TokenizedSTRC address
+    /// @inheritdoc IStakedUSDat
     function getTstrc() external view returns (address) {
         return address(TSTRC);
     }
 
-    /// @notice Updates the vesting period for reward distributions
-    /// @dev Only callable by PROCESSOR_ROLE. Cannot be changed while rewards are vesting.
-    /// @param newVestingPeriod The new vesting period in seconds
+    // ============ Admin Functions ============
+
+    /// @inheritdoc IStakedUSDat
     function setVestingPeriod(uint256 newVestingPeriod) external onlyRole(PROCESSOR_ROLE) {
         require(newVestingPeriod > 0 && newVestingPeriod <= MAX_VESTING_PERIOD, InvalidVestingPeriod());
         require(getUnvestedAmount() == 0, StillVesting());
@@ -589,9 +519,7 @@ contract StakedUSDat is
         emit VestingPeriodUpdated(oldPeriod, newVestingPeriod);
     }
 
-    /// @notice Updates the deposit fee
-    /// @dev Only callable by PROCESSOR_ROLE. Can be set to 0 to disable fees.
-    /// @param newFeeBps The new fee in basis points (0 to MAX_DEPOSIT_FEE_BPS)
+    /// @inheritdoc IStakedUSDat
     function setDepositFee(uint256 newFeeBps) external onlyRole(PROCESSOR_ROLE) {
         require(newFeeBps <= MAX_DEPOSIT_FEE_BPS, InvalidFee());
 
@@ -600,18 +528,14 @@ contract StakedUSDat is
         emit DepositFeeUpdated(newFeeBps);
     }
 
-    /// @notice Updates the fee recipient address
-    /// @dev Only callable by PROCESSOR_ROLE. Can be set to address(0) to disable fees.
-    /// @param newRecipient The new fee recipient address
+    /// @inheritdoc IStakedUSDat
     function setFeeRecipient(address newRecipient) external onlyRole(PROCESSOR_ROLE) {
         feeRecipient = newRecipient;
 
         emit FeeRecipientUpdated(newRecipient);
     }
 
-    /// @notice Update the price tolerance for conversion validation
-    /// @dev Only callable by PROCESSOR_ROLE. Use during black swan events.
-    /// @param newToleranceBps The new tolerance in basis points
+    /// @inheritdoc IStakedUSDat
     function setTolerance(uint256 newToleranceBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(newToleranceBps >= MIN_TOLERANCE_BPS && newToleranceBps <= MAX_TOLERANCE_BPS, InvalidFee());
 
@@ -620,10 +544,12 @@ contract StakedUSDat is
         emit ToleranceUpdated(newToleranceBps);
     }
 
+    /// @inheritdoc IStakedUSDat
     function pause() external onlyRole(COMPLIANCE_ROLE) {
         _pause();
     }
 
+    /// @inheritdoc IStakedUSDat
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
     }
