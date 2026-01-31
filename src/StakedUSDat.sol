@@ -21,7 +21,6 @@ import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC2
 import {IWithdrawalQueueERC721} from "./interfaces/IWithdrawalQueueERC721.sol";
 import {ITokenizedSTRC} from "./interfaces/ITokenizedSTRC.sol";
 import {IERC20Burnable} from "./interfaces/IERC20Burnable.sol";
-import {IUSDat} from "./interfaces/IUSDat.sol";
 import {IStakedUSDat} from "./interfaces/IStakedUSDat.sol";
 
 /**
@@ -337,7 +336,7 @@ contract StakedUSDat is
 
         usdatBalance -= usdatAmount;
 
-        IERC20Burnable(asset()).burn(usdatAmount);
+        IERC20(asset()).safeTransfer(msg.sender, usdatAmount);
         TSTRC.mint(address(this), strcAmount);
 
         emit Converted(usdatAmount, strcAmount);
@@ -358,7 +357,7 @@ contract StakedUSDat is
         IERC20Burnable(address(TSTRC)).burn(strcAmount);
 
         usdatBalance += usdatAmount;
-        IUSDat(asset()).mint(address(this), usdatAmount);
+        IERC20(asset()).safeTransferFrom(msg.sender, address(this), usdatAmount);
 
         emit Converted(usdatAmount, strcAmount);
     }

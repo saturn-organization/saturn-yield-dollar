@@ -52,8 +52,8 @@ contract WithdrawalQueueERC721 is
     /// @dev The TokenizedSTRC contract (immutable, stored in implementation bytecode)
     ITokenizedSTRC public immutable TSTRC;
 
-    /// @notice The StakedUSDat contract
-    IStakedUSDat public stakedUSDat;
+    /// @dev The StakedUSDat contract (immutable, stored in implementation bytecode)
+    IStakedUSDat public immutable STAKED_USDAT;
 
     /// @notice Mapping of token ID to request data
     mapping(uint256 tokenId => Request) public requests;
@@ -68,10 +68,11 @@ contract WithdrawalQueueERC721 is
     uint256 public constant BPS_DENOMINATOR = 10000;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor(address usdat, address tstrc) {
-        require(usdat != address(0) && tstrc != address(0), ZeroAmount());
+    constructor(address usdat, address tstrc, address stakedUsdat) {
+        require(usdat != address(0) && tstrc != address(0) && stakedUsdat != address(0), ZeroAmount());
         USDAT = IUSDat(usdat);
         TSTRC = ITokenizedSTRC(tstrc);
+        STAKED_USDAT = IStakedUSDat(stakedUsdat);
         _disableInitializers();
     }
 
@@ -91,25 +92,15 @@ contract WithdrawalQueueERC721 is
     /// @dev Authorizes an upgrade to a new implementation. Only callable by DEFAULT_ADMIN_ROLE.
     function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
-    // ============ Admin Functions ============
-
-    /// @inheritdoc IWithdrawalQueueERC721
-    function setStakedUSDat(address _stakedusdat) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(address(stakedUSDat) == address(0), StakedUSDatAlreadySet());
-        require(_stakedusdat != address(0), ZeroAmount());
-        stakedUSDat = IStakedUSDat(_stakedusdat);
-        _grantRole(STAKED_USDAT_ROLE, _stakedusdat);
-    }
-
     /// @dev Reverts if the given account is blacklisted in either StakedUSDat or USDat.
     function _requireNotBlacklisted(address account) internal view {
-        require(!stakedUSDat.isBlacklisted(account), AddressBlacklisted());
-        require(!USDAT.isBlacklisted(account), AddressBlacklisted());
+        require(!STAKED_USDAT.isBlacklisted(account), AddressBlacklisted());
+        require(!USDAT.isFrozen(account), AddressBlacklisted());
     }
 
     /// @dev Reverts if the given account is NOT blacklisted in both StakedUSDat and USDat.
     function _requireBlacklisted(address account) internal view {
-        require(stakedUSDat.isBlacklisted(account) || USDAT.isBlacklisted(account), NotBlacklisted());
+        require(STAKED_USDAT.isBlacklisted(account) || USDAT.isFrozen(account), NotBlacklisted());
     }
 
     // ============ Request Creation ============
@@ -193,7 +184,7 @@ contract WithdrawalQueueERC721 is
 
     /// @dev Checks if a value is within ±toleranceBps of an expected value.
     function _isWithinTolerance(uint256 value, uint256 expected) internal view returns (bool) {
-        uint256 toleranceBps = stakedUSDat.toleranceBps();
+        uint256 toleranceBps = STAKED_USDAT.toleranceBps();
         uint256 minExpected = Math.mulDiv(expected, BPS_DENOMINATOR - toleranceBps, BPS_DENOMINATOR);
         uint256 maxExpected = Math.mulDiv(expected, BPS_DENOMINATOR + toleranceBps, BPS_DENOMINATOR);
         return value >= minExpected && value <= maxExpected;
@@ -206,8 +197,8 @@ contract WithdrawalQueueERC721 is
         uint256 executionPrice,
         uint256 totalShares
     ) internal view {
-        uint256 strcBalance = TSTRC.balanceOf(address(stakedUSDat));
-        uint256 unvestedAmount = stakedUSDat.getUnvestedAmount();
+        uint256 strcBalance = TSTRC.balanceOf(address(STAKED_USDAT));
+        uint256 unvestedAmount = STAKED_USDAT.getUnvestedAmount();
         uint256 vestedBalance = strcBalance - unvestedAmount;
         require(totalStrcSold <= vestedBalance, ExceedsVestedBalance());
 
@@ -217,7 +208,7 @@ contract WithdrawalQueueERC721 is
         (uint256 oraclePrice,) = TSTRC.getPrice();
         require(_isWithinTolerance(executionPrice, oraclePrice), OraclePriceMismatch());
 
-        uint256 expectedShareValue = stakedUSDat.previewRedeem(totalShares);
+        uint256 expectedShareValue = STAKED_USDAT.previewRedeem(totalShares);
         require(_isWithinTolerance(totalUsdatReceived, expectedShareValue), ExecutionPriceMismatch());
     }
 
@@ -258,12 +249,12 @@ contract WithdrawalQueueERC721 is
 
         pendingCount -= count;
 
-        stakedUSDat.burnQueuedShares(totalShares, totalStrcSold);
-        USDAT.mint(address(this), totalUsdatReceived);
+        STAKED_USDAT.burnQueuedShares(totalShares, totalStrcSold);
+        IERC20(address(USDAT)).safeTransferFrom(msg.sender, address(this), totalUsdatReceived);
         uint256 dust = totalUsdatReceived - totalUsdat;
         if (dust > 0) {
-            IERC20(address(USDAT)).approve(address(stakedUSDat), dust);
-            stakedUSDat.collectDust(dust);
+            IERC20(address(USDAT)).approve(address(STAKED_USDAT), dust);
+            STAKED_USDAT.collectDust(dust);
         }
     }
 
@@ -470,7 +461,7 @@ contract WithdrawalQueueERC721 is
 
     /// @inheritdoc IWithdrawalQueueERC721
     function getTotalPendingShares() external view returns (uint256) {
-        return IERC20(address(stakedUSDat)).balanceOf(address(this));
+        return IERC20(address(STAKED_USDAT)).balanceOf(address(this));
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
@@ -573,7 +564,6 @@ contract WithdrawalQueueERC721 is
         address from = _ownerOf(tokenId);
 
         if (from != address(0) && to != address(0)) {
-            require(address(stakedUSDat) != address(0), StakedUSDatNotSet());
             if (hasRole(COMPLIANCE_ROLE, msg.sender)) {
                 _requireBlacklisted(from);
                 _requireNotBlacklisted(to);
