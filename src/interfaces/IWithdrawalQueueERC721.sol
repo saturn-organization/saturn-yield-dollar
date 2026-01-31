@@ -95,16 +95,6 @@ interface IWithdrawalQueueERC721 {
     error AddressBlacklisted();
 
     /**
-     * @dev Thrown when StakedUSDat has not been set yet.
-     */
-    error StakedUSDatNotSet();
-
-    /**
-     * @dev Thrown when attempting to set StakedUSDat when it's already set.
-     */
-    error StakedUSDatAlreadySet();
-
-    /**
      * @dev Thrown when slippage protection is triggered (received less than minimum).
      */
     error SlippageExceeded();
@@ -183,14 +173,6 @@ interface IWithdrawalQueueERC721 {
     event MinUsdatReceivedUpdated(uint256 indexed tokenId, uint256 newMinUsdatReceived);
 
     // ============ Admin Functions ============
-
-    /**
-     * @notice Sets the StakedUSDat contract address.
-     * @dev Can only be called once. Also grants STAKED_USDAT_ROLE to the contract.
-     * Only callable by addresses with the DEFAULT_ADMIN_ROLE.
-     * @param _stakedusdat The StakedUSDat contract address.
-     */
-    function setStakedUSDat(address _stakedusdat) external;
 
     /**
      * @notice Pauses the contract.

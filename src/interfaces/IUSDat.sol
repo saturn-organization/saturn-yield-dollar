@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IFreezable} from "./IFreezable.sol";
 
-interface IUSDat is IERC20 {
-    function mint(address to, uint256 amount) external;
-
-    function isBlacklisted(address account) external view returns (bool);
-}
+interface IUSDat is IFreezable {}
