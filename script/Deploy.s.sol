@@ -5,10 +5,10 @@ import {Script, console} from "forge-std/Script.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {CREATE3} from "solady/utils/CREATE3.sol";
-import {TokenizedSTRC} from "../src/TokenizedSTRC.sol";
+import {StrcPriceOracle} from "../src/StrcPriceOracle.sol";
 import {WithdrawalQueueERC721} from "../src/WithdrawalQueueERC721.sol";
 import {StakedUSDat} from "../src/StakedUSDat.sol";
-import {ITokenizedSTRC} from "../src/interfaces/ITokenizedSTRC.sol";
+import {IStrcPriceOracle} from "../src/interfaces/IStrcPriceOracle.sol";
 import {IWithdrawalQueueERC721} from "../src/interfaces/IWithdrawalQueueERC721.sol";
 
 /**
@@ -22,14 +22,14 @@ import {IWithdrawalQueueERC721} from "../src/interfaces/IWithdrawalQueueERC721.s
  *
  * Deployment order:
  * 1. Compute all addresses using CREATE3
- * 2. Deploy TokenizedSTRC
+ * 2. Deploy StrcPriceOracle
  * 3. Deploy WithdrawalQueueERC721 (impl + proxy)
  * 4. Deploy StakedUSDat (impl + proxy)
  * 5. Grant roles
  *
  * Environment variables required:
  * - USDAT: USDat token address
- * - ORACLE: Price oracle address for STRC
+ * - ORACLE: Price oracle address for STRC (Chainlink-compatible)
  *
  * Environment variables optional (default to deployer):
  * - ADMIN: Admin address
@@ -39,7 +39,7 @@ import {IWithdrawalQueueERC721} from "../src/interfaces/IWithdrawalQueueERC721.s
  */
 contract DeployScript is Script {
     // Salts for CREATE3 - change these for different deployments
-    bytes32 constant SALT_TSTRC = keccak256("saturn.TokenizedSTRC.v1");
+    bytes32 constant SALT_STRC_ORACLE = keccak256("saturn.StrcPriceOracle.v1");
     bytes32 constant SALT_WQ_IMPL = keccak256("saturn.WithdrawalQueueERC721.impl.v1");
     bytes32 constant SALT_WQ_PROXY = keccak256("saturn.WithdrawalQueueERC721.proxy.v1");
     bytes32 constant SALT_SUSDAT_IMPL = keccak256("saturn.StakedUSDat.impl.v1");
@@ -56,14 +56,14 @@ contract DeployScript is Script {
     }
 
     struct DeployedAddresses {
-        address tstrc;
+        address strcOracle;
         address wqImpl;
         address wqProxy;
         address susdatImpl;
         address susdatProxy;
     }
 
-    TokenizedSTRC public tstrc;
+    StrcPriceOracle public strcOracle;
     WithdrawalQueueERC721 public withdrawalQueue;
     StakedUSDat public stakedUsdatImpl;
     StakedUSDat public stakedUsdat;
@@ -109,7 +109,7 @@ contract DeployScript is Script {
     }
 
     function _computeAddresses() internal view returns (DeployedAddresses memory addrs) {
-        addrs.tstrc = CREATE3.predictDeterministicAddress(SALT_TSTRC);
+        addrs.strcOracle = CREATE3.predictDeterministicAddress(SALT_STRC_ORACLE);
         addrs.wqImpl = CREATE3.predictDeterministicAddress(SALT_WQ_IMPL);
         addrs.wqProxy = CREATE3.predictDeterministicAddress(SALT_WQ_PROXY);
         addrs.susdatImpl = CREATE3.predictDeterministicAddress(SALT_SUSDAT_IMPL);
@@ -118,7 +118,7 @@ contract DeployScript is Script {
 
     function _logPredictedAddresses(DeployedAddresses memory addrs) internal pure {
         console.log("=== Predicted Addresses (CREATE3) ===");
-        console.log("TokenizedSTRC:", addrs.tstrc);
+        console.log("StrcPriceOracle:", addrs.strcOracle);
         console.log("WithdrawalQueue Impl:", addrs.wqImpl);
         console.log("WithdrawalQueue Proxy:", addrs.wqProxy);
         console.log("StakedUSDat Impl:", addrs.susdatImpl);
@@ -127,20 +127,22 @@ contract DeployScript is Script {
     }
 
     function _deploy(DeployConfig memory cfg, DeployedAddresses memory addrs) internal {
-        // Step 1: Deploy TokenizedSTRC
-        tstrc = TokenizedSTRC(
+        // Step 1: Deploy StrcPriceOracle
+        strcOracle = StrcPriceOracle(
             CREATE3.deployDeterministic(
-                abi.encodePacked(type(TokenizedSTRC).creationCode, abi.encode(cfg.admin, cfg.oracle)), SALT_TSTRC
+                abi.encodePacked(type(StrcPriceOracle).creationCode, abi.encode(cfg.admin, cfg.oracle)),
+                SALT_STRC_ORACLE
             )
         );
-        require(address(tstrc) == addrs.tstrc, "TokenizedSTRC address mismatch");
-        console.log("1. TokenizedSTRC deployed at:", address(tstrc));
+        require(address(strcOracle) == addrs.strcOracle, "StrcPriceOracle address mismatch");
+        console.log("1. StrcPriceOracle deployed at:", address(strcOracle));
 
         // Step 2: Deploy WithdrawalQueueERC721 Implementation
         WithdrawalQueueERC721 wqImpl = WithdrawalQueueERC721(
             CREATE3.deployDeterministic(
                 abi.encodePacked(
-                    type(WithdrawalQueueERC721).creationCode, abi.encode(cfg.usdat, address(tstrc), addrs.susdatProxy)
+                    type(WithdrawalQueueERC721).creationCode,
+                    abi.encode(cfg.usdat, addrs.susdatProxy, address(strcOracle))
                 ),
                 SALT_WQ_IMPL
             )
@@ -164,7 +166,7 @@ contract DeployScript is Script {
             CREATE3.deployDeterministic(
                 abi.encodePacked(
                     type(StakedUSDat).creationCode,
-                    abi.encode(ITokenizedSTRC(address(tstrc)), IWithdrawalQueueERC721(address(withdrawalQueue)))
+                    abi.encode(IStrcPriceOracle(address(strcOracle)), IWithdrawalQueueERC721(address(withdrawalQueue)))
                 ),
                 SALT_SUSDAT_IMPL
             )
@@ -188,25 +190,21 @@ contract DeployScript is Script {
     }
 
     function _grantRoles(DeployConfig memory cfg) internal {
-        // Grant STAKED_USDAT_ROLE on TokenizedSTRC
-        tstrc.grantRole(tstrc.STAKED_USDAT_ROLE(), address(stakedUsdat));
-        console.log("6. TokenizedSTRC: Granted STAKED_USDAT_ROLE");
-
         // Grant roles on WithdrawalQueueERC721
         withdrawalQueue.grantRole(withdrawalQueue.STAKED_USDAT_ROLE(), address(stakedUsdat));
-        console.log("7. WithdrawalQueueERC721: Granted STAKED_USDAT_ROLE");
+        console.log("6. WithdrawalQueueERC721: Granted STAKED_USDAT_ROLE");
 
         withdrawalQueue.grantRole(withdrawalQueue.PROCESSOR_ROLE(), cfg.processor);
-        console.log("8. WithdrawalQueueERC721: Granted PROCESSOR_ROLE");
+        console.log("7. WithdrawalQueueERC721: Granted PROCESSOR_ROLE");
 
         withdrawalQueue.grantRole(withdrawalQueue.COMPLIANCE_ROLE(), cfg.compliance);
-        console.log("9. WithdrawalQueueERC721: Granted COMPLIANCE_ROLE");
+        console.log("8. WithdrawalQueueERC721: Granted COMPLIANCE_ROLE");
     }
 
     function _logResults() internal view {
         console.log("");
         console.log("=== Deployment Complete ===");
-        console.log("TokenizedSTRC:", address(tstrc));
+        console.log("StrcPriceOracle:", address(strcOracle));
         console.log("WithdrawalQueueERC721:", address(withdrawalQueue));
         console.log("StakedUSDat Implementation:", address(stakedUsdatImpl));
         console.log("StakedUSDat Proxy:", address(stakedUsdat));
