@@ -30,10 +30,7 @@ contract StrcPriceOracle is AccessControl, IStrcPriceOracle {
     IPriceOracle private oracle;
 
     constructor(address defaultAdmin, address oracleAddress) {
-        require(
-            defaultAdmin != address(0) && oracleAddress != address(0),
-            InvalidZeroAddress()
-        );
+        require(defaultAdmin != address(0) && oracleAddress != address(0), InvalidZeroAddress());
 
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
 
@@ -44,9 +41,7 @@ contract StrcPriceOracle is AccessControl, IStrcPriceOracle {
     }
 
     /// @inheritdoc IStrcPriceOracle
-    function updateOracle(
-        address newOracle
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function updateOracle(address newOracle) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(newOracle != address(0), InvalidZeroAddress());
         address oldOracle = address(oracle);
         oracle = IPriceOracle(newOracle);
@@ -54,23 +49,15 @@ contract StrcPriceOracle is AccessControl, IStrcPriceOracle {
     }
 
     /// @inheritdoc IStrcPriceOracle
-    function setMaxPriceStaleness(
-        uint256 newStaleness
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function setMaxPriceStaleness(uint256 newStaleness) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(newStaleness <= MAX_STALENESS, InvalidStaleness());
         maxPriceStaleness = newStaleness;
         emit MaxPriceStalenessUpdated(newStaleness);
     }
 
     /// @inheritdoc IStrcPriceOracle
-    function setPriceBounds(
-        uint256 newMinPrice,
-        uint256 newMaxPrice
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(
-            newMinPrice > 0 && newMinPrice < newMaxPrice,
-            InvalidPriceBounds()
-        );
+    function setPriceBounds(uint256 newMinPrice, uint256 newMaxPrice) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(newMinPrice > 0 && newMinPrice < newMaxPrice, InvalidPriceBounds());
         minPrice = newMinPrice;
         maxPrice = newMaxPrice;
         emit PriceBoundsUpdated(newMinPrice, newMaxPrice);
@@ -82,20 +69,13 @@ contract StrcPriceOracle is AccessControl, IStrcPriceOracle {
     }
 
     /// @inheritdoc IStrcPriceOracle
-    function getPrice()
-        external
-        view
-        returns (uint256 price, uint8 oracleDecimals)
-    {
+    function getPrice() external view returns (uint256 price, uint8 oracleDecimals) {
         require(address(oracle) != address(0), InvalidZeroAddress());
 
-        (, int256 answer, , uint256 updatedAt, ) = oracle.latestRoundData();
+        (, int256 answer,, uint256 updatedAt,) = oracle.latestRoundData();
 
         // Staleness check
-        require(
-            block.timestamp - updatedAt <= maxPriceStaleness,
-            InvalidOraclePrice()
-        );
+        require(block.timestamp - updatedAt <= maxPriceStaleness, InvalidOraclePrice());
         require(answer > 0, InvalidOraclePrice());
 
         // forge-lint: disable-next-line(unsafe-typecast)
