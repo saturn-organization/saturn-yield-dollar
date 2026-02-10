@@ -9,8 +9,8 @@ import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
  * @notice Interface for the StakedUSDat (sUSDat) ERC4626 vault contract.
  * @dev StakedUSDat is a UUPS upgradeable ERC4626 vault for staking USDat.
  * Users deposit USDat and receive sUSDat shares representing their stake.
- * The vault holds both USDat and tSTRC (TokenizedSTRC), with tSTRC representing
- * STRC holdings managed by the Saturn entity. Rewards are distributed as tSTRC
+ * The vault holds both USDat and tracks STRC holdings internally via strcBalance.
+ * STRC holdings are managed by the Saturn entity. Rewards are distributed as STRC
  * and vest linearly over a configurable period to prevent front-running attacks.
  */
 interface IStakedUSDat is IERC4626 {
@@ -188,8 +188,7 @@ interface IStakedUSDat is IERC4626 {
     /**
      * @notice Rescues tokens accidentally sent to the contract.
      * @dev Only callable by addresses with the DEFAULT_ADMIN_ROLE.
-     * Cannot rescue tSTRC tokens. For USDat, only allows rescuing amounts
-     * above the internally tracked balance.
+     * For USDat, only allows rescuing amounts above the internally tracked balance.
      * @param token The address of the token to rescue.
      * @param amount The amount of tokens to rescue.
      * @param to The address to send the rescued tokens to.
@@ -197,32 +196,32 @@ interface IStakedUSDat is IERC4626 {
     function rescueTokens(address token, uint256 amount, address to) external;
 
     /**
-     * @notice Converts USDat to tSTRC when the entity purchases STRC from the market.
+     * @notice Converts USDat to STRC when the entity purchases STRC from the market.
      * @dev Only callable by addresses with the PROCESSOR_ROLE.
-     * Burns the USDat and mints equivalent tSTRC based on the purchase price.
+     * Decreases usdatBalance and increases strcBalance based on the purchase price.
      * @param usdatAmount The amount of USDat to convert.
-     * @param strcAmount The amount of tSTRC to mint.
+     * @param strcAmount The amount of STRC to add.
      * @param strcPurchasePrice The price per STRC in USDat terms (8 decimals).
      */
     function convertFromUsdat(uint256 usdatAmount, uint256 strcAmount, uint256 strcPurchasePrice) external;
 
     /**
-     * @notice Converts tSTRC to USDat when the entity sells STRC to the market.
+     * @notice Converts STRC to USDat when the entity sells STRC to the market.
      * @dev Only callable by addresses with the PROCESSOR_ROLE.
-     * Burns the tSTRC and mints equivalent USDat based on the sale price.
-     * Can only convert vested tSTRC (unvested rewards are protected).
-     * @param strcAmount The amount of tSTRC to burn.
-     * @param usdatAmount The amount of USDat to mint.
+     * Decreases strcBalance and increases usdatBalance based on the sale price.
+     * Can only convert vested STRC (unvested rewards are protected).
+     * @param strcAmount The amount of STRC to remove.
+     * @param usdatAmount The amount of USDat to add.
      * @param strcSalePrice The price per STRC in USDat terms (8 decimals).
      */
     function convertFromStrc(uint256 strcAmount, uint256 usdatAmount, uint256 strcSalePrice) external;
 
     /**
-     * @notice Transfers tSTRC rewards into the contract with linear vesting.
+     * @notice Transfers STRC rewards into the contract with linear vesting.
      * @dev Only callable by addresses with the PROCESSOR_ROLE.
      * Cannot be called while previous rewards are still vesting.
      * Rewards vest linearly over the vestingPeriod to prevent front-running.
-     * @param amount The amount of tSTRC to mint as rewards.
+     * @param amount The amount of STRC to add as rewards.
      */
     function transferInRewards(uint256 amount) external;
 
@@ -276,10 +275,10 @@ interface IStakedUSDat is IERC4626 {
     function claimBatch(uint256[] calldata tokenIds) external returns (uint256 totalAmount);
 
     /**
-     * @notice Burns escrowed shares and the corresponding tSTRC sold off-chain.
+     * @notice Burns escrowed shares and decreases strcBalance for the STRC sold off-chain.
      * @dev Only callable by the withdrawal queue during processing.
      * @param shares The number of shares to burn.
-     * @param strcAmount The amount of tSTRC that was sold off-chain.
+     * @param strcAmount The amount of STRC that was sold off-chain.
      */
     function burnQueuedShares(uint256 shares, uint256 strcAmount) external;
 
@@ -294,9 +293,9 @@ interface IStakedUSDat is IERC4626 {
     // ============ View Functions ============
 
     /**
-     * @notice Returns the amount of tSTRC that is still vesting.
+     * @notice Returns the amount of STRC that is still vesting.
      * @dev Rounds up to be conservative (slightly favors protocol over users).
-     * @return The unvested tSTRC amount.
+     * @return The unvested STRC amount.
      */
     function getUnvestedAmount() external view returns (uint256);
 
@@ -307,10 +306,10 @@ interface IStakedUSDat is IERC4626 {
     function getWithdrawalQueue() external view returns (address);
 
     /**
-     * @notice Returns the TokenizedSTRC contract address.
-     * @return The address of the TokenizedSTRC contract.
+     * @notice Returns the STRC price oracle contract address.
+     * @return The address of the StrcPriceOracle contract.
      */
-    function getTstrc() external view returns (address);
+    function getStrcOracle() external view returns (address);
 
     /**
      * @notice Returns the current tolerance in basis points for conversion validation.
@@ -319,7 +318,13 @@ interface IStakedUSDat is IERC4626 {
     function toleranceBps() external view returns (uint256);
 
     /**
-     * @notice Returns the current amount of tSTRC vesting.
+     * @notice Returns the internally tracked STRC balance.
+     * @return The STRC balance.
+     */
+    function strcBalance() external view returns (uint256);
+
+    /**
+     * @notice Returns the current amount of STRC vesting.
      * @return The vesting amount.
      */
     function vestingAmount() external view returns (uint256);

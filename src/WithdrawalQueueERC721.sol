@@ -17,7 +17,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {IUSDat} from "./interfaces/IUSDat.sol";
 import {IStakedUSDat} from "./interfaces/IStakedUSDat.sol";
-import {ITokenizedSTRC} from "./interfaces/ITokenizedSTRC.sol";
+import {IStrcPriceOracle} from "./interfaces/IStrcPriceOracle.sol";
 import {IWithdrawalQueueERC721} from "./interfaces/IWithdrawalQueueERC721.sol";
 
 /**
@@ -49,9 +49,6 @@ contract WithdrawalQueueERC721 is
     /// @dev The USDat token contract (immutable, stored in implementation bytecode)
     IUSDat public immutable USDAT;
 
-    /// @dev The TokenizedSTRC contract (immutable, stored in implementation bytecode)
-    ITokenizedSTRC public immutable TSTRC;
-
     /// @dev The StakedUSDat contract (immutable, stored in implementation bytecode)
     IStakedUSDat public immutable STAKED_USDAT;
 
@@ -68,10 +65,9 @@ contract WithdrawalQueueERC721 is
     uint256 public constant BPS_DENOMINATOR = 10000;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor(address usdat, address tstrc, address stakedUsdat) {
-        require(usdat != address(0) && tstrc != address(0) && stakedUsdat != address(0), ZeroAmount());
+    constructor(address usdat, address stakedUsdat) {
+        require(usdat != address(0) && stakedUsdat != address(0), ZeroAmount());
         USDAT = IUSDat(usdat);
-        TSTRC = ITokenizedSTRC(tstrc);
         STAKED_USDAT = IStakedUSDat(stakedUsdat);
         _disableInitializers();
     }
@@ -197,7 +193,7 @@ contract WithdrawalQueueERC721 is
         uint256 executionPrice,
         uint256 totalShares
     ) internal view {
-        uint256 strcBalance = TSTRC.balanceOf(address(STAKED_USDAT));
+        uint256 strcBalance = STAKED_USDAT.strcBalance();
         uint256 unvestedAmount = STAKED_USDAT.getUnvestedAmount();
         uint256 vestedBalance = strcBalance - unvestedAmount;
         require(totalStrcSold <= vestedBalance, ExceedsVestedBalance());
@@ -205,7 +201,7 @@ contract WithdrawalQueueERC721 is
         uint256 expectedUsdat = Math.mulDiv(totalStrcSold, executionPrice, 1e8);
         require(_isWithinTolerance(totalUsdatReceived, expectedUsdat), ExecutionPriceMismatch());
 
-        (uint256 oraclePrice,) = TSTRC.getPrice();
+        (uint256 oraclePrice,) = IStrcPriceOracle(STAKED_USDAT.getStrcOracle()).getPrice();
         require(_isWithinTolerance(executionPrice, oraclePrice), OraclePriceMismatch());
 
         uint256 expectedShareValue = STAKED_USDAT.previewRedeem(totalShares);

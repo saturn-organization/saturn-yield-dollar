@@ -8,7 +8,7 @@ pragma solidity ^0.8.20;
  * @dev A UUPS upgradeable NFT-based withdrawal queue where each withdrawal request
  * is represented as an ERC721 token. Users request redemptions from StakedUSDat,
  * their shares are escrowed, and they receive an NFT representing their claim.
- * Processors then sell tSTRC off-chain, and users can claim their USDat once processed.
+ * Processors then sell STRC off-chain, and users can claim their USDat once processed.
  */
 interface IWithdrawalQueueERC721 {
     // ============ Enums ============
@@ -100,7 +100,7 @@ interface IWithdrawalQueueERC721 {
     error SlippageExceeded();
 
     /**
-     * @dev Thrown when attempting to sell more tSTRC than the vested balance.
+     * @dev Thrown when attempting to sell more STRC than the vested balance.
      */
     error ExceedsVestedBalance();
 
@@ -230,12 +230,12 @@ interface IWithdrawalQueueERC721 {
     /**
      * @notice Processes a batch of withdrawal requests.
      * @dev Validates the execution against oracle prices and allocates USDat pro-rata.
-     * Burns the escrowed shares and tSTRC, then mints USDat for users to claim.
+     * Burns the escrowed shares and decreases strcBalance, then transfers USDat for users to claim.
      * Only callable by addresses with the PROCESSOR_ROLE.
      * @param tokenIds Array of token IDs to process.
-     * @param totalUsdatReceived Amount of USDat received from selling tSTRC off-chain.
-     * @param totalStrcSold Amount of tSTRC that was sold off-chain.
-     * @param executionPrice The price per tSTRC in USDat terms (8 decimals) for validation.
+     * @param totalUsdatReceived Amount of USDat received from selling STRC off-chain.
+     * @param totalStrcSold Amount of STRC that was sold off-chain.
+     * @param executionPrice The price per STRC in USDat terms (8 decimals) for validation.
      */
     function processRequests(
         uint256[] calldata tokenIds,

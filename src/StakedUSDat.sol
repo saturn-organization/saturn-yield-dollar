@@ -19,8 +19,7 @@ import {
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 
 import {IWithdrawalQueueERC721} from "./interfaces/IWithdrawalQueueERC721.sol";
-import {ITokenizedSTRC} from "./interfaces/ITokenizedSTRC.sol";
-import {IERC20Burnable} from "./interfaces/IERC20Burnable.sol";
+import {IStrcPriceOracle} from "./interfaces/IStrcPriceOracle.sol";
 import {IStakedUSDat} from "./interfaces/IStakedUSDat.sol";
 
 /**
@@ -47,8 +46,8 @@ contract StakedUSDat is
     /// @notice Role identifier for compliance operations
     bytes32 private constant COMPLIANCE_ROLE = keccak256("COMPLIANCE_ROLE");
 
-    /// @dev The TokenizedSTRC contract (immutable, stored in implementation bytecode)
-    ITokenizedSTRC private immutable TSTRC;
+    /// @dev The STRC price oracle contract (immutable, stored in implementation bytecode)
+    IStrcPriceOracle private immutable STRC_ORACLE;
 
     /// @dev The WithdrawalQueue contract (immutable, stored in implementation bytecode)
     IWithdrawalQueueERC721 private immutable WITHDRAWAL_QUEUE;
@@ -95,6 +94,9 @@ contract StakedUSDat is
     /// @notice Internally tracked USDat balance
     uint256 public usdatBalance;
 
+    /// @notice Internally tracked STRC balance
+    uint256 public strcBalance;
+
     modifier notZero(uint256 amount) {
         _notZero(amount);
         _;
@@ -106,9 +108,9 @@ contract StakedUSDat is
     }
 
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor(ITokenizedSTRC tstrc, IWithdrawalQueueERC721 withdrawalQueue) {
-        require(address(tstrc) != address(0) && address(withdrawalQueue) != address(0), InvalidZeroAddress());
-        TSTRC = tstrc;
+    constructor(IStrcPriceOracle strcOracle, IWithdrawalQueueERC721 withdrawalQueue) {
+        require(address(strcOracle) != address(0) && address(withdrawalQueue) != address(0), InvalidZeroAddress());
+        STRC_ORACLE = strcOracle;
         WITHDRAWAL_QUEUE = withdrawalQueue;
         _disableInitializers();
     }
@@ -227,10 +229,9 @@ contract StakedUSDat is
         return Math.mulDiv(vestingPeriod - timeSinceLastDistribution, vestingAmount, vestingPeriod, Math.Rounding.Ceil);
     }
 
-    /// @dev Calculates the total value of vested tSTRC holdings in USD terms (18 decimals).
+    /// @dev Calculates the total value of vested STRC holdings in USD terms (18 decimals).
     function _strcTotalAssets() internal view returns (uint256) {
-        (uint256 strcPrice, uint8 priceDecimals) = TSTRC.getPrice();
-        uint256 strcBalance = TSTRC.balanceOf(address(this));
+        (uint256 strcPrice, uint8 priceDecimals) = STRC_ORACLE.getPrice();
 
         uint256 vestedBalance = strcBalance - getUnvestedAmount();
 
@@ -299,8 +300,6 @@ contract StakedUSDat is
         nonReentrant
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
-        require(token != address(TSTRC), OperationNotAllowed());
-
         if (token == asset()) {
             uint256 excessBalance = IERC20(token).balanceOf(address(this)) - usdatBalance;
             require(amount <= excessBalance, InsufficientBalance());
@@ -321,7 +320,7 @@ contract StakedUSDat is
         uint256 expectedStrc = Math.mulDiv(usdatAmount, 1e8, strcPurchasePrice);
         require(_isWithinTolerance(strcAmount, expectedStrc), ExecutionPriceMismatch());
 
-        (uint256 oraclePrice,) = TSTRC.getPrice();
+        (uint256 oraclePrice,) = STRC_ORACLE.getPrice();
         require(_isWithinTolerance(strcPurchasePrice, oraclePrice), OraclePriceMismatch());
     }
 
@@ -335,9 +334,9 @@ contract StakedUSDat is
         _validateConversion(usdatAmount, strcAmount, strcPurchasePrice);
 
         usdatBalance -= usdatAmount;
+        strcBalance += strcAmount;
 
         IERC20(asset()).safeTransfer(msg.sender, usdatAmount);
-        TSTRC.mint(address(this), strcAmount);
 
         emit Converted(usdatAmount, strcAmount);
     }
@@ -347,16 +346,15 @@ contract StakedUSDat is
         external
         onlyRole(PROCESSOR_ROLE)
     {
-        uint256 strcBalance = TSTRC.balanceOf(address(this));
         uint256 unvestedAmount = getUnvestedAmount();
         uint256 vestedBalance = strcBalance - unvestedAmount;
         require(strcAmount <= vestedBalance, InsufficientBalance());
 
         _validateConversion(usdatAmount, strcAmount, strcSalePrice);
 
-        IERC20Burnable(address(TSTRC)).burn(strcAmount);
-
+        strcBalance -= strcAmount;
         usdatBalance += usdatAmount;
+
         IERC20(asset()).safeTransferFrom(msg.sender, address(this), usdatAmount);
 
         emit Converted(usdatAmount, strcAmount);
@@ -366,7 +364,7 @@ contract StakedUSDat is
     function transferInRewards(uint256 amount) external nonReentrant onlyRole(PROCESSOR_ROLE) notZero(amount) {
         if (getUnvestedAmount() > 0) revert StillVesting();
 
-        TSTRC.mint(address(this), amount);
+        strcBalance += amount;
 
         vestingAmount = amount;
         lastDistributionTimestamp = block.timestamp;
@@ -482,7 +480,7 @@ contract StakedUSDat is
     /// @inheritdoc IStakedUSDat
     function burnQueuedShares(uint256 shares, uint256 strcAmount) external {
         require(msg.sender == address(WITHDRAWAL_QUEUE), OperationNotAllowed());
-        IERC20Burnable(address(TSTRC)).burn(strcAmount);
+        strcBalance -= strcAmount;
         _burn(address(WITHDRAWAL_QUEUE), shares);
     }
 
@@ -501,8 +499,8 @@ contract StakedUSDat is
     }
 
     /// @inheritdoc IStakedUSDat
-    function getTstrc() external view returns (address) {
-        return address(TSTRC);
+    function getStrcOracle() external view returns (address) {
+        return address(STRC_ORACLE);
     }
 
     // ============ Admin Functions ============
