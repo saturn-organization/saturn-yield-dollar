@@ -52,9 +52,6 @@ contract WithdrawalQueueERC721 is
     /// @dev The StakedUSDat contract (immutable, stored in implementation bytecode)
     IStakedUSDat public immutable STAKED_USDAT;
 
-    /// @dev The STRC price oracle contract (immutable, stored in implementation bytecode)
-    IStrcPriceOracle public immutable STRC_ORACLE;
-
     /// @notice Mapping of token ID to request data
     mapping(uint256 tokenId => Request) public requests;
 
@@ -68,11 +65,10 @@ contract WithdrawalQueueERC721 is
     uint256 public constant BPS_DENOMINATOR = 10000;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor(address usdat, address stakedUsdat, address strcOracle) {
-        require(usdat != address(0) && stakedUsdat != address(0) && strcOracle != address(0), ZeroAmount());
+    constructor(address usdat, address stakedUsdat) {
+        require(usdat != address(0) && stakedUsdat != address(0), ZeroAmount());
         USDAT = IUSDat(usdat);
         STAKED_USDAT = IStakedUSDat(stakedUsdat);
-        STRC_ORACLE = IStrcPriceOracle(strcOracle);
         _disableInitializers();
     }
 
@@ -205,7 +201,7 @@ contract WithdrawalQueueERC721 is
         uint256 expectedUsdat = Math.mulDiv(totalStrcSold, executionPrice, 1e8);
         require(_isWithinTolerance(totalUsdatReceived, expectedUsdat), ExecutionPriceMismatch());
 
-        (uint256 oraclePrice,) = STRC_ORACLE.getPrice();
+        (uint256 oraclePrice,) = IStrcPriceOracle(STAKED_USDAT.getStrcOracle()).getPrice();
         require(_isWithinTolerance(executionPrice, oraclePrice), OraclePriceMismatch());
 
         uint256 expectedShareValue = STAKED_USDAT.previewRedeem(totalShares);

@@ -140,10 +140,7 @@ contract DeployScript is Script {
         // Step 2: Deploy WithdrawalQueueERC721 Implementation
         WithdrawalQueueERC721 wqImpl = WithdrawalQueueERC721(
             CREATE3.deployDeterministic(
-                abi.encodePacked(
-                    type(WithdrawalQueueERC721).creationCode,
-                    abi.encode(cfg.usdat, addrs.susdatProxy, address(strcOracle))
-                ),
+                abi.encodePacked(type(WithdrawalQueueERC721).creationCode, abi.encode(cfg.usdat, addrs.susdatProxy)),
                 SALT_WQ_IMPL
             )
         );
