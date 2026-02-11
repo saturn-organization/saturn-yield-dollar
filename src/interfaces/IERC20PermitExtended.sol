@@ -15,11 +15,5 @@ interface IERC20PermitExtended is IERC20Permit {
     /// @param value The amount of tokens to approve.
     /// @param deadline The timestamp after which the permit is no longer valid.
     /// @param signature The EIP-1271 compatible signature bytes.
-    function permit(
-        address owner,
-        address spender,
-        uint256 value,
-        uint256 deadline,
-        bytes memory signature
-    ) external;
+    function permit(address owner, address spender, uint256 value, uint256 deadline, bytes memory signature) external;
 }
