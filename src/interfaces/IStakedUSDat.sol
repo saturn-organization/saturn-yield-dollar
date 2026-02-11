@@ -203,7 +203,11 @@ interface IStakedUSDat is IERC4626 {
      * @param strcAmount The amount of STRC to add.
      * @param strcPurchasePrice The price per STRC in USDat terms (8 decimals).
      */
-    function convertFromUsdat(uint256 usdatAmount, uint256 strcAmount, uint256 strcPurchasePrice) external;
+    function convertFromUsdat(
+        uint256 usdatAmount,
+        uint256 strcAmount,
+        uint256 strcPurchasePrice
+    ) external;
 
     /**
      * @notice Converts STRC to USDat when the entity sells STRC to the market.
@@ -214,7 +218,11 @@ interface IStakedUSDat is IERC4626 {
      * @param usdatAmount The amount of USDat to add.
      * @param strcSalePrice The price per STRC in USDat terms (8 decimals).
      */
-    function convertFromStrc(uint256 strcAmount, uint256 usdatAmount, uint256 strcSalePrice) external;
+    function convertFromStrc(
+        uint256 strcAmount,
+        uint256 usdatAmount,
+        uint256 strcSalePrice
+    ) external;
 
     /**
      * @notice Transfers STRC rewards into the contract with linear vesting.
@@ -235,7 +243,11 @@ interface IStakedUSDat is IERC4626 {
      * @param minShares The minimum number of shares to receive.
      * @return shares The number of shares minted.
      */
-    function depositWithMinShares(uint256 assets, address receiver, uint256 minShares) external returns (uint256 shares);
+    function depositWithMinShares(
+        uint256 assets,
+        address receiver,
+        uint256 minShares
+    ) external returns (uint256 shares);
 
     /**
      * @notice Mints shares with slippage protection.
@@ -245,7 +257,93 @@ interface IStakedUSDat is IERC4626 {
      * @param maxAssets The maximum amount of assets to spend.
      * @return assets The amount of assets spent.
      */
-    function mintWithMaxAssets(uint256 shares, address receiver, uint256 maxAssets) external returns (uint256 assets);
+    function mintWithMaxAssets(
+        uint256 shares,
+        address receiver,
+        uint256 maxAssets
+    ) external returns (uint256 assets);
+
+    /**
+     * @notice Deposits assets with EIP-2612 permit for gasless approval.
+     * @dev Combines permit and deposit in a single transaction.
+     * @param assets The amount of assets to deposit.
+     * @param receiver The address to receive the shares.
+     * @param minShares The minimum number of shares to receive (slippage protection).
+     * @param deadline The permit signature deadline.
+     * @param v The permit signature v component.
+     * @param r The permit signature r component.
+     * @param s The permit signature s component.
+     * @return shares The number of shares minted.
+     */
+    function depositWithPermit(
+        uint256 assets,
+        address receiver,
+        uint256 minShares,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint256 shares);
+
+    /**
+     * @notice Mints shares with EIP-2612 permit for gasless approval.
+     * @dev Combines permit and mint in a single transaction.
+     * @param shares The number of shares to mint.
+     * @param receiver The address to receive the shares.
+     * @param maxAssets The maximum amount of assets to spend (slippage protection).
+     * @param deadline The permit signature deadline.
+     * @param v The permit signature v component.
+     * @param r The permit signature r component.
+     * @param s The permit signature s component.
+     * @return assets The amount of assets spent.
+     */
+    function mintWithPermit(
+        uint256 shares,
+        address receiver,
+        uint256 maxAssets,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint256 assets);
+
+    /**
+     * @notice Deposits assets with EIP-1271 permit for smart contract wallet approval.
+     * @dev Combines permit and deposit in a single transaction. Supports smart contract
+     * wallets like Gnosis Safe, Argent, etc. that implement EIP-1271.
+     * @param assets The amount of assets to deposit.
+     * @param receiver The address to receive the shares.
+     * @param minShares The minimum number of shares to receive (slippage protection).
+     * @param deadline The permit signature deadline.
+     * @param signature The EIP-1271 compatible signature bytes.
+     * @return shares The number of shares minted.
+     */
+    function depositWithPermit(
+        uint256 assets,
+        address receiver,
+        uint256 minShares,
+        uint256 deadline,
+        bytes memory signature
+    ) external returns (uint256 shares);
+
+    /**
+     * @notice Mints shares with EIP-1271 permit for smart contract wallet approval.
+     * @dev Combines permit and mint in a single transaction. Supports smart contract
+     * wallets like Gnosis Safe, Argent, etc. that implement EIP-1271.
+     * @param shares The number of shares to mint.
+     * @param receiver The address to receive the shares.
+     * @param maxAssets The maximum amount of assets to spend (slippage protection).
+     * @param deadline The permit signature deadline.
+     * @param signature The EIP-1271 compatible signature bytes.
+     * @return assets The amount of assets spent.
+     */
+    function mintWithPermit(
+        uint256 shares,
+        address receiver,
+        uint256 maxAssets,
+        uint256 deadline,
+        bytes memory signature
+    ) external returns (uint256 assets);
 
     // ============ Withdrawal Functions ============
 
@@ -257,7 +355,10 @@ interface IStakedUSDat is IERC4626 {
      * @param minUsdatReceived The minimum amount of USDat the user will accept.
      * @return requestId The ID of the withdrawal request NFT.
      */
-    function requestRedeem(uint256 shares, uint256 minUsdatReceived) external returns (uint256 requestId);
+    function requestRedeem(
+        uint256 shares,
+        uint256 minUsdatReceived
+    ) external returns (uint256 requestId);
 
     /**
      * @notice Claims all processed withdrawals for the caller.
@@ -272,7 +373,9 @@ interface IStakedUSDat is IERC4626 {
      * @param tokenIds Array of withdrawal request NFT token IDs to claim.
      * @return totalAmount The total amount of USDat claimed.
      */
-    function claimBatch(uint256[] calldata tokenIds) external returns (uint256 totalAmount);
+    function claimBatch(
+        uint256[] calldata tokenIds
+    ) external returns (uint256 totalAmount);
 
     /**
      * @notice Burns escrowed shares and decreases strcBalance for the STRC sold off-chain.
