@@ -247,6 +247,88 @@ interface IStakedUSDat is IERC4626 {
      */
     function mintWithMaxAssets(uint256 shares, address receiver, uint256 maxAssets) external returns (uint256 assets);
 
+    /**
+     * @notice Deposits assets with EIP-2612 permit for gasless approval.
+     * @dev Combines permit and deposit in a single transaction.
+     * @param assets The amount of assets to deposit.
+     * @param receiver The address to receive the shares.
+     * @param minShares The minimum number of shares to receive (slippage protection).
+     * @param deadline The permit signature deadline.
+     * @param v The permit signature v component.
+     * @param r The permit signature r component.
+     * @param s The permit signature s component.
+     * @return shares The number of shares minted.
+     */
+    function depositWithPermit(
+        uint256 assets,
+        address receiver,
+        uint256 minShares,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint256 shares);
+
+    /**
+     * @notice Mints shares with EIP-2612 permit for gasless approval.
+     * @dev Combines permit and mint in a single transaction.
+     * @param shares The number of shares to mint.
+     * @param receiver The address to receive the shares.
+     * @param maxAssets The maximum amount of assets to spend (slippage protection).
+     * @param deadline The permit signature deadline.
+     * @param v The permit signature v component.
+     * @param r The permit signature r component.
+     * @param s The permit signature s component.
+     * @return assets The amount of assets spent.
+     */
+    function mintWithPermit(
+        uint256 shares,
+        address receiver,
+        uint256 maxAssets,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint256 assets);
+
+    /**
+     * @notice Deposits assets with EIP-1271 permit for smart contract wallet approval.
+     * @dev Combines permit and deposit in a single transaction. Supports smart contract
+     * wallets like Gnosis Safe, Argent, etc. that implement EIP-1271.
+     * @param assets The amount of assets to deposit.
+     * @param receiver The address to receive the shares.
+     * @param minShares The minimum number of shares to receive (slippage protection).
+     * @param deadline The permit signature deadline.
+     * @param signature The EIP-1271 compatible signature bytes.
+     * @return shares The number of shares minted.
+     */
+    function depositWithPermit(
+        uint256 assets,
+        address receiver,
+        uint256 minShares,
+        uint256 deadline,
+        bytes memory signature
+    ) external returns (uint256 shares);
+
+    /**
+     * @notice Mints shares with EIP-1271 permit for smart contract wallet approval.
+     * @dev Combines permit and mint in a single transaction. Supports smart contract
+     * wallets like Gnosis Safe, Argent, etc. that implement EIP-1271.
+     * @param shares The number of shares to mint.
+     * @param receiver The address to receive the shares.
+     * @param maxAssets The maximum amount of assets to spend (slippage protection).
+     * @param deadline The permit signature deadline.
+     * @param signature The EIP-1271 compatible signature bytes.
+     * @return assets The amount of assets spent.
+     */
+    function mintWithPermit(
+        uint256 shares,
+        address receiver,
+        uint256 maxAssets,
+        uint256 deadline,
+        bytes memory signature
+    ) external returns (uint256 assets);
+
     // ============ Withdrawal Functions ============
 
     /**

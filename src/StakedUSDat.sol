@@ -21,6 +21,7 @@ import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC2
 import {IWithdrawalQueueERC721} from "./interfaces/IWithdrawalQueueERC721.sol";
 import {IStrcPriceOracle} from "./interfaces/IStrcPriceOracle.sol";
 import {IStakedUSDat} from "./interfaces/IStakedUSDat.sol";
+import {IERC20PermitExtended} from "./interfaces/IERC20PermitExtended.sol";
 
 /**
  * @title StakedUSDat
@@ -418,6 +419,70 @@ contract StakedUSDat is
         assets = previewMint(shares);
         require(assets <= maxAssets, SlippageExceeded());
         _deposit(msg.sender, receiver, assets, shares);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    /// @dev Uses try-catch to handle permit front-running gracefully. If permit fails
+    /// (e.g., already used by front-runner), the deposit proceeds if allowance is sufficient.
+    function depositWithPermit(
+        uint256 assets,
+        address receiver,
+        uint256 minShares,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint256 shares) {
+        try IERC20PermitExtended(asset()).permit(msg.sender, address(this), assets, deadline, v, r, s) {} catch {}
+
+        return depositWithMinShares(assets, receiver, minShares);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    /// @dev Uses try-catch to handle permit front-running gracefully. If permit fails
+    /// (e.g., already used by front-runner), the mint proceeds if allowance is sufficient.
+    function mintWithPermit(
+        uint256 shares,
+        address receiver,
+        uint256 maxAssets,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external returns (uint256 assets) {
+        try IERC20PermitExtended(asset()).permit(msg.sender, address(this), maxAssets, deadline, v, r, s) {} catch {}
+
+        return mintWithMaxAssets(shares, receiver, maxAssets);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    /// @dev EIP-1271 compatible permit for smart contract wallets (e.g., Gnosis Safe, Argent).
+    /// Uses try-catch to handle permit front-running gracefully.
+    function depositWithPermit(
+        uint256 assets,
+        address receiver,
+        uint256 minShares,
+        uint256 deadline,
+        bytes memory signature
+    ) external returns (uint256 shares) {
+        try IERC20PermitExtended(asset()).permit(msg.sender, address(this), assets, deadline, signature) {} catch {}
+
+        return depositWithMinShares(assets, receiver, minShares);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    /// @dev EIP-1271 compatible permit for smart contract wallets (e.g., Gnosis Safe, Argent).
+    /// Uses try-catch to handle permit front-running gracefully.
+    function mintWithPermit(
+        uint256 shares,
+        address receiver,
+        uint256 maxAssets,
+        uint256 deadline,
+        bytes memory signature
+    ) external returns (uint256 assets) {
+        try IERC20PermitExtended(asset()).permit(msg.sender, address(this), maxAssets, deadline, signature) {} catch {}
+
+        return mintWithMaxAssets(shares, receiver, maxAssets);
     }
 
     /// @inheritdoc IERC4626
