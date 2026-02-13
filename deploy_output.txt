@@ -1,0 +1,57 @@
+Compiling 2 files with Solc 0.8.30
+Solc 0.8.30 finished in 1.34s
+Compiler run successful!
+Script ran successfully.
+
+== Logs ==
+  === Deployment Configuration ===
+  Deployer: 0x8CBA689B49f15E0a3c8770496Df8E88952d6851d
+  Admin: 0x7f3BD1326aa9Be53448bc9eF200d68B8c7C378E0
+  Processor: 0xf56582d619a98AE45790Ef01E22d2cca4b536115
+  Compliance: 0x13b26995306eE2C9A8E61156B442F0402067Cfb6
+  Deposit Fee Recipient: 0xe0309a99fFE009113bB6b340D214D50290667C87
+  USDat: 0x23238f20b894f29041f48D88eE91131C395Aaa71
+  Oracle: 0x958de678041CbcFb2C4474723f27b708fB85ce54
+  
+  === Predicted Addresses (CreateX) ===
+  StrcPriceOracle: 0x9C87dd67355c8Da172D3e2A2cADE1CcD15E23A58
+  WithdrawalQueue Impl: 0xCB9B398B2e839c11773cDc98e1B127428C0A1b76
+  WithdrawalQueue Proxy: 0x3b2bd22089ED734979BB80A614d812b31B37ece4
+  StakedUSDat Impl: 0x54872161D0a2660f6aC5A3285Ce2d3AdE4fE6b21
+  StakedUSDat Proxy: 0x1383cB4A7f78a9b63b4928f6D4F77221b50f30a4
+  
+  1. StrcPriceOracle deployed at: 0x9C87dd67355c8Da172D3e2A2cADE1CcD15E23A58
+  2. WithdrawalQueueERC721 Impl deployed at: 0xCB9B398B2e839c11773cDc98e1B127428C0A1b76
+  3. WithdrawalQueueERC721 Proxy deployed at: 0x3b2bd22089ED734979BB80A614d812b31B37ece4
+  4. StakedUSDat Impl deployed at: 0x54872161D0a2660f6aC5A3285Ce2d3AdE4fE6b21
+  5. StakedUSDat Proxy deployed at: 0x1383cB4A7f78a9b63b4928f6D4F77221b50f30a4
+  
+  === Deployment Complete ===
+  StrcPriceOracle: 0x9C87dd67355c8Da172D3e2A2cADE1CcD15E23A58
+  WithdrawalQueueERC721: 0x3b2bd22089ED734979BB80A614d812b31B37ece4
+  StakedUSDat Implementation: 0x54872161D0a2660f6aC5A3285Ce2d3AdE4fE6b21
+  StakedUSDat Proxy: 0x1383cB4A7f78a9b63b4928f6D4F77221b50f30a4
+
+## Setting up 1 EVM.
+
+==========================
+
+Chain 11155111
+
+Estimated gas price: 7.12294285 gwei
+
+Estimated total gas used for script: 14903352
+
+Estimated amount required: 0.1061557245694332 ETH
+
+==========================
+
+
+==========================
+
+ONCHAIN EXECUTION COMPLETE & SUCCESSFUL.
+
+Transactions saved to: /Users/sebastianmelendez/Desktop/Projects/Saturn/saturn-yield-dollar/broadcast/Deploy.s.sol/11155111/run-latest.json
+
+Sensitive values saved to: /Users/sebastianmelendez/Desktop/Projects/Saturn/saturn-yield-dollar/cache/Deploy.s.sol/11155111/run-latest.json
+

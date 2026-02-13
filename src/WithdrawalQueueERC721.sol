@@ -74,8 +74,17 @@ contract WithdrawalQueueERC721 is
 
     /// @notice Initializes the contract (called once via proxy)
     /// @param admin The default admin of the contract
-    function initialize(address admin) external initializer {
-        require(admin != address(0), ZeroAmount());
+    /// @param stakedUsdat The StakedUSDat proxy address (granted STAKED_USDAT_ROLE)
+    /// @param processor The processor address (granted PROCESSOR_ROLE)
+    /// @param compliance The compliance address (granted COMPLIANCE_ROLE)
+    function initialize(address admin, address stakedUsdat, address processor, address compliance)
+        external
+        initializer
+    {
+        require(
+            admin != address(0) && stakedUsdat != address(0) && processor != address(0) && compliance != address(0),
+            ZeroAmount()
+        );
 
         __ERC721_init("Saturn Withdrawal Request", "sWR");
         __ERC721Enumerable_init();
@@ -83,6 +92,9 @@ contract WithdrawalQueueERC721 is
         __Pausable_init();
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(STAKED_USDAT_ROLE, stakedUsdat);
+        _grantRole(PROCESSOR_ROLE, processor);
+        _grantRole(COMPLIANCE_ROLE, compliance);
     }
 
     /// @dev Authorizes an upgrade to a new implementation. Only callable by DEFAULT_ADMIN_ROLE.
