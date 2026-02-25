@@ -68,8 +68,8 @@ contract StakedUSDat is
     /// @notice Maximum allowed vesting period (90 days)
     uint256 public constant MAX_VESTING_PERIOD = 90 days;
 
-    /// @notice Minimum withdrawal amount (10 USDat)
-    uint256 public constant MIN_WITHDRAWAL = 10e18;
+    /// @notice Minimum withdrawal amount (10 USDat, 6 decimals)
+    uint256 public constant MIN_WITHDRAWAL = 10e6;
 
     /// @notice Tolerance in basis points for validation
     uint256 public toleranceBps;
@@ -92,10 +92,10 @@ contract StakedUSDat is
     /// @notice Address that receives deposit fees
     address public feeRecipient;
 
-    /// @notice Internally tracked USDat balance
+    /// @notice Internally tracked USDat balance (6 decimals)
     uint256 public usdatBalance;
 
-    /// @notice Internally tracked STRC balance
+    /// @notice Internally tracked STRC balance (6 decimals, matches USDat)
     uint256 public strcBalance;
 
     modifier notZero(uint256 amount) {
@@ -230,7 +230,7 @@ contract StakedUSDat is
         return Math.mulDiv(vestingPeriod - timeSinceLastDistribution, vestingAmount, vestingPeriod, Math.Rounding.Ceil);
     }
 
-    /// @dev Calculates the total value of vested STRC holdings in USD terms (18 decimals).
+    /// @dev Calculates the total value of vested STRC holdings in USD terms (6 decimals).
     function _strcTotalAssets() internal view returns (uint256) {
         (uint256 strcPrice, uint8 priceDecimals) = STRC_ORACLE.getPrice();
 
