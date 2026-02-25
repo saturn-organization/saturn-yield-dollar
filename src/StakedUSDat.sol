@@ -98,6 +98,9 @@ contract StakedUSDat is
     /// @notice Internally tracked STRC balance (6 decimals, matches USDat)
     uint256 public strcBalance;
 
+    /// @notice Maximum rewards per transfer in basis points of totalAssets. Used to validate transferInRewards
+    uint256 public maxRewardsBps;
+
     modifier notZero(uint256 amount) {
         _notZero(amount);
         _;
@@ -149,6 +152,7 @@ contract StakedUSDat is
         depositFeeBps = 10;
         feeRecipient = depositFeeRecipient;
         toleranceBps = 2000;
+        maxRewardsBps = 250; // 2.5% of totalAssets
     }
 
     /// @dev Authorizes an upgrade to a new implementation. Only callable by DEFAULT_ADMIN_ROLE.
@@ -363,7 +367,10 @@ contract StakedUSDat is
 
     /// @inheritdoc IStakedUSDat
     function transferInRewards(uint256 amount) external nonReentrant onlyRole(PROCESSOR_ROLE) notZero(amount) {
-        if (getUnvestedAmount() > 0) revert StillVesting();
+        require(getUnvestedAmount() == 0, StillVesting());
+
+        uint256 maxRewards = Math.mulDiv(totalAssets(), maxRewardsBps, BPS_DENOMINATOR);
+        require(amount <= maxRewards, RewardsExceedMax());
 
         strcBalance += amount;
 
@@ -604,6 +611,15 @@ contract StakedUSDat is
         toleranceBps = newToleranceBps;
 
         emit ToleranceUpdated(newToleranceBps);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function setMaxRewardsBps(uint256 newMaxBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(newMaxBps > 0, InvalidFee());
+
+        maxRewardsBps = newMaxBps;
+
+        emit MaxRewardsBpsUpdated(newMaxBps);
     }
 
     /// @inheritdoc IStakedUSDat

@@ -372,13 +372,11 @@ contract DecimalValidationTest is Test {
         assertEq(stakedUsdat.vestingAmount(), 100);
     }
 
-    function test_transferInRewards_18Decimals() public {
-        // Using 18 decimals - this will "work" but grossly inflate strcBalance
+    function test_transferInRewards_18Decimals_Reverts() public {
+        // Using 18 decimals - now correctly reverts with RewardsExceedMax
         vm.prank(processor);
+        vm.expectRevert(abi.encodeWithSignature("RewardsExceedMax()"));
         stakedUsdat.transferInRewards(100e18);
-
-        // This is dangerous - strcBalance is now huge
-        assertEq(stakedUsdat.strcBalance(), 100e18);
     }
 
     function test_transferInRewards_CannotAddWhileVesting() public {
