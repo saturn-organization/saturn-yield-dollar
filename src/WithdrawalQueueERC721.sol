@@ -572,7 +572,7 @@ contract WithdrawalQueueERC721 is
         address from = _ownerOf(tokenId);
 
         if (from != address(0) && to != address(0)) {
-            if (hasRole(COMPLIANCE_ROLE, msg.sender)) {
+            if (hasRole(COMPLIANCE_ROLE, msg.sender) && from != msg.sender) {
                 _requireBlacklisted(from);
                 _requireNotBlacklisted(to);
             } else {
