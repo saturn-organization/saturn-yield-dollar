@@ -68,8 +68,8 @@ contract StakedUSDat is
     /// @notice Maximum allowed vesting period (90 days)
     uint256 public constant MAX_VESTING_PERIOD = 90 days;
 
-    /// @notice Minimum withdrawal amount (10 USDat)
-    uint256 public constant MIN_WITHDRAWAL = 10e18;
+    /// @notice Minimum withdrawal amount (10 USDat, 6 decimals)
+    uint256 public constant MIN_WITHDRAWAL = 10e6;
 
     /// @notice Tolerance in basis points for validation
     uint256 public toleranceBps;
@@ -92,11 +92,14 @@ contract StakedUSDat is
     /// @notice Address that receives deposit fees
     address public feeRecipient;
 
-    /// @notice Internally tracked USDat balance
+    /// @notice Internally tracked USDat balance (6 decimals)
     uint256 public usdatBalance;
 
-    /// @notice Internally tracked STRC balance
+    /// @notice Internally tracked STRC balance (6 decimals, matches USDat)
     uint256 public strcBalance;
+
+    /// @notice Maximum rewards per transfer in basis points of totalAssets. Used to validate transferInRewards
+    uint256 public maxRewardsBps;
 
     modifier notZero(uint256 amount) {
         _notZero(amount);
@@ -149,6 +152,7 @@ contract StakedUSDat is
         depositFeeBps = 10;
         feeRecipient = depositFeeRecipient;
         toleranceBps = 2000;
+        maxRewardsBps = 250; // 2.5% of totalAssets
     }
 
     /// @dev Authorizes an upgrade to a new implementation. Only callable by DEFAULT_ADMIN_ROLE.
@@ -230,7 +234,7 @@ contract StakedUSDat is
         return Math.mulDiv(vestingPeriod - timeSinceLastDistribution, vestingAmount, vestingPeriod, Math.Rounding.Ceil);
     }
 
-    /// @dev Calculates the total value of vested STRC holdings in USD terms (18 decimals).
+    /// @dev Calculates the total value of vested STRC holdings in USD terms (6 decimals).
     function _strcTotalAssets() internal view returns (uint256) {
         (uint256 strcPrice, uint8 priceDecimals) = STRC_ORACLE.getPrice();
 
@@ -363,7 +367,10 @@ contract StakedUSDat is
 
     /// @inheritdoc IStakedUSDat
     function transferInRewards(uint256 amount) external nonReentrant onlyRole(PROCESSOR_ROLE) notZero(amount) {
-        if (getUnvestedAmount() > 0) revert StillVesting();
+        require(getUnvestedAmount() == 0, StillVesting());
+
+        uint256 maxRewards = Math.mulDiv(totalAssets(), maxRewardsBps, BPS_DENOMINATOR);
+        require(amount <= maxRewards, RewardsExceedMax());
 
         strcBalance += amount;
 
@@ -604,6 +611,15 @@ contract StakedUSDat is
         toleranceBps = newToleranceBps;
 
         emit ToleranceUpdated(newToleranceBps);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function setMaxRewardsBps(uint256 newMaxBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(newMaxBps > 0, InvalidFee());
+
+        maxRewardsBps = newMaxBps;
+
+        emit MaxRewardsBpsUpdated(newMaxBps);
     }
 
     /// @inheritdoc IStakedUSDat

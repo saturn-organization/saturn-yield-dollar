@@ -91,6 +91,11 @@ interface IStakedUSDat is IERC4626 {
      */
     error InvalidFee();
 
+    /**
+     * @dev Thrown when rewards exceed the maximum allowed percentage of totalAssets.
+     */
+    error RewardsExceedMax();
+
     // ============ Events ============
 
     /**
@@ -150,6 +155,12 @@ interface IStakedUSDat is IERC4626 {
      * @param newToleranceBps The new tolerance in basis points.
      */
     event ToleranceUpdated(uint256 newToleranceBps);
+
+    /**
+     * @dev Emitted when the max rewards basis points is updated.
+     * @param newMaxBps The new max rewards in basis points.
+     */
+    event MaxRewardsBpsUpdated(uint256 newMaxBps);
 
     // ============ Blacklist Functions ============
 
@@ -441,6 +452,12 @@ interface IStakedUSDat is IERC4626 {
      */
     function usdatBalance() external view returns (uint256);
 
+    /**
+     * @notice Returns the maximum rewards per transfer in basis points of totalAssets.
+     * @return The max rewards basis points.
+     */
+    function maxRewardsBps() external view returns (uint256);
+
     // ============ Admin Functions ============
 
     /**
@@ -474,6 +491,13 @@ interface IStakedUSDat is IERC4626 {
      * @param newToleranceBps The new tolerance in basis points (MIN_TOLERANCE_BPS to MAX_TOLERANCE_BPS).
      */
     function setTolerance(uint256 newToleranceBps) external;
+
+    /**
+     * @notice Updates the maximum rewards per transfer as a percentage of totalAssets.
+     * @dev Only callable by addresses with the DEFAULT_ADMIN_ROLE.
+     * @param newMaxBps The new maximum in basis points (e.g., 250 = 2.5%).
+     */
+    function setMaxRewardsBps(uint256 newMaxBps) external;
 
     /**
      * @notice Pauses the contract.
