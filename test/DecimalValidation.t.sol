@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {Test, console} from "forge-std/Test.sol";
+import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
@@ -599,42 +599,21 @@ contract DecimalValidationTest is Test {
         chainlinkOracle.refreshTimestamp();
     }
 
+    /// @dev Computes CREATE1 address for contract deployment prediction.
+    /// The typecasts are safe because each branch checks bounds before casting.
     function _computeCreate1Address(address deployer, uint256 nonce) internal pure returns (address) {
+        bytes memory data;
         if (nonce == 0) {
-            return
-                address(
-                    uint160(uint256(keccak256(abi.encodePacked(bytes1(0xd6), bytes1(0x94), deployer, bytes1(0x80)))))
-                );
+            data = abi.encodePacked(bytes1(0xd6), bytes1(0x94), deployer, bytes1(0x80));
         } else if (nonce <= 0x7f) {
-            return address(
-                uint160(
-                    uint256(keccak256(abi.encodePacked(bytes1(0xd6), bytes1(0x94), deployer, bytes1(uint8(nonce)))))
-                )
-            );
+            data = abi.encodePacked(bytes1(0xd6), bytes1(0x94), deployer, bytes1(uint8(nonce)));
         } else if (nonce <= 0xff) {
-            return address(
-                uint160(
-                    uint256(
-                        keccak256(abi.encodePacked(bytes1(0xd7), bytes1(0x94), deployer, bytes1(0x81), uint8(nonce)))
-                    )
-                )
-            );
+            data = abi.encodePacked(bytes1(0xd7), bytes1(0x94), deployer, bytes1(0x81), bytes1(uint8(nonce)));
         } else if (nonce <= 0xffff) {
-            return address(
-                uint160(
-                    uint256(
-                        keccak256(abi.encodePacked(bytes1(0xd8), bytes1(0x94), deployer, bytes1(0x82), uint16(nonce)))
-                    )
-                )
-            );
+            data = abi.encodePacked(bytes1(0xd8), bytes1(0x94), deployer, bytes1(0x82), bytes2(uint16(nonce)));
         } else {
-            return address(
-                uint160(
-                    uint256(
-                        keccak256(abi.encodePacked(bytes1(0xd9), bytes1(0x94), deployer, bytes1(0x83), uint24(nonce)))
-                    )
-                )
-            );
+            data = abi.encodePacked(bytes1(0xd9), bytes1(0x94), deployer, bytes1(0x83), bytes3(uint24(nonce)));
         }
+        return address(uint160(uint256(keccak256(data))));
     }
 }
