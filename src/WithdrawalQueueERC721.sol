@@ -210,10 +210,11 @@ contract WithdrawalQueueERC721 is
         uint256 vestedBalance = strcBalance - unvestedAmount;
         require(totalStrcSold <= vestedBalance, ExceedsVestedBalance());
 
-        uint256 expectedUsdat = Math.mulDiv(totalStrcSold, executionPrice, 1e8);
+        (uint256 oraclePrice, uint8 priceDecimals) = IStrcPriceOracle(STAKED_USDAT.getStrcOracle()).getPrice();
+
+        uint256 expectedUsdat = Math.mulDiv(totalStrcSold, executionPrice, 10 ** priceDecimals);
         require(_isWithinTolerance(totalUsdatReceived, expectedUsdat), ExecutionPriceMismatch());
 
-        (uint256 oraclePrice,) = IStrcPriceOracle(STAKED_USDAT.getStrcOracle()).getPrice();
         require(_isWithinTolerance(executionPrice, oraclePrice), OraclePriceMismatch());
 
         uint256 expectedShareValue = STAKED_USDAT.previewRedeem(totalShares);

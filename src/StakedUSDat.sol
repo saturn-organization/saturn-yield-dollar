@@ -322,10 +322,11 @@ contract StakedUSDat is
 
     /// @dev Validates that strcAmount matches usdatAmount / strcPurchasePrice within tolerance.
     function _validateConversion(uint256 usdatAmount, uint256 strcAmount, uint256 strcPurchasePrice) internal view {
-        uint256 expectedStrc = Math.mulDiv(usdatAmount, 1e8, strcPurchasePrice);
+        (uint256 oraclePrice, uint8 priceDecimals) = STRC_ORACLE.getPrice();
+
+        uint256 expectedStrc = Math.mulDiv(usdatAmount, 10 ** priceDecimals, strcPurchasePrice);
         require(_isWithinTolerance(strcAmount, expectedStrc), ExecutionPriceMismatch());
 
-        (uint256 oraclePrice,) = STRC_ORACLE.getPrice();
         require(_isWithinTolerance(strcPurchasePrice, oraclePrice), OraclePriceMismatch());
     }
 
