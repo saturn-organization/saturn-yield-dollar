@@ -134,7 +134,7 @@ contract WithdrawalQueueERC721 is
             minUsdatReceived: minUsdatReceived
         });
 
-        _mint(user, tokenId);
+        _safeMint(user, tokenId);
 
         emit WithdrawalRequested(tokenId, user, shares, block.timestamp);
     }
