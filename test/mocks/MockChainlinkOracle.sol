@@ -42,13 +42,7 @@ contract MockChainlinkOracle is IPriceOracle {
         external
         view
         override
-        returns (
-            uint80 roundId,
-            int256 answer,
-            uint256 startedAt,
-            uint256 updatedAt_,
-            uint80 answeredInRound
-        )
+        returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt_, uint80 answeredInRound)
     {
         return (1, PRICE, updatedAt, updatedAt, 1);
     }
