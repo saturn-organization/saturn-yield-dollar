@@ -128,15 +128,15 @@ contract DecimalOffsetTest is Test {
         vm.stopPrank();
 
         // Check Alice's shares
-        // With offset=6: shares = 100e6 * 1e6 / 1 = 100e12 (before fee)
-        // After 0.1% fee: 99.9e6 assets -> ~99.9e12 shares
-        uint256 expectedAliceShares = 999e11; // 99.9e12
+        // With offset=12: shares = 100e6 * 1e12 / 1 = 100e18 (before fee)
+        // After 0.1% fee: 99.9e6 assets -> ~99.9e18 shares
+        uint256 expectedAliceShares = 999e17; // 99.9e18
         assertApproxEqRel(aliceShares, expectedAliceShares, 1e15, "Alice shares wrong"); // 0.1% tolerance
 
         // Check displayed balance
-        // 99.9e12 raw / 1e18 decimals = 0.0000999 sUSDat displayed
+        // 99.9e18 raw / 1e18 decimals = 99.9 sUSDat displayed
         uint256 aliceBalance = stakedUsdat.balanceOf(alice);
-        assertApproxEqRel(aliceBalance, 999e11, 1e15, "Alice balance wrong");
+        assertApproxEqRel(aliceBalance, 999e17, 1e15, "Alice balance wrong");
 
         // Log for visibility
         emit log_named_uint("Alice deposited (USDat)", aliceDeposit / 1e6);
@@ -150,16 +150,16 @@ contract DecimalOffsetTest is Test {
         vm.stopPrank();
 
         // Check Bob's shares
-        // With offset=6 and existing supply:
-        // shares = 50e6 * (99.9e12 + 1e6) / (99.9e6 + 1) ≈ 50e12 (before fee)
-        // After 0.1% fee: ~49.95e12 shares
-        uint256 expectedBobShares = 4995e10; // ~49.95e12
+        // With offset=12 and existing supply:
+        // shares = 50e6 * (99.9e18 + 1e12) / (99.9e6 + 1) ≈ 50e18 (before fee)
+        // After 0.1% fee: ~49.95e18 shares
+        uint256 expectedBobShares = 4995e16; // ~49.95e18
         assertApproxEqRel(bobShares, expectedBobShares, 1e15, "Bob shares wrong");
 
         // Check displayed balance
-        // ~49.95e12 raw / 1e18 decimals = ~0.00004995 sUSDat displayed
+        // ~49.95e18 raw / 1e18 decimals = ~49.95 sUSDat displayed
         uint256 bobBalance = stakedUsdat.balanceOf(bob);
-        assertApproxEqRel(bobBalance, 4995e10, 1e15, "Bob balance wrong");
+        assertApproxEqRel(bobBalance, 4995e16, 1e15, "Bob balance wrong");
 
         // Log for visibility
         emit log_named_uint("Bob deposited (USDat)", bobDeposit / 1e6);

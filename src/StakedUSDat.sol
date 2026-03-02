@@ -250,7 +250,7 @@ contract StakedUSDat is
 
     /// @dev Returns a non-zero offset to protect against ERC4626 inflation attacks.
     function _decimalsOffset() internal pure override returns (uint8) {
-        return 6;
+        return 12;
     }
 
     /// @inheritdoc IERC4626
