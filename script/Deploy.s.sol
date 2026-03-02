@@ -18,19 +18,16 @@ interface ICreateX {
 
 /**
  * @title DeployScript
- * @notice Deploys the sUSDat protocol contracts using CreateX for deterministic addresses
+ * @notice Deploys the sUSDat protocol contracts
  *
- * CreateX factory ensures the same addresses across all chains regardless of:
- * - Deployer nonce
- * - Contract bytecode
- * - Constructor arguments
+ * Uses CreateX for deterministic proxy addresses (same across all chains).
+ * Implementation contracts use standard CREATE (addresses vary by chain).
  *
  * Deployment order:
- * 1. Compute all addresses using CreateX
- * 2. Deploy StrcPriceOracle
- * 3. Deploy WithdrawalQueueERC721 (impl + proxy)
- * 4. Deploy StakedUSDat (impl + proxy)
- * 5. Grant roles (if deployer == admin)
+ * 1. Compute proxy addresses using CreateX
+ * 2. Deploy StrcPriceOracle (CreateX - deterministic)
+ * 3. Deploy WithdrawalQueueERC721 impl (CREATE) + proxy (CreateX)
+ * 4. Deploy StakedUSDat impl (CREATE) + proxy (CreateX)
  *
  * Environment variables required:
  * - USDAT: USDat token address
@@ -45,11 +42,9 @@ interface ICreateX {
 contract DeployScript is Script {
     // ============ Salt Configuration ============
     // Update these strings to deploy new versions of contracts
-    string constant SALT_STRC_ORACLE = "StrcPriceOracle";
-    string constant SALT_WQ_IMPL = "WithdrawalQueueERC721.impl";
-    string constant SALT_WQ_PROXY = "WithdrawalQueueERC721.proxy";
-    string constant SALT_SUSDAT_IMPL = "StakedUSDat.impl";
-    string constant SALT_SUSDAT_PROXY = "StakedUSDat.proxy";
+    string constant SALT_STRC_ORACLE = "StrcPriceOracle.v2";
+    string constant SALT_WQ_PROXY = "WithdrawalQueueERC721.proxy.v2";
+    string constant SALT_SUSDAT_PROXY = "StakedUSDat.proxy.v2";
 
     // ============ Constants ============
     ICreateX constant CREATEX = ICreateX(0xba5Ed099633D3B313e4D5F7bdc1305d3c28ba5Ed);
@@ -66,13 +61,12 @@ contract DeployScript is Script {
 
     struct DeployedAddresses {
         address strcOracle;
-        address wqImpl;
         address wqProxy;
-        address susdatImpl;
         address susdatProxy;
     }
 
     StrcPriceOracle public strcOracle;
+    WithdrawalQueueERC721 public wqImpl;
     WithdrawalQueueERC721 public withdrawalQueue;
     StakedUSDat public stakedUsdatImpl;
     StakedUSDat public stakedUsdat;
@@ -83,7 +77,7 @@ contract DeployScript is Script {
         DeployConfig memory cfg = _loadConfig(deployer);
         _logConfig(cfg);
 
-        // Compute all addresses first
+        // Compute deterministic addresses (proxies + oracle only)
         DeployedAddresses memory addrs = _computeAddresses(deployer);
         _logPredictedAddresses(addrs);
 
@@ -120,24 +114,20 @@ contract DeployScript is Script {
 
     function _computeAddresses(address deployer) internal view returns (DeployedAddresses memory addrs) {
         addrs.strcOracle = _getCreate3Address(deployer, _computeSalt(deployer, SALT_STRC_ORACLE));
-        addrs.wqImpl = _getCreate3Address(deployer, _computeSalt(deployer, SALT_WQ_IMPL));
         addrs.wqProxy = _getCreate3Address(deployer, _computeSalt(deployer, SALT_WQ_PROXY));
-        addrs.susdatImpl = _getCreate3Address(deployer, _computeSalt(deployer, SALT_SUSDAT_IMPL));
         addrs.susdatProxy = _getCreate3Address(deployer, _computeSalt(deployer, SALT_SUSDAT_PROXY));
     }
 
     function _logPredictedAddresses(DeployedAddresses memory addrs) internal pure {
         console.log("=== Predicted Addresses (CreateX) ===");
         console.log("StrcPriceOracle:", addrs.strcOracle);
-        console.log("WithdrawalQueue Impl:", addrs.wqImpl);
         console.log("WithdrawalQueue Proxy:", addrs.wqProxy);
-        console.log("StakedUSDat Impl:", addrs.susdatImpl);
         console.log("StakedUSDat Proxy:", addrs.susdatProxy);
         console.log("");
     }
 
     function _deploy(DeployConfig memory cfg, DeployedAddresses memory addrs) internal {
-        // Step 1: Deploy StrcPriceOracle
+        // Step 1: Deploy StrcPriceOracle (CreateX - deterministic)
         strcOracle = StrcPriceOracle(
             CREATEX.deployCreate3(
                 _computeSalt(cfg.deployer, SALT_STRC_ORACLE),
@@ -147,17 +137,11 @@ contract DeployScript is Script {
         require(address(strcOracle) == addrs.strcOracle, "StrcPriceOracle address mismatch");
         console.log("1. StrcPriceOracle deployed at:", address(strcOracle));
 
-        // Step 2: Deploy WithdrawalQueueERC721 Implementation
-        WithdrawalQueueERC721 wqImpl = WithdrawalQueueERC721(
-            CREATEX.deployCreate3(
-                _computeSalt(cfg.deployer, SALT_WQ_IMPL),
-                abi.encodePacked(type(WithdrawalQueueERC721).creationCode, abi.encode(cfg.usdat, addrs.susdatProxy))
-            )
-        );
-        require(address(wqImpl) == addrs.wqImpl, "WQ impl address mismatch");
+        // Step 2: Deploy WithdrawalQueueERC721 Implementation (standard CREATE)
+        wqImpl = new WithdrawalQueueERC721(cfg.usdat, addrs.susdatProxy);
         console.log("2. WithdrawalQueueERC721 Impl deployed at:", address(wqImpl));
 
-        // Step 3: Deploy WithdrawalQueueERC721 Proxy
+        // Step 3: Deploy WithdrawalQueueERC721 Proxy (CreateX - deterministic)
         bytes memory wqInitData = abi.encodeCall(
             WithdrawalQueueERC721.initialize, (cfg.admin, addrs.susdatProxy, cfg.processor, cfg.compliance)
         );
@@ -170,20 +154,12 @@ contract DeployScript is Script {
         require(address(withdrawalQueue) == addrs.wqProxy, "WQ proxy address mismatch");
         console.log("3. WithdrawalQueueERC721 Proxy deployed at:", address(withdrawalQueue));
 
-        // Step 4: Deploy StakedUSDat Implementation
-        stakedUsdatImpl = StakedUSDat(
-            CREATEX.deployCreate3(
-                _computeSalt(cfg.deployer, SALT_SUSDAT_IMPL),
-                abi.encodePacked(
-                    type(StakedUSDat).creationCode,
-                    abi.encode(IStrcPriceOracle(address(strcOracle)), IWithdrawalQueueERC721(address(withdrawalQueue)))
-                )
-            )
-        );
-        require(address(stakedUsdatImpl) == addrs.susdatImpl, "StakedUSDat impl address mismatch");
+        // Step 4: Deploy StakedUSDat Implementation (standard CREATE)
+        stakedUsdatImpl =
+            new StakedUSDat(IStrcPriceOracle(address(strcOracle)), IWithdrawalQueueERC721(address(withdrawalQueue)));
         console.log("4. StakedUSDat Impl deployed at:", address(stakedUsdatImpl));
 
-        // Step 5: Deploy StakedUSDat Proxy
+        // Step 5: Deploy StakedUSDat Proxy (CreateX - deterministic)
         bytes memory susdatInitData = abi.encodeCall(
             StakedUSDat.initialize,
             (cfg.admin, cfg.processor, cfg.compliance, cfg.depositFeeRecipient, IERC20(cfg.usdat))
@@ -202,8 +178,9 @@ contract DeployScript is Script {
         console.log("");
         console.log("=== Deployment Complete ===");
         console.log("StrcPriceOracle:", address(strcOracle));
-        console.log("WithdrawalQueueERC721:", address(withdrawalQueue));
-        console.log("StakedUSDat Implementation:", address(stakedUsdatImpl));
+        console.log("WithdrawalQueueERC721 Impl:", address(wqImpl));
+        console.log("WithdrawalQueueERC721 Proxy:", address(withdrawalQueue));
+        console.log("StakedUSDat Impl:", address(stakedUsdatImpl));
         console.log("StakedUSDat Proxy:", address(stakedUsdat));
     }
 
