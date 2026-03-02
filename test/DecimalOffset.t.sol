@@ -33,11 +33,7 @@ contract MockUSDat {
         return true;
     }
 
-    function transferFrom(
-        address from,
-        address to,
-        uint256 amount
-    ) external returns (bool) {
+    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
         if (allowance[from][msg.sender] != type(uint256).max) {
             allowance[from][msg.sender] -= amount;
         }
@@ -61,11 +57,7 @@ contract MockOracle {
     int256 public constant PRICE = 100e8;
     uint8 public constant decimals = 8;
 
-    function latestRoundData()
-        external
-        view
-        returns (uint80, int256, uint256, uint256, uint80)
-    {
+    function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80) {
         return (1, PRICE, block.timestamp, block.timestamp, 1);
     }
 }
@@ -95,40 +87,26 @@ contract DecimalOffsetTest is Test {
 
         // Compute StakedUSDat proxy address
         uint256 nonce = vm.getNonce(address(this));
-        address stakedUsdatProxy = computeCreateAddress(
-            address(this),
-            nonce + 3
-        );
+        address stakedUsdatProxy = computeCreateAddress(address(this), nonce + 3);
 
         // Deploy WithdrawalQueue Implementation
-        WithdrawalQueueERC721 wqImpl = new WithdrawalQueueERC721(
-            address(usdat),
-            stakedUsdatProxy
-        );
+        WithdrawalQueueERC721 wqImpl = new WithdrawalQueueERC721(address(usdat), stakedUsdatProxy);
 
         // Deploy WithdrawalQueue Proxy
-        bytes memory wqInitData = abi.encodeCall(
-            WithdrawalQueueERC721.initialize,
-            (admin, stakedUsdatProxy, processor, compliance)
-        );
+        bytes memory wqInitData =
+            abi.encodeCall(WithdrawalQueueERC721.initialize, (admin, stakedUsdatProxy, processor, compliance));
         ERC1967Proxy wqProxy = new ERC1967Proxy(address(wqImpl), wqInitData);
         withdrawalQueue = WithdrawalQueueERC721(address(wqProxy));
 
         // Deploy StakedUSDat Implementation
-        StakedUSDat susdatImpl = new StakedUSDat(
-            IStrcPriceOracle(address(strcOracle)),
-            IWithdrawalQueueERC721(address(withdrawalQueue))
-        );
+        StakedUSDat susdatImpl =
+            new StakedUSDat(IStrcPriceOracle(address(strcOracle)), IWithdrawalQueueERC721(address(withdrawalQueue)));
 
         // Deploy StakedUSDat Proxy
         bytes memory susdatInitData = abi.encodeCall(
-            StakedUSDat.initialize,
-            (admin, processor, compliance, feeRecipient, IERC20(address(usdat)))
+            StakedUSDat.initialize, (admin, processor, compliance, feeRecipient, IERC20(address(usdat)))
         );
-        ERC1967Proxy susdatProxy = new ERC1967Proxy(
-            address(susdatImpl),
-            susdatInitData
-        );
+        ERC1967Proxy susdatProxy = new ERC1967Proxy(address(susdatImpl), susdatInitData);
         stakedUsdat = StakedUSDat(address(susdatProxy));
 
         // Verify address prediction
@@ -146,23 +124,14 @@ contract DecimalOffsetTest is Test {
         // === First Deposit: Alice deposits 100 USDat ===
         vm.startPrank(alice);
         usdat.approve(address(stakedUsdat), aliceDeposit);
-        uint256 aliceShares = stakedUsdat.depositWithMinShares(
-            aliceDeposit,
-            alice,
-            0
-        );
+        uint256 aliceShares = stakedUsdat.depositWithMinShares(aliceDeposit, alice, 0);
         vm.stopPrank();
 
         // Check Alice's shares
         // With offset=12: shares = 100e6 * 1e12 / 1 = 100e18 (before fee)
         // After 0.1% fee: 99.9e6 assets -> ~99.9e18 shares
         uint256 expectedAliceShares = 999e17; // 99.9e18
-        assertApproxEqRel(
-            aliceShares,
-            expectedAliceShares,
-            1e15,
-            "Alice shares wrong"
-        ); // 0.1% tolerance
+        assertApproxEqRel(aliceShares, expectedAliceShares, 1e15, "Alice shares wrong"); // 0.1% tolerance
 
         // Check displayed balance
         // 99.9e18 raw / 1e18 decimals = 99.9 sUSDat displayed
@@ -177,11 +146,7 @@ contract DecimalOffsetTest is Test {
         // === Second Deposit: Bob deposits 50 USDat ===
         vm.startPrank(bob);
         usdat.approve(address(stakedUsdat), bobDeposit);
-        uint256 bobShares = stakedUsdat.depositWithMinShares(
-            bobDeposit,
-            bob,
-            0
-        );
+        uint256 bobShares = stakedUsdat.depositWithMinShares(bobDeposit, bob, 0);
         vm.stopPrank();
 
         // Check Bob's shares
@@ -189,12 +154,7 @@ contract DecimalOffsetTest is Test {
         // shares = 50e6 * (99.9e18 + 1e12) / (99.9e6 + 1) ≈ 50e18 (before fee)
         // After 0.1% fee: ~49.95e18 shares
         uint256 expectedBobShares = 4995e16; // ~49.95e18
-        assertApproxEqRel(
-            bobShares,
-            expectedBobShares,
-            1e15,
-            "Bob shares wrong"
-        );
+        assertApproxEqRel(bobShares, expectedBobShares, 1e15, "Bob shares wrong");
 
         // Check displayed balance
         // ~49.95e18 raw / 1e18 decimals = ~49.95 sUSDat displayed
@@ -220,12 +180,7 @@ contract DecimalOffsetTest is Test {
         uint256 bobSharePercent = (bobBalance * 100) / totalSupply;
 
         // Alice deposited 100, Bob deposited 50 -> Alice should have ~66.6%, Bob ~33.3%
-        assertApproxEqAbs(
-            aliceSharePercent,
-            66,
-            1,
-            "Alice share percent wrong"
-        );
+        assertApproxEqAbs(aliceSharePercent, 66, 1, "Alice share percent wrong");
         assertApproxEqAbs(bobSharePercent, 33, 1, "Bob share percent wrong");
 
         emit log_named_uint("Alice share of pool (%)", aliceSharePercent);
