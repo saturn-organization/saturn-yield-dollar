@@ -326,18 +326,18 @@ contract DecimalValidationTest is Test {
     function test_convertFromStrc_CannotSellUnvested() public {
         // Add STRC as rewards (will be vesting)
         vm.prank(processor);
-        stakedUsdat.transferInRewards(100e6);
+        stakedUsdat.transferInRewards(20e6); // 20 STRC × $100 = $2,000 < cap
 
         // Try to sell immediately (all unvested)
         vm.prank(processor);
         vm.expectRevert(abi.encodeWithSignature("InsufficientBalance()"));
-        stakedUsdat.convertFromStrc(50e6, 5000e6, 100e8);
+        stakedUsdat.convertFromStrc(10e6, 1000e6, 100e8);
     }
 
     function test_convertFromStrc_CanSellAfterVesting() public {
         // Add STRC as rewards
         vm.prank(processor);
-        stakedUsdat.transferInRewards(100e6);
+        stakedUsdat.transferInRewards(20e6); // 20 STRC × $100 = $2,000 < cap
 
         // Fast forward past vesting period and refresh oracle
         vm.warp(block.timestamp + 31 days);
@@ -345,7 +345,7 @@ contract DecimalValidationTest is Test {
 
         // Now can sell
         vm.prank(processor);
-        stakedUsdat.convertFromStrc(50e6, 5000e6, 100e8);
+        stakedUsdat.convertFromStrc(10e6, 1000e6, 100e8);
     }
 
     // ============================================================
@@ -353,13 +353,14 @@ contract DecimalValidationTest is Test {
     // ============================================================
 
     function test_transferInRewards_CorrectDecimals() public {
+        // With STRC at $100, max rewards ≈ 2.5% of ~$99,900 ≈ $2,497 → ~24 STRC
         uint256 strcBefore = stakedUsdat.strcBalance();
 
         vm.prank(processor);
-        stakedUsdat.transferInRewards(100e6); // 100 STRC
+        stakedUsdat.transferInRewards(20e6); // 20 STRC × $100 = $2,000 < cap
 
-        assertEq(stakedUsdat.strcBalance(), strcBefore + 100e6);
-        assertEq(stakedUsdat.vestingAmount(), 100e6);
+        assertEq(stakedUsdat.strcBalance(), strcBefore + 20e6);
+        assertEq(stakedUsdat.vestingAmount(), 20e6);
     }
 
     function test_transferInRewards_ForgotDecimals() public {
@@ -381,12 +382,12 @@ contract DecimalValidationTest is Test {
 
     function test_transferInRewards_CannotAddWhileVesting() public {
         vm.prank(processor);
-        stakedUsdat.transferInRewards(100e6);
+        stakedUsdat.transferInRewards(20e6); // 20 STRC × $100 = $2,000 < cap
 
         // Try to add more while still vesting
         vm.prank(processor);
         vm.expectRevert(abi.encodeWithSignature("StillVesting()"));
-        stakedUsdat.transferInRewards(50e6);
+        stakedUsdat.transferInRewards(10e6);
     }
 
     // ============================================================
