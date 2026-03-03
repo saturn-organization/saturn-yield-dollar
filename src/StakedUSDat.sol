@@ -367,18 +367,22 @@ contract StakedUSDat is
     }
 
     /// @inheritdoc IStakedUSDat
-    function transferInRewards(uint256 amount) external nonReentrant onlyRole(PROCESSOR_ROLE) notZero(amount) {
+    function transferInRewards(uint256 strcAmount) external nonReentrant onlyRole(PROCESSOR_ROLE) notZero(strcAmount) {
         require(getUnvestedAmount() == 0, StillVesting());
 
         uint256 maxRewards = Math.mulDiv(totalAssets(), maxRewardsBps, BPS_DENOMINATOR);
-        require(amount <= maxRewards, RewardsExceedMax());
 
-        strcBalance += amount;
+        (uint256 strcPrice, uint8 priceDecimals) = STRC_ORACLE.getPrice();
+        uint256 strcAmountUsd = Math.mulDiv(strcAmount, strcPrice, 10 ** priceDecimals);
 
-        vestingAmount = amount;
+        require(strcAmountUsd <= maxRewards, RewardsExceedMax());
+
+        strcBalance += strcAmount;
+
+        vestingAmount = strcAmount;
         lastDistributionTimestamp = block.timestamp;
 
-        emit RewardsReceived(amount, amount);
+        emit RewardsReceived(strcAmount, strcAmount);
     }
 
     // ============ Deposit Functions ============
