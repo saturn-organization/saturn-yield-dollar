@@ -186,7 +186,12 @@ contract StakedUSDat is
     }
 
     /// @inheritdoc IERC20
-    function transfer(address to, uint256 amount) public override(ERC20Upgradeable, IERC20) returns (bool) {
+    function transfer(address to, uint256 amount)
+        public
+        override(ERC20Upgradeable, IERC20)
+        whenNotPaused
+        returns (bool)
+    {
         _requireNotBlacklisted(msg.sender);
         _requireNotBlacklisted(to);
         return super.transfer(to, amount);
@@ -196,6 +201,7 @@ contract StakedUSDat is
     function transferFrom(address from, address to, uint256 amount)
         public
         override(ERC20Upgradeable, IERC20)
+        whenNotPaused
         returns (bool)
     {
         _requireNotBlacklisted(from);
