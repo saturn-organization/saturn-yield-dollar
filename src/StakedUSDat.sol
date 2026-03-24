@@ -186,12 +186,7 @@ contract StakedUSDat is
     }
 
     /// @inheritdoc IERC20
-    function transfer(address to, uint256 amount)
-        public
-        override(ERC20Upgradeable, IERC20)
-        whenNotPaused
-        returns (bool)
-    {
+    function transfer(address to, uint256 amount) public override(ERC20Upgradeable, IERC20) returns (bool) {
         _requireNotBlacklisted(msg.sender);
         _requireNotBlacklisted(to);
         return super.transfer(to, amount);
@@ -201,7 +196,6 @@ contract StakedUSDat is
     function transferFrom(address from, address to, uint256 amount)
         public
         override(ERC20Upgradeable, IERC20)
-        whenNotPaused
         returns (bool)
     {
         _requireNotBlacklisted(from);
@@ -217,7 +211,11 @@ contract StakedUSDat is
         require(amountToDistribute > 0, ZeroAmount());
         require(totalSupply() > amountToDistribute, NoRecipientsForRedistribution());
 
+        bool wasPaused = paused();
+        if (wasPaused) _unpause();
         _burn(from, amountToDistribute);
+        if (wasPaused) _pause();
+
         emit LockedAmountRedistributed(from, amountToDistribute);
     }
 
@@ -339,6 +337,7 @@ contract StakedUSDat is
     /// @inheritdoc IStakedUSDat
     function convertFromUsdat(uint256 usdatAmount, uint256 strcAmount, uint256 strcPurchasePrice)
         external
+        whenNotPaused
         onlyRole(PROCESSOR_ROLE)
     {
         require(usdatBalance >= usdatAmount, InsufficientBalance());
@@ -356,6 +355,7 @@ contract StakedUSDat is
     /// @inheritdoc IStakedUSDat
     function convertFromStrc(uint256 strcAmount, uint256 usdatAmount, uint256 strcSalePrice)
         external
+        whenNotPaused
         onlyRole(PROCESSOR_ROLE)
     {
         uint256 unvestedAmount = getUnvestedAmount();
@@ -397,7 +397,6 @@ contract StakedUSDat is
     function _deposit(address caller, address receiver, uint256 assets, uint256 shares)
         internal
         override
-        whenNotPaused
         nonReentrant
         notZero(assets)
         notZero(shares)
@@ -518,11 +517,7 @@ contract StakedUSDat is
     // ============ Withdrawal Functions ============
 
     /// @inheritdoc IStakedUSDat
-    function requestRedeem(uint256 shares, uint256 minUsdatReceived)
-        external
-        whenNotPaused
-        returns (uint256 requestId)
-    {
+    function requestRedeem(uint256 shares, uint256 minUsdatReceived) external returns (uint256 requestId) {
         uint256 maxShares = maxRedeem(msg.sender);
         if (shares > maxShares) {
             revert ERC4626ExceededMaxRedeem(msg.sender, shares, maxShares);
@@ -641,5 +636,14 @@ contract StakedUSDat is
     /// @inheritdoc IStakedUSDat
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
+    }
+
+    /// @dev Blocks all token movements when paused, except burns from blacklisted addresses by DEFAULT_ADMIN_ROLE.
+    function _update(address from, address to, uint256 value)
+        internal
+        override(ERC20Upgradeable, ERC4626Upgradeable)
+        whenNotPaused
+    {
+        super._update(from, to, value);
     }
 }
