@@ -639,11 +639,7 @@ contract StakedUSDat is
     }
 
     /// @dev Blocks all token movements when paused, except burns from blacklisted addresses by DEFAULT_ADMIN_ROLE.
-    function _update(address from, address to, uint256 value)
-        internal
-        override(ERC20Upgradeable, ERC4626Upgradeable)
-        whenNotPaused
-    {
+    function _update(address from, address to, uint256 value) internal override(ERC20Upgradeable) whenNotPaused {
         super._update(from, to, value);
     }
 }
