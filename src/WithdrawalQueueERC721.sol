@@ -158,7 +158,7 @@ contract WithdrawalQueueERC721 is
     // ============ Processing Functions ============
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function lockRequests(uint256[] calldata tokenIds) external onlyRole(PROCESSOR_ROLE) {
+    function lockRequests(uint256[] calldata tokenIds) external whenNotPaused onlyRole(PROCESSOR_ROLE) {
         uint256 count = tokenIds.length;
         require(count > 0, InvalidInputs());
 
@@ -172,7 +172,7 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function unlockRequests(uint256[] calldata tokenIds) external onlyRole(PROCESSOR_ROLE) {
+    function unlockRequests(uint256[] calldata tokenIds) external whenNotPaused onlyRole(PROCESSOR_ROLE) {
         uint256 count = tokenIds.length;
         require(count > 0, InvalidInputs());
 
@@ -227,7 +227,7 @@ contract WithdrawalQueueERC721 is
         uint256 totalUsdatReceived,
         uint256 totalStrcSold,
         uint256 executionPrice
-    ) external nonReentrant onlyRole(PROCESSOR_ROLE) {
+    ) external nonReentrant whenNotPaused onlyRole(PROCESSOR_ROLE) {
         uint256 count = tokenIds.length;
         require(count > 0, InvalidInputs());
 

@@ -584,7 +584,7 @@ contract StakedUSDat is
     // ============ Admin Functions ============
 
     /// @inheritdoc IStakedUSDat
-    function setVestingPeriod(uint256 newVestingPeriod) external onlyRole(PROCESSOR_ROLE) {
+    function setVestingPeriod(uint256 newVestingPeriod) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(newVestingPeriod > 0 && newVestingPeriod <= MAX_VESTING_PERIOD, InvalidVestingPeriod());
         require(getUnvestedAmount() == 0, StillVesting());
 
@@ -595,7 +595,7 @@ contract StakedUSDat is
     }
 
     /// @inheritdoc IStakedUSDat
-    function setDepositFee(uint256 newFeeBps) external onlyRole(PROCESSOR_ROLE) {
+    function setDepositFee(uint256 newFeeBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(newFeeBps <= MAX_DEPOSIT_FEE_BPS, InvalidFee());
 
         depositFeeBps = newFeeBps;
@@ -604,7 +604,7 @@ contract StakedUSDat is
     }
 
     /// @inheritdoc IStakedUSDat
-    function setFeeRecipient(address newRecipient) external onlyRole(PROCESSOR_ROLE) {
+    function setFeeRecipient(address newRecipient) external onlyRole(DEFAULT_ADMIN_ROLE) {
         feeRecipient = newRecipient;
 
         emit FeeRecipientUpdated(newRecipient);
