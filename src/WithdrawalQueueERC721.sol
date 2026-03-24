@@ -8,9 +8,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import {
-    ERC721EnumerableUpgradeable
-} from "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721EnumerableUpgradeable.sol";
+import {ERC721EnumerableUpgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721EnumerableUpgradeable.sol";
 import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
@@ -77,12 +75,17 @@ contract WithdrawalQueueERC721 is
     /// @param stakedUsdat The StakedUSDat proxy address (granted STAKED_USDAT_ROLE)
     /// @param processor The processor address (granted PROCESSOR_ROLE)
     /// @param compliance The compliance address (granted COMPLIANCE_ROLE)
-    function initialize(address admin, address stakedUsdat, address processor, address compliance)
-        external
-        initializer
-    {
+    function initialize(
+        address admin,
+        address stakedUsdat,
+        address processor,
+        address compliance
+    ) external initializer {
         require(
-            admin != address(0) && stakedUsdat != address(0) && processor != address(0) && compliance != address(0),
+            admin != address(0) &&
+                stakedUsdat != address(0) &&
+                processor != address(0) &&
+                compliance != address(0),
             ZeroAmount()
         );
 
@@ -98,7 +101,9 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @dev Authorizes an upgrade to a new implementation. Only callable by DEFAULT_ADMIN_ROLE.
-    function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
+    function _authorizeUpgrade(
+        address
+    ) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
     /// @dev Reverts if the given account is blacklisted in either StakedUSDat or USDat.
     function _requireNotBlacklisted(address account) internal view {
@@ -108,13 +113,20 @@ contract WithdrawalQueueERC721 is
 
     /// @dev Reverts if the given account is NOT blacklisted in both StakedUSDat and USDat.
     function _requireBlacklisted(address account) internal view {
-        require(STAKED_USDAT.isBlacklisted(account) || USDAT.isFrozen(account), NotBlacklisted());
+        require(
+            STAKED_USDAT.isBlacklisted(account) || USDAT.isFrozen(account),
+            NotBlacklisted()
+        );
     }
 
     // ============ Request Creation ============
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function addRequest(address user, uint256 shares, uint256 minUsdatReceived)
+    function addRequest(
+        address user,
+        uint256 shares,
+        uint256 minUsdatReceived
+    )
         external
         nonReentrant
         whenNotPaused
@@ -140,14 +152,24 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function updateMinUsdatReceived(uint256 tokenId, uint256 newMinUsdatReceived) external whenNotPaused {
+    function updateMinUsdatReceived(
+        uint256 tokenId,
+        uint256 newMinUsdatReceived
+    ) external whenNotPaused {
         require(ownerOf(tokenId) == msg.sender, NotOwner());
         _requireNotBlacklisted(msg.sender);
         Request storage req = requests[tokenId];
-        require(req.status == RequestStatus.Requested || req.status == RequestStatus.InProgress, AlreadyProcessed());
+        require(
+            req.status == RequestStatus.Requested ||
+                req.status == RequestStatus.InProgress,
+            AlreadyProcessed()
+        );
 
         if (req.status == RequestStatus.InProgress) {
-            require(newMinUsdatReceived < req.minUsdatReceived, InvalidInputs());
+            require(
+                newMinUsdatReceived < req.minUsdatReceived,
+                InvalidInputs()
+            );
         }
 
         req.minUsdatReceived = newMinUsdatReceived;
@@ -158,7 +180,9 @@ contract WithdrawalQueueERC721 is
     // ============ Processing Functions ============
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function lockRequests(uint256[] calldata tokenIds) external whenNotPaused onlyRole(PROCESSOR_ROLE) {
+    function lockRequests(
+        uint256[] calldata tokenIds
+    ) external onlyRole(PROCESSOR_ROLE) {
         uint256 count = tokenIds.length;
         require(count > 0, InvalidInputs());
 
@@ -172,7 +196,9 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function unlockRequests(uint256[] calldata tokenIds) external whenNotPaused onlyRole(PROCESSOR_ROLE) {
+    function unlockRequests(
+        uint256[] calldata tokenIds
+    ) external onlyRole(PROCESSOR_ROLE) {
         uint256 count = tokenIds.length;
         require(count > 0, InvalidInputs());
 
@@ -186,15 +212,29 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @dev Validates that usdatAmount meets the user's minimum requirement.
-    function _validateAmount(uint256 usdatAmount, uint256 minUsdatReceived) internal pure {
+    function _validateAmount(
+        uint256 usdatAmount,
+        uint256 minUsdatReceived
+    ) internal pure {
         require(usdatAmount >= minUsdatReceived, SlippageExceeded());
     }
 
     /// @dev Checks if a value is within ±toleranceBps of an expected value.
-    function _isWithinTolerance(uint256 value, uint256 expected) internal view returns (bool) {
+    function _isWithinTolerance(
+        uint256 value,
+        uint256 expected
+    ) internal view returns (bool) {
         uint256 toleranceBps = STAKED_USDAT.toleranceBps();
-        uint256 minExpected = Math.mulDiv(expected, BPS_DENOMINATOR - toleranceBps, BPS_DENOMINATOR);
-        uint256 maxExpected = Math.mulDiv(expected, BPS_DENOMINATOR + toleranceBps, BPS_DENOMINATOR);
+        uint256 minExpected = Math.mulDiv(
+            expected,
+            BPS_DENOMINATOR - toleranceBps,
+            BPS_DENOMINATOR
+        );
+        uint256 maxExpected = Math.mulDiv(
+            expected,
+            BPS_DENOMINATOR + toleranceBps,
+            BPS_DENOMINATOR
+        );
         return value >= minExpected && value <= maxExpected;
     }
 
@@ -210,15 +250,30 @@ contract WithdrawalQueueERC721 is
         uint256 vestedBalance = strcBalance - unvestedAmount;
         require(totalStrcSold <= vestedBalance, ExceedsVestedBalance());
 
-        (uint256 oraclePrice, uint8 priceDecimals) = IStrcPriceOracle(STAKED_USDAT.getStrcOracle()).getPrice();
+        (uint256 oraclePrice, uint8 priceDecimals) = IStrcPriceOracle(
+            STAKED_USDAT.getStrcOracle()
+        ).getPrice();
 
-        uint256 expectedUsdat = Math.mulDiv(totalStrcSold, executionPrice, 10 ** priceDecimals);
-        require(_isWithinTolerance(totalUsdatReceived, expectedUsdat), ExecutionPriceMismatch());
+        uint256 expectedUsdat = Math.mulDiv(
+            totalStrcSold,
+            executionPrice,
+            10 ** priceDecimals
+        );
+        require(
+            _isWithinTolerance(totalUsdatReceived, expectedUsdat),
+            ExecutionPriceMismatch()
+        );
 
-        require(_isWithinTolerance(executionPrice, oraclePrice), OraclePriceMismatch());
+        require(
+            _isWithinTolerance(executionPrice, oraclePrice),
+            OraclePriceMismatch()
+        );
 
         uint256 expectedShareValue = STAKED_USDAT.previewRedeem(totalShares);
-        require(_isWithinTolerance(totalUsdatReceived, expectedShareValue), ExecutionPriceMismatch());
+        require(
+            _isWithinTolerance(totalUsdatReceived, expectedShareValue),
+            ExecutionPriceMismatch()
+        );
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
@@ -227,7 +282,7 @@ contract WithdrawalQueueERC721 is
         uint256 totalUsdatReceived,
         uint256 totalStrcSold,
         uint256 executionPrice
-    ) external nonReentrant whenNotPaused onlyRole(PROCESSOR_ROLE) {
+    ) external nonReentrant onlyRole(PROCESSOR_ROLE) {
         uint256 count = tokenIds.length;
         require(count > 0, InvalidInputs());
 
@@ -236,14 +291,24 @@ contract WithdrawalQueueERC721 is
             totalShares += requests[tokenIds[i]].shares;
         }
 
-        _validateTotals(totalUsdatReceived, totalStrcSold, executionPrice, totalShares);
+        _validateTotals(
+            totalUsdatReceived,
+            totalStrcSold,
+            executionPrice,
+            totalShares
+        );
 
         uint256 totalUsdat = 0;
         for (uint256 i = 0; i < count; i++) {
             Request storage req = requests[tokenIds[i]];
             require(req.status == RequestStatus.InProgress, RequestNotLocked());
 
-            uint256 usdatAmount = Math.mulDiv(totalUsdatReceived, req.shares, totalShares, Math.Rounding.Floor);
+            uint256 usdatAmount = Math.mulDiv(
+                totalUsdatReceived,
+                req.shares,
+                totalShares,
+                Math.Rounding.Floor
+            );
 
             _validateAmount(usdatAmount, req.minUsdatReceived);
 
@@ -259,7 +324,11 @@ contract WithdrawalQueueERC721 is
         pendingCount -= count;
 
         STAKED_USDAT.burnQueuedShares(totalShares, totalStrcSold);
-        IERC20(address(USDAT)).safeTransferFrom(msg.sender, address(this), totalUsdatReceived);
+        IERC20(address(USDAT)).safeTransferFrom(
+            msg.sender,
+            address(this),
+            totalUsdatReceived
+        );
         uint256 dust = totalUsdatReceived - totalUsdat;
         if (dust > 0) {
             IERC20(address(USDAT)).approve(address(STAKED_USDAT), dust);
@@ -270,7 +339,9 @@ contract WithdrawalQueueERC721 is
     // ============ Claiming Functions ============
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function claim(uint256 tokenId) external nonReentrant whenNotPaused returns (uint256 amount) {
+    function claim(
+        uint256 tokenId
+    ) external nonReentrant whenNotPaused returns (uint256 amount) {
         _requireNotBlacklisted(msg.sender);
         require(ownerOf(tokenId) == msg.sender, NotOwner());
 
@@ -288,7 +359,9 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function claimBatch(uint256[] calldata tokenIds) external nonReentrant whenNotPaused returns (uint256 totalAmount) {
+    function claimBatch(
+        uint256[] calldata tokenIds
+    ) external nonReentrant whenNotPaused returns (uint256 totalAmount) {
         _requireNotBlacklisted(msg.sender);
         uint256 len = tokenIds.length;
         require(len > 0, ZeroAmount());
@@ -298,7 +371,10 @@ contract WithdrawalQueueERC721 is
             require(ownerOf(tokenId) == msg.sender, NotOwner());
 
             Request storage req = requests[tokenId];
-            require(req.status == RequestStatus.Processed, RequestNotProcessed());
+            require(
+                req.status == RequestStatus.Processed,
+                RequestNotProcessed()
+            );
 
             totalAmount += req.usdatOwed;
             req.status = RequestStatus.Claimed;
@@ -312,7 +388,10 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function claimBatchFor(address user, uint256[] calldata tokenIds)
+    function claimBatchFor(
+        address user,
+        uint256[] calldata tokenIds
+    )
         external
         nonReentrant
         whenNotPaused
@@ -328,7 +407,10 @@ contract WithdrawalQueueERC721 is
             require(ownerOf(tokenId) == user, NotOwner());
 
             Request storage req = requests[tokenId];
-            require(req.status == RequestStatus.Processed, RequestNotProcessed());
+            require(
+                req.status == RequestStatus.Processed,
+                RequestNotProcessed()
+            );
 
             totalAmount += req.usdatOwed;
             req.status = RequestStatus.Claimed;
@@ -342,13 +424,20 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function claimAll() external nonReentrant whenNotPaused returns (uint256 totalAmount) {
+    function claimAll()
+        external
+        nonReentrant
+        whenNotPaused
+        returns (uint256 totalAmount)
+    {
         _requireNotBlacklisted(msg.sender);
         totalAmount = _claimAllFor(msg.sender);
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function claimAllFor(address user)
+    function claimAllFor(
+        address user
+    )
         external
         nonReentrant
         whenNotPaused
@@ -393,12 +482,16 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function getUserRequests(address user) external view returns (uint256[] memory tokenIds) {
+    function getUserRequests(
+        address user
+    ) external view returns (uint256[] memory tokenIds) {
         return _getTokensOf(user);
     }
 
     /// @dev Returns all token IDs owned by an address.
-    function _getTokensOf(address user) internal view returns (uint256[] memory tokenIds) {
+    function _getTokensOf(
+        address user
+    ) internal view returns (uint256[] memory tokenIds) {
         uint256 balance = balanceOf(user);
         tokenIds = new uint256[](balance);
         for (uint256 i = 0; i < balance; i++) {
@@ -407,7 +500,9 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function getClaimable(address user) external view returns (uint256 total, uint256[] memory claimableIds) {
+    function getClaimable(
+        address user
+    ) external view returns (uint256 total, uint256[] memory claimableIds) {
         uint256 balance = balanceOf(user);
         uint256[] memory temp = new uint256[](balance);
         uint256 count = 0;
@@ -428,7 +523,9 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function getPending(address user) external view returns (uint256 totalShares, uint256[] memory pendingIds) {
+    function getPending(
+        address user
+    ) external view returns (uint256 totalShares, uint256[] memory pendingIds) {
         uint256 balance = balanceOf(user);
         uint256[] memory temp = new uint256[](balance);
         uint256 count = 0;
@@ -436,7 +533,10 @@ contract WithdrawalQueueERC721 is
         for (uint256 i = 0; i < balance; i++) {
             uint256 tokenId = tokenOfOwnerByIndex(user, i);
             Request storage req = requests[tokenId];
-            if (req.status == RequestStatus.Requested || req.status == RequestStatus.InProgress) {
+            if (
+                req.status == RequestStatus.Requested ||
+                req.status == RequestStatus.InProgress
+            ) {
                 temp[count++] = tokenId;
                 totalShares += req.shares;
             }
@@ -449,7 +549,9 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function getRequest(uint256 tokenId) external view returns (Request memory) {
+    function getRequest(
+        uint256 tokenId
+    ) external view returns (Request memory) {
         return requests[tokenId];
     }
 
@@ -479,7 +581,10 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function getPendingIdsInRange(uint256 start, uint256 end) external view returns (uint256[] memory pendingIds) {
+    function getPendingIdsInRange(
+        uint256 start,
+        uint256 end
+    ) external view returns (uint256[] memory pendingIds) {
         require(start < end, InvalidInputs());
         if (end > nextTokenId) {
             end = nextTokenId;
@@ -490,7 +595,10 @@ contract WithdrawalQueueERC721 is
 
         for (uint256 i = start; i < end; i++) {
             RequestStatus status = requests[i].status;
-            if (status == RequestStatus.Requested || status == RequestStatus.InProgress) {
+            if (
+                status == RequestStatus.Requested ||
+                status == RequestStatus.InProgress
+            ) {
                 temp[count++] = i;
             }
         }
@@ -504,7 +612,10 @@ contract WithdrawalQueueERC721 is
     // ============ Compliance Functions ============
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function seizeRequests(uint256[] calldata tokenIds, address to) external nonReentrant onlyRole(COMPLIANCE_ROLE) {
+    function seizeRequests(
+        uint256[] calldata tokenIds,
+        address to
+    ) external nonReentrant onlyRole(COMPLIANCE_ROLE) {
         require(to != address(0), ZeroAmount());
         _requireNotBlacklisted(to);
 
@@ -517,7 +628,11 @@ contract WithdrawalQueueERC721 is
             _requireBlacklisted(owner);
 
             Request storage req = requests[tokenId];
-            require(req.status == RequestStatus.Requested || req.status == RequestStatus.InProgress, AlreadyProcessed());
+            require(
+                req.status == RequestStatus.Requested ||
+                    req.status == RequestStatus.InProgress,
+                AlreadyProcessed()
+            );
 
             _transfer(owner, to, tokenId);
 
@@ -526,11 +641,10 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function seizeBlacklistedFunds(uint256[] calldata tokenIds, address to)
-        external
-        nonReentrant
-        onlyRole(COMPLIANCE_ROLE)
-    {
+    function seizeBlacklistedFunds(
+        uint256[] calldata tokenIds,
+        address to
+    ) external nonReentrant onlyRole(COMPLIANCE_ROLE) {
         require(to != address(0), ZeroAmount());
         uint256 len = tokenIds.length;
         require(len > 0, ZeroAmount());
@@ -543,7 +657,10 @@ contract WithdrawalQueueERC721 is
             _requireBlacklisted(owner);
 
             Request storage req = requests[tokenId];
-            require(req.status == RequestStatus.Processed, RequestNotProcessed());
+            require(
+                req.status == RequestStatus.Processed,
+                RequestNotProcessed()
+            );
 
             totalUsdatSeized += req.usdatOwed;
             req.status = RequestStatus.Claimed;
@@ -569,7 +686,11 @@ contract WithdrawalQueueERC721 is
     // ============ Required Overrides ============
 
     /// @dev Override to check blacklist on transfers.
-    function _update(address to, uint256 tokenId, address auth) internal override returns (address) {
+    function _update(
+        address to,
+        uint256 tokenId,
+        address auth
+    ) internal override returns (address) {
         address from = _ownerOf(tokenId);
 
         if (from != address(0) && to != address(0)) {
@@ -586,7 +707,9 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @dev Override required by Solidity for multiple inheritance.
-    function supportsInterface(bytes4 interfaceId)
+    function supportsInterface(
+        bytes4 interfaceId
+    )
         public
         view
         override(ERC721EnumerableUpgradeable, AccessControlUpgradeable)
