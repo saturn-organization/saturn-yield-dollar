@@ -1,0 +1,14 @@
+#!/bin/bash
+# Resolves 1Password secret references in .env.dev and exports them to the current shell.
+# Usage: source syncdev
+
+# Load non-secret env vars
+set -a
+source .env.dev
+set +a
+
+# Resolve 1Password references
+export FIREBLOCKS_API_KEY=$(op read "$FIREBLOCKS_API_KEY_REF")
+export FIREBLOCKS_API_PRIVATE_KEY_PATH=$(op read "$FIREBLOCKS_PRIVATE_KEY_REF")
+
+echo "Development Environment synced."

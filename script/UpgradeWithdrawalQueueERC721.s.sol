@@ -13,28 +13,28 @@ import {WithdrawalQueueERC721} from "../src/WithdrawalQueueERC721.sol";
  * 2. Calls upgradeToAndCall on the proxy
  *
  * Environment variables required:
- * - ADMIN_PRIVATE_KEY: Private key of the DEFAULT_ADMIN_ROLE holder
  * - RPC_URL: RPC endpoint
  *
- * Usage:
- *   forge script script/UpgradeWithdrawalQueueERC721.s.sol --rpc-url $RPC_URL --broadcast
+ * Usage (with Fireblocks):
+ *   source .env && fireblocks-json-rpc --http -- forge script script/UpgradeWithdrawalQueueERC721.s.sol \
+ *     --sender $ADMIN --slow --broadcast --unlocked --rpc-url {}
+ *
+ * Usage (with private key):
+ *   source .env && forge script script/UpgradeWithdrawalQueueERC721.s.sol --rpc-url $RPC_URL --broadcast --private-key $ADMIN_PRIVATE_KEY
  */
 contract UpgradeWithdrawalQueueERC721 is Script {
     // Deployed contract addresses (Sepolia)
     address constant USDAT = 0x23238f20b894f29041f48D88eE91131C395Aaa71;
-    address constant STAKED_USDAT_PROXY = 0x1383cB4A7f78a9b63b4928f6D4F77221b50f30a4;
-    address constant WITHDRAWAL_QUEUE_PROXY = 0x3b2bd22089ED734979BB80A614d812b31B37ece4;
+    address constant STAKED_USDAT_PROXY = 0xD166337499E176bbC38a1FBd113Ab144e5bd2Df7;
+    address constant WITHDRAWAL_QUEUE_PROXY = 0x4Bc9FEC04F0F95e9b42a3EF18F3C96fB57923D2e;
 
     function run() external {
-        uint256 adminPrivateKey = vm.envUint("ADMIN_PRIVATE_KEY");
-        address admin = vm.addr(adminPrivateKey);
-
         console.log("=== WithdrawalQueueERC721 Upgrade ===");
-        console.log("Admin:", admin);
+        console.log("Sender:", msg.sender);
         console.log("Proxy:", WITHDRAWAL_QUEUE_PROXY);
         console.log("");
 
-        vm.startBroadcast(adminPrivateKey);
+        vm.startBroadcast();
 
         // Step 1: Deploy new implementation
         // Constructor args: (usdat, stakedUsdat) - immutables baked into bytecode
