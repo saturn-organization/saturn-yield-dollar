@@ -19,11 +19,10 @@ Using deployer `0x8CBA689B49f15E0a3c8770496Df8E88952d6851d`:
 | Contract | Address |
 |----------|---------|
 | StrcPriceOracle | `0x5f7eCD0D045c393da6cb6c933c671AC305A871BF` |
-| WithdrawalQueueERC721 Impl | `0xa241F7B81570095A76cd27635A1F38Ca758E1E9b` |
 | WithdrawalQueueERC721 Proxy | `0x4Bc9FEC04F0F95e9b42a3EF18F3C96fB57923D2e` |
-| StakedUSDat Impl | `0x20F1686Cd3F7Ce84Bb4092428C3561C71e2B043b` |
 | StakedUSDat Proxy | `0xD166337499E176bbC38a1FBd113Ab144e5bd2Df7` |
 | MockChainlinkOracle | `0x99AC1d95B3bb883BC11f4B49399C06e96a118a8D` |
+| ChainlinkOracle | `0xf4d2076277fff631EFC4385Ab36b1f7734218d23` |
 
 **Note:** Proxy addresses are deterministic via CreateX (same on all chains with same deployer). Implementation addresses use standard CREATE and may vary by chain.
 
