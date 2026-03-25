@@ -158,7 +158,7 @@ contract WithdrawalQueueERC721 is
     // ============ Processing Functions ============
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function lockRequests(uint256[] calldata tokenIds) external onlyRole(PROCESSOR_ROLE) {
+    function lockRequests(uint256[] calldata tokenIds) external whenNotPaused onlyRole(PROCESSOR_ROLE) {
         uint256 count = tokenIds.length;
         require(count > 0, InvalidInputs());
 
@@ -172,7 +172,7 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function unlockRequests(uint256[] calldata tokenIds) external onlyRole(PROCESSOR_ROLE) {
+    function unlockRequests(uint256[] calldata tokenIds) external whenNotPaused onlyRole(PROCESSOR_ROLE) {
         uint256 count = tokenIds.length;
         require(count > 0, InvalidInputs());
 
@@ -227,7 +227,7 @@ contract WithdrawalQueueERC721 is
         uint256 totalUsdatReceived,
         uint256 totalStrcSold,
         uint256 executionPrice
-    ) external nonReentrant onlyRole(PROCESSOR_ROLE) {
+    ) external nonReentrant whenNotPaused onlyRole(PROCESSOR_ROLE) {
         uint256 count = tokenIds.length;
         require(count > 0, InvalidInputs());
 
@@ -270,7 +270,7 @@ contract WithdrawalQueueERC721 is
     // ============ Claiming Functions ============
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function claim(uint256 tokenId) external nonReentrant whenNotPaused returns (uint256 amount) {
+    function claim(uint256 tokenId) external nonReentrant returns (uint256 amount) {
         _requireNotBlacklisted(msg.sender);
         require(ownerOf(tokenId) == msg.sender, NotOwner());
 
@@ -288,7 +288,7 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function claimBatch(uint256[] calldata tokenIds) external nonReentrant whenNotPaused returns (uint256 totalAmount) {
+    function claimBatch(uint256[] calldata tokenIds) external nonReentrant returns (uint256 totalAmount) {
         _requireNotBlacklisted(msg.sender);
         uint256 len = tokenIds.length;
         require(len > 0, ZeroAmount());
@@ -315,7 +315,6 @@ contract WithdrawalQueueERC721 is
     function claimBatchFor(address user, uint256[] calldata tokenIds)
         external
         nonReentrant
-        whenNotPaused
         onlyRole(STAKED_USDAT_ROLE)
         returns (uint256 totalAmount)
     {
@@ -342,19 +341,13 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function claimAll() external nonReentrant whenNotPaused returns (uint256 totalAmount) {
+    function claimAll() external nonReentrant returns (uint256 totalAmount) {
         _requireNotBlacklisted(msg.sender);
         totalAmount = _claimAllFor(msg.sender);
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function claimAllFor(address user)
-        external
-        nonReentrant
-        whenNotPaused
-        onlyRole(STAKED_USDAT_ROLE)
-        returns (uint256 totalAmount)
-    {
+    function claimAllFor(address user) external nonReentrant onlyRole(STAKED_USDAT_ROLE) returns (uint256 totalAmount) {
         _requireNotBlacklisted(user);
         totalAmount = _claimAllFor(user);
     }
@@ -511,6 +504,9 @@ contract WithdrawalQueueERC721 is
         uint256 len = tokenIds.length;
         require(len > 0, ZeroAmount());
 
+        bool wasPaused = paused();
+        if (wasPaused) _unpause();
+
         for (uint256 i = 0; i < len; i++) {
             uint256 tokenId = tokenIds[i];
             address owner = ownerOf(tokenId);
@@ -523,6 +519,8 @@ contract WithdrawalQueueERC721 is
 
             emit RequestSeized(tokenId, owner, to);
         }
+
+        if (wasPaused) _pause();
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
@@ -534,6 +532,9 @@ contract WithdrawalQueueERC721 is
         require(to != address(0), ZeroAmount());
         uint256 len = tokenIds.length;
         require(len > 0, ZeroAmount());
+
+        bool wasPaused = paused();
+        if (wasPaused) _unpause();
 
         uint256 totalUsdatSeized = 0;
 
@@ -553,6 +554,8 @@ contract WithdrawalQueueERC721 is
             emit FundsSeized(tokenId, owner, req.usdatOwed, to);
         }
 
+        if (wasPaused) _pause();
+
         IERC20(address(USDAT)).safeTransfer(to, totalUsdatSeized);
     }
 
@@ -568,8 +571,8 @@ contract WithdrawalQueueERC721 is
 
     // ============ Required Overrides ============
 
-    /// @dev Override to check blacklist on transfers.
-    function _update(address to, uint256 tokenId, address auth) internal override returns (address) {
+    /// @dev Override to check blacklist and pause on all token movements.
+    function _update(address to, uint256 tokenId, address auth) internal override whenNotPaused returns (address) {
         address from = _ownerOf(tokenId);
 
         if (from != address(0) && to != address(0)) {

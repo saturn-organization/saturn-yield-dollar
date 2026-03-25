@@ -211,7 +211,11 @@ contract StakedUSDat is
         require(amountToDistribute > 0, ZeroAmount());
         require(totalSupply() > amountToDistribute, NoRecipientsForRedistribution());
 
+        bool wasPaused = paused();
+        if (wasPaused) _unpause();
         _burn(from, amountToDistribute);
+        if (wasPaused) _pause();
+
         emit LockedAmountRedistributed(from, amountToDistribute);
     }
 
@@ -333,6 +337,7 @@ contract StakedUSDat is
     /// @inheritdoc IStakedUSDat
     function convertFromUsdat(uint256 usdatAmount, uint256 strcAmount, uint256 strcPurchasePrice)
         external
+        whenNotPaused
         onlyRole(PROCESSOR_ROLE)
     {
         require(usdatBalance >= usdatAmount, InsufficientBalance());
@@ -350,6 +355,7 @@ contract StakedUSDat is
     /// @inheritdoc IStakedUSDat
     function convertFromStrc(uint256 strcAmount, uint256 usdatAmount, uint256 strcSalePrice)
         external
+        whenNotPaused
         onlyRole(PROCESSOR_ROLE)
     {
         uint256 unvestedAmount = getUnvestedAmount();
@@ -391,7 +397,6 @@ contract StakedUSDat is
     function _deposit(address caller, address receiver, uint256 assets, uint256 shares)
         internal
         override
-        whenNotPaused
         nonReentrant
         notZero(assets)
         notZero(shares)
@@ -512,11 +517,7 @@ contract StakedUSDat is
     // ============ Withdrawal Functions ============
 
     /// @inheritdoc IStakedUSDat
-    function requestRedeem(uint256 shares, uint256 minUsdatReceived)
-        external
-        whenNotPaused
-        returns (uint256 requestId)
-    {
+    function requestRedeem(uint256 shares, uint256 minUsdatReceived) external returns (uint256 requestId) {
         uint256 maxShares = maxRedeem(msg.sender);
         if (shares > maxShares) {
             revert ERC4626ExceededMaxRedeem(msg.sender, shares, maxShares);
@@ -583,7 +584,7 @@ contract StakedUSDat is
     // ============ Admin Functions ============
 
     /// @inheritdoc IStakedUSDat
-    function setVestingPeriod(uint256 newVestingPeriod) external onlyRole(PROCESSOR_ROLE) {
+    function setVestingPeriod(uint256 newVestingPeriod) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(newVestingPeriod > 0 && newVestingPeriod <= MAX_VESTING_PERIOD, InvalidVestingPeriod());
         require(getUnvestedAmount() == 0, StillVesting());
 
@@ -594,7 +595,7 @@ contract StakedUSDat is
     }
 
     /// @inheritdoc IStakedUSDat
-    function setDepositFee(uint256 newFeeBps) external onlyRole(PROCESSOR_ROLE) {
+    function setDepositFee(uint256 newFeeBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(newFeeBps <= MAX_DEPOSIT_FEE_BPS, InvalidFee());
 
         depositFeeBps = newFeeBps;
@@ -603,7 +604,7 @@ contract StakedUSDat is
     }
 
     /// @inheritdoc IStakedUSDat
-    function setFeeRecipient(address newRecipient) external onlyRole(PROCESSOR_ROLE) {
+    function setFeeRecipient(address newRecipient) external onlyRole(DEFAULT_ADMIN_ROLE) {
         feeRecipient = newRecipient;
 
         emit FeeRecipientUpdated(newRecipient);
@@ -635,5 +636,10 @@ contract StakedUSDat is
     /// @inheritdoc IStakedUSDat
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
         _unpause();
+    }
+
+    /// @dev Blocks all token movements when paused, except burns from blacklisted addresses by DEFAULT_ADMIN_ROLE.
+    function _update(address from, address to, uint256 value) internal override(ERC20Upgradeable) whenNotPaused {
+        super._update(from, to, value);
     }
 }
