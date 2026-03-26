@@ -25,7 +25,6 @@ import {IWithdrawalQueueERC721} from "../src/interfaces/IWithdrawalQueueERC721.s
  *   source .env && forge script script/UpgradeStakedUSDat.s.sol --rpc-url $RPC_URL --broadcast --private-key $ADMIN_PRIVATE_KEY
  */
 contract UpgradeStakedUSDat is Script {
-    // Deployed contract addresses (Sepolia)
     address constant STRC_ORACLE = 0x5f7eCD0D045c393da6cb6c933c671AC305A871BF;
     address constant WITHDRAWAL_QUEUE = 0x4Bc9FEC04F0F95e9b42a3EF18F3C96fB57923D2e;
     address constant STAKED_USDAT_PROXY = 0xD166337499E176bbC38a1FBd113Ab144e5bd2Df7;
