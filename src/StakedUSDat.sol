@@ -590,6 +590,7 @@ contract StakedUSDat is
 
         uint256 oldPeriod = vestingPeriod;
         vestingPeriod = newVestingPeriod;
+        vestingAmount = 0;
 
         emit VestingPeriodUpdated(oldPeriod, newVestingPeriod);
     }
