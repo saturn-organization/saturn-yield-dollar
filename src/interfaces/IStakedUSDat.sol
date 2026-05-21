@@ -513,6 +513,16 @@ interface IStakedUSDat is IERC4626 {
     function setMaxRewardsBps(uint256 newMaxBps) external;
 
     /**
+     * @notice Post-upgrade initializer for the V2 implementation.
+     * @dev Must be called by the upgrade script immediately after upgrading the implementation.
+     * `oraclePriceTolerance` is a new storage slot added in V2 — it reads as zero on an existing
+     * proxy until this function runs, which would block all conversions (only exact oracle price
+     * matches would pass). Only callable by DEFAULT_ADMIN_ROLE; reverts if already initialized
+     * to version >= 2.
+     */
+    function reinitializeV2() external;
+
+    /**
      * @notice Updates the oracle price tolerance used in conversion validation.
      * @dev Only callable by addresses with the DEFAULT_ADMIN_ROLE.
      * Separate from executionTolerance (toleranceBps) — this governs how far the

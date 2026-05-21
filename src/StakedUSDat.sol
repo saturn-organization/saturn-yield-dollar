@@ -165,6 +165,16 @@ contract StakedUSDat is
         oraclePriceTolerance = 500; // 5%
     }
 
+    /// @inheritdoc IStakedUSDat
+    /// @dev Must be called by the upgrade script immediately after upgrading the implementation.
+    ///      `oraclePriceTolerance` is a new storage slot — it reads as zero on an existing proxy
+    ///      until this reinitializer runs.  With tolerance == 0 only an exact oracle price match
+    ///      would pass `_validateConversion`, effectively blocking all conversions until the admin
+    ///      configures the value.
+    function reinitializeV2() external reinitializer(2) onlyRole(DEFAULT_ADMIN_ROLE) {
+        oraclePriceTolerance = 500; // 5%
+    }
+
     /// @dev Authorizes an upgrade to a new implementation. Only callable by DEFAULT_ADMIN_ROLE.
     function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 

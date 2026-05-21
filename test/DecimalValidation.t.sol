@@ -250,7 +250,7 @@ contract DecimalValidationTest is Test {
         stakedUsdat.convertFromUsdat(usdatAmount, strcAmount, price);
     }
 
-    function test_convertFromUsdat_PriceWithin20Percent_Succeeds() public {
+    function test_convertFromUsdat_Price15PctOffOracle_Reverts() public {
         // Price 15% off oracle ($85). Under the old code this passed because a single
         // toleranceBps=2000 (20%) was used for both the oracle and quantity checks.
         // The PR separates concerns: oraclePriceTolerance=500 (5%) now guards the
@@ -539,7 +539,7 @@ contract DecimalValidationTest is Test {
     //                    TOLERANCE BOUNDARY TESTS
     // ============================================================
 
-    function test_tolerance_Exactly20Percent_Succeeds() public {
+    function test_tolerance_Exactly20PctOffOracle_Reverts() public {
         // Oracle price is $100, test at exactly 20% off ($80).
         // Under the old code the single toleranceBps=2000 covered the oracle price check,
         // so $80 sat exactly at the boundary and passed. The PR introduces a separate
