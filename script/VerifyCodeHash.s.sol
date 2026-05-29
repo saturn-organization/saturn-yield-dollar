@@ -66,8 +66,7 @@ contract VerifyCodeHash is Script {
         // --- StakedUSDat: replay deployer + nonce 11 -> SUSDAT_IMPL ---
         vm.setNonce(DEPLOYER, SUSDAT_NONCE);
         vm.startPrank(DEPLOYER);
-        StakedUSDat susdat =
-            new StakedUSDat(IStrcPriceOracle(STRC_ORACLE), IWithdrawalQueueERC721(WQ_PROXY));
+        StakedUSDat susdat = new StakedUSDat(IStrcPriceOracle(STRC_ORACLE), IWithdrawalQueueERC721(WQ_PROXY));
         vm.stopPrank();
         require(address(susdat) == SUSDAT_IMPL, "StakedUSDat local deploy address != on-chain impl");
         console.log("StakedUSDat CODEHASH:");
