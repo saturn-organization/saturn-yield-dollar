@@ -111,11 +111,18 @@ interface IStakedUSDat is IERC4626 {
     event UnBlacklisted(address indexed target);
 
     /**
-     * @dev Emitted when USDat is converted to/from tSTRC.
-     * @param usdatAmount The amount of USDat involved in the conversion.
-     * @param strcAmount The amount of tSTRC involved in the conversion.
+     * @dev Emitted when USDat is converted to STRC (vault purchases STRC off-chain).
+     * @param usdatAmount The amount of USDat that left the vault.
+     * @param strcAmount The amount of STRC credited to strcBalance.
      */
-    event Converted(uint256 usdatAmount, uint256 strcAmount);
+    event ConvertedToStrc(uint256 usdatAmount, uint256 strcAmount);
+
+    /**
+     * @dev Emitted when STRC is converted back to USDat (vault sells STRC off-chain).
+     * @param strcAmount The amount of STRC debited from strcBalance.
+     * @param usdatAmount The amount of USDat returned to the vault.
+     */
+    event ConvertedFromStrc(uint256 strcAmount, uint256 usdatAmount);
 
     /**
      * @dev Emitted when rewards are transferred into the contract.
@@ -161,6 +168,12 @@ interface IStakedUSDat is IERC4626 {
      * @param newMaxBps The new max rewards in basis points.
      */
     event MaxRewardsBpsUpdated(uint256 newMaxBps);
+
+    /**
+     * @dev Emitted when the oracle price tolerance is updated.
+     * @param newTolerance The new oracle price tolerance in basis points.
+     */
+    event OraclePriceToleranceUpdated(uint256 newTolerance);
 
     // ============ Blacklist Functions ============
 
@@ -462,7 +475,7 @@ interface IStakedUSDat is IERC4626 {
 
     /**
      * @notice Updates the vesting period for reward distributions.
-     * @dev Only callable by addresses with the PROCESSOR_ROLE.
+     * @dev Only callable by addresses with the DEFAULT_ADMIN_ROLE.
      * Cannot be changed while rewards are still vesting.
      * @param newVestingPeriod The new vesting period in seconds (must be <= MAX_VESTING_PERIOD).
      */
@@ -470,7 +483,7 @@ interface IStakedUSDat is IERC4626 {
 
     /**
      * @notice Updates the deposit fee.
-     * @dev Only callable by addresses with the PROCESSOR_ROLE.
+     * @dev Only callable by addresses with the DEFAULT_ADMIN_ROLE.
      * Can be set to 0 to disable fees.
      * @param newFeeBps The new fee in basis points (must be <= MAX_DEPOSIT_FEE_BPS).
      */
@@ -478,7 +491,7 @@ interface IStakedUSDat is IERC4626 {
 
     /**
      * @notice Updates the fee recipient address.
-     * @dev Only callable by addresses with the PROCESSOR_ROLE.
+     * @dev Only callable by addresses with the DEFAULT_ADMIN_ROLE.
      * Can be set to address(0) to disable fees.
      * @param newRecipient The new fee recipient address.
      */
@@ -498,6 +511,32 @@ interface IStakedUSDat is IERC4626 {
      * @param newMaxBps The new maximum in basis points (e.g., 250 = 2.5%).
      */
     function setMaxRewardsBps(uint256 newMaxBps) external;
+
+    /**
+     * @notice Post-upgrade initializer for the V2 implementation.
+     * @dev Must be called by the upgrade script immediately after upgrading the implementation.
+     * `oraclePriceTolerance` is a new storage slot added in V2 — it reads as zero on an existing
+     * proxy until this function runs, which would block all conversions (only exact oracle price
+     * matches would pass). Only callable by DEFAULT_ADMIN_ROLE; reverts if already initialized
+     * to version >= 2.
+     */
+    function reinitializeV2() external;
+
+    /**
+     * @notice Updates the oracle price tolerance used in conversion validation.
+     * @dev Only callable by addresses with the DEFAULT_ADMIN_ROLE.
+     * Separate from executionTolerance (toleranceBps) — this governs how far the
+     * processor-reported execution price may deviate from the Chainlink oracle price.
+     * Tighter than toleranceBps; raise only in black-swan market conditions.
+     * @param newTolerance The new tolerance in basis points (MIN_ORACLE_TOLERANCE_BPS to MAX_ORACLE_TOLERANCE_BPS).
+     */
+    function setOraclePriceTolerance(uint256 newTolerance) external;
+
+    /**
+     * @notice Returns the current oracle price tolerance in basis points.
+     * @return The oracle price tolerance value.
+     */
+    function oraclePriceTolerance() external view returns (uint256);
 
     /**
      * @notice Pauses the contract.

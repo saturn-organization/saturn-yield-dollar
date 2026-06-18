@@ -86,6 +86,12 @@ contract StakedUSDat is
     /// @notice Maximum deposit fee (5%)
     uint256 public constant MAX_DEPOSIT_FEE_BPS = 500;
 
+    /// @notice Maximum oracle price tolerance (10%)
+    uint256 public constant MAX_ORACLE_TOLERANCE_BPS = 1000;
+
+    /// @notice Minimum oracle price tolerance (0.5%)
+    uint256 public constant MIN_ORACLE_TOLERANCE_BPS = 50;
+
     /// @notice Deposit fee in basis points
     uint256 public depositFeeBps;
 
@@ -100,6 +106,9 @@ contract StakedUSDat is
 
     /// @notice Maximum rewards per transfer in basis points of totalAssets. Used to validate transferInRewards
     uint256 public maxRewardsBps;
+
+    /// @notice Tight tolerance for oracle vs execution price check, in basis points
+    uint256 public oraclePriceTolerance;
 
     modifier notZero(uint256 amount) {
         _notZero(amount);
@@ -153,6 +162,17 @@ contract StakedUSDat is
         feeRecipient = depositFeeRecipient;
         toleranceBps = 2000;
         maxRewardsBps = 250; // 2.5% of totalAssets
+        oraclePriceTolerance = 500; // 5%
+    }
+
+    /// @inheritdoc IStakedUSDat
+    /// @dev Must be called by the upgrade script immediately after upgrading the implementation.
+    ///      `oraclePriceTolerance` is a new storage slot — it reads as zero on an existing proxy
+    ///      until this reinitializer runs.  With tolerance == 0 only an exact oracle price match
+    ///      would pass `_validateConversion`, effectively blocking all conversions until the admin
+    ///      configures the value.
+    function reinitializeV2() external reinitializer(2) onlyRole(DEFAULT_ADMIN_ROLE) {
+        oraclePriceTolerance = 500; // 5%
     }
 
     /// @dev Authorizes an upgrade to a new implementation. Only callable by DEFAULT_ADMIN_ROLE.
@@ -317,21 +337,34 @@ contract StakedUSDat is
         IERC20(token).safeTransfer(to, amount);
     }
 
-    /// @dev Checks if a value is within ±toleranceBps of an expected value.
-    function _isWithinTolerance(uint256 value, uint256 expected) internal view returns (bool) {
-        uint256 minExpected = Math.mulDiv(expected, BPS_DENOMINATOR - toleranceBps, BPS_DENOMINATOR);
-        uint256 maxExpected = Math.mulDiv(expected, BPS_DENOMINATOR + toleranceBps, BPS_DENOMINATOR);
+    /// @dev Checks if a value is within ±bps of an expected value.
+    function _isWithinBps(uint256 value, uint256 expected, uint256 bps) internal pure returns (bool) {
+        uint256 minExpected = Math.mulDiv(expected, BPS_DENOMINATOR - bps, BPS_DENOMINATOR);
+        uint256 maxExpected = Math.mulDiv(expected, BPS_DENOMINATOR + bps, BPS_DENOMINATOR);
         return value >= minExpected && value <= maxExpected;
     }
 
-    /// @dev Validates that strcAmount matches usdatAmount / strcPurchasePrice within tolerance.
+    /// @dev Checks if a value is within ±toleranceBps of an expected value.
+    function _isWithinTolerance(uint256 value, uint256 expected) internal view returns (bool) {
+        return _isWithinBps(value, expected, toleranceBps);
+    }
+
+    /// @dev Validates that strcAmount and strcPurchasePrice are consistent with usdatAmount and the oracle price.
     function _validateConversion(uint256 usdatAmount, uint256 strcAmount, uint256 strcPurchasePrice) internal view {
         (uint256 oraclePrice, uint8 priceDecimals) = STRC_ORACLE.getPrice();
 
+        // Execution price must be close to oracle (tight oracle-specific tolerance)
+        require(_isWithinBps(strcPurchasePrice, oraclePrice, oraclePriceTolerance), OraclePriceMismatch());
+
+        // Quantity must be internally consistent with the reported execution price
         uint256 expectedStrc = Math.mulDiv(usdatAmount, 10 ** priceDecimals, strcPurchasePrice);
         require(_isWithinTolerance(strcAmount, expectedStrc), ExecutionPriceMismatch());
 
-        require(_isWithinTolerance(strcPurchasePrice, oraclePrice), OraclePriceMismatch());
+        // Oracle-anchored NAV cross-check: STRC received valued at oracle must approximate USDat exchanged.
+        // Mirrors the expectedShareValue check in WithdrawalQueueERC721.processRequests and prevents
+        // a self-referential bypass where a consistently wrong strcPurchasePrice passes both checks above.
+        uint256 strcValueAtOracle = Math.mulDiv(strcAmount, oraclePrice, 10 ** priceDecimals);
+        require(_isWithinTolerance(strcValueAtOracle, usdatAmount), ExecutionPriceMismatch());
     }
 
     /// @inheritdoc IStakedUSDat
@@ -349,7 +382,7 @@ contract StakedUSDat is
 
         IERC20(asset()).safeTransfer(msg.sender, usdatAmount);
 
-        emit Converted(usdatAmount, strcAmount);
+        emit ConvertedToStrc(usdatAmount, strcAmount);
     }
 
     /// @inheritdoc IStakedUSDat
@@ -369,7 +402,7 @@ contract StakedUSDat is
 
         IERC20(asset()).safeTransferFrom(msg.sender, address(this), usdatAmount);
 
-        emit Converted(usdatAmount, strcAmount);
+        emit ConvertedFromStrc(strcAmount, usdatAmount);
     }
 
     /// @inheritdoc IStakedUSDat
@@ -627,6 +660,18 @@ contract StakedUSDat is
         maxRewardsBps = newMaxBps;
 
         emit MaxRewardsBpsUpdated(newMaxBps);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function setOraclePriceTolerance(uint256 newTolerance) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(
+            newTolerance >= MIN_ORACLE_TOLERANCE_BPS && newTolerance <= MAX_ORACLE_TOLERANCE_BPS,
+            InvalidFee()
+        );
+
+        oraclePriceTolerance = newTolerance;
+
+        emit OraclePriceToleranceUpdated(newTolerance);
     }
 
     /// @inheritdoc IStakedUSDat

@@ -250,14 +250,17 @@ contract DecimalValidationTest is Test {
         stakedUsdat.convertFromUsdat(usdatAmount, strcAmount, price);
     }
 
-    function test_convertFromUsdat_PriceWithin20Percent_Succeeds() public {
-        // Price at edge of tolerance (oracle $100, using $85 = 15% off)
+    function test_convertFromUsdat_Price15PctOffOracle_Reverts() public {
+        // Price 15% off oracle ($85). Under the old code this passed because a single
+        // toleranceBps=2000 (20%) was used for both the oracle and quantity checks.
+        // The PR separates concerns: oraclePriceTolerance=500 (5%) now guards the
+        // oracle price check, so 15% off correctly reverts with OraclePriceMismatch.
         uint256 price = 85e8;
         uint256 usdatAmount = 1000e6;
-        // strcAmount = 1000e6 * 1e8 / 85e8 ≈ 11.76e6
         uint256 strcAmount = 1176e4; // ~11.76 STRC
 
         vm.prank(processor);
+        vm.expectRevert(abi.encodeWithSignature("OraclePriceMismatch()"));
         stakedUsdat.convertFromUsdat(usdatAmount, strcAmount, price);
     }
 
@@ -536,15 +539,18 @@ contract DecimalValidationTest is Test {
     //                    TOLERANCE BOUNDARY TESTS
     // ============================================================
 
-    function test_tolerance_Exactly20Percent_Succeeds() public {
-        // Default tolerance is 20% (2000 bps)
-        // Oracle price is $100, test at exactly 20% off ($80)
+    function test_tolerance_Exactly20PctOffOracle_Reverts() public {
+        // Oracle price is $100, test at exactly 20% off ($80).
+        // Under the old code the single toleranceBps=2000 covered the oracle price check,
+        // so $80 sat exactly at the boundary and passed. The PR introduces a separate
+        // oraclePriceTolerance=500 (5%) for the oracle check, so 20% off now correctly
+        // reverts — the old "success" expectation encoded the bug.
         uint256 price = 80e8;
         uint256 usdatAmount = 1000e6;
-        // strcAmount = 1000e6 * 1e8 / 80e8 = 12.5e6
         uint256 strcAmount = 125e5;
 
         vm.prank(processor);
+        vm.expectRevert(abi.encodeWithSignature("OraclePriceMismatch()"));
         stakedUsdat.convertFromUsdat(usdatAmount, strcAmount, price);
     }
 
