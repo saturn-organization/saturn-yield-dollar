@@ -27,11 +27,11 @@ NAV-clean from the vault's own buffer.
 | `strcBalance` mirror accounting, `_strcTotalAssets()` | module registry; `totalAssets()` sums `module.recognizedValue()` (§2.1–2.2). STRC leg lives in MirrorSTRC at upgrade, STRCon after migration |
 | `convertFromUsdat` / `convertFromStrc` + `_validateConversion` | `buyVia` / `sellVia` (§2.5); price validation per-module |
 | vault-global `toleranceBps`, `setTolerance` | per-module tolerance |
-| hard-wired `StrcPriceOracle`, `getStrcOracle()` | per-module oracles (§2.2) |
+| hard-wired `StrcPriceOracle`, `getStrcOracle()` | per-module oracles (§2.3) |
 | `transferInRewards` + STRC vesting surface | moves into MirrorSTRC (§2.3); retires with it |
 | `burnQueuedShares(shares, strcAmount)` | `redeemQueuedShares(shares)` (§2.6) |
 | `collectDust` | dropped — per-request settlement leaves no dust |
-| oracle revert bricks `totalAssets()` | modules report `isPaused()`; vault degrades deliberately (§2.2) |
+| oracle failure reverts `totalAssets()` and all views | same fail-closed reverts, kept deliberately; `maxDeposit`/`maxMint` catch and report 0 for ERC-4626 (§2.2) |
 | — | `transferInYield` cash yield inlet (§2.1) |
 | — | instant redemption path (§2.4) |
 | — | management, redemption, and instant exit fees (§2.7) |
@@ -113,10 +113,10 @@ modules hold no tokens.
 
 ```solidity
 interface IAccountingModule {
-    /// USD value (6 decimals) the vault recognizes now; never reverts (stale ⇒ last mark)
+    /// USD value (6 decimals) the vault recognizes now;
+    /// REVERTS when the asset cannot be reliably priced (stale / out-of-bounds / tripwire);
+    /// returns 0 without pricing when balance() == 0
     function recognizedValue() external view returns (uint256);
-    /// true when the asset cannot be reliably priced (oracle paused / stale)
-    function isPaused() external view returns (bool);
     /// the ERC20 custodied in the vault, or address(0) for a token-less module
     function asset() external view returns (address);
     /// recognized quantity of asset(), a counter — not a live balanceOf
@@ -145,13 +145,20 @@ uint16 public minCashBufferBps;                      // global cash floor
 // all onlyRole(MODULE_MANAGER_ROLE)
 registerModule(address module, uint16 maxWeightBps)  // reverts if _modules.length() == MAX_MODULES (5)
 setMaxWeight(address module, uint16 maxWeightBps)
-deregisterModule(address module)                     // only when recognizedValue() == 0;
-                                                     // real removal, config cleared
+deregisterModule(address module)                     // only when balance() == 0 (never
+                                                     // prices, so a dead oracle can't strand
+                                                     // an empty module); real removal, config cleared
 ```
 
-**Degraded mode.** While any module reports `isPaused()`: mints (`maxDeposit`/`maxMint` → 0),
-rotations, queue processing, and instant redemptions are blocked. Share transfers, redemption
-requests, limit updates, and claims of already-accrued payouts stay live.
+**Failure semantics — fail-closed by construction.** When a module cannot reliably price,
+`recognizedValue()` reverts and the revert propagates through `totalAssets()` into every
+value-sensitive path automatically: mints, queue processing, instant redemptions, and
+rotations halt with no gating code anywhere. Operations that never price — share transfers,
+`requestRedeem`, `updateMinSharePrice`, `claim`, seizures — stay live by construction.
+Downstream integrators pricing sUSDat via `convertToAssets`/`previewRedeem` inherit the same
+protection: they halt rather than transact on a disputed mark. One ERC-4626 compliance
+patch: `maxDeposit`/`maxMint` wrap `totalAssets()` in try/catch and return 0 on failure
+(the `max*` functions must not revert).
 
 **Rescue.** `rescueTokens(token, amount, to)` (DEFAULT_ADMIN_ROLE) sweeps only untracked
 excess: vault balance minus the cash legs (when `token` is USDat) minus `balance()` of every
@@ -164,8 +171,11 @@ Invariants:
 - A `buyVia` may not push a module above `maxWeightBps` or cash below `minCashBufferBps`;
   **sells are never blocked**. The cash floor governs rotations and deposit deployment only;
   queue processing may draw the buffer to zero.
-- `recognizedValue()` never reverts; `isPaused()` is the gate.
-- Deregistration requires zero recognized value.
+- `recognizedValue()` reverts when unpriceable — no value-sensitive operation, in the vault
+  or downstream, can transact against an unreliable mark.
+- Deregistration requires `balance() == 0` — checked without pricing, so an empty module
+  with a dead oracle is removable (the only recovery from a permanently failed oracle short
+  of an upgrade).
 - At most **5** modules (`MAX_MODULES`), so `totalAssets()` — on the hot path of every
   deposit/redeem/preview — stays gas-bounded.
 
@@ -187,13 +197,34 @@ STRC shares, price-accumulating — dividends reinvest into the `sValue` multipl
 `balance()` is a tracked counter under the custody-floor invariant. **No vesting** — the
 position is marked to market.
 
-- **Price source:** Chainlink *STRCon/USD (Ondo API)* feed, proxy
-  `0x67d4Ae9f265270aE123c08D2657536771D19cD91` (8 decimals, ~24h heartbeat, ~0.5% deviation).
-- **`isPaused()` — exactly two signals:** Ondo's per-asset pause flag
-  (`SyntheticSharesOracle.getSValue(STRCon).paused`, set only for scheduled corporate
-  actions) OR feed staleness (threshold ~26h, spanning the 24h weekend heartbeat). A closed
-  market still heartbeats and is priced at the last mark; routine dividends ride the oracle's
-  drift path and never pause (Appendix B).
+- **Price source:** a wrapper over two Chainlink feeds. Primary — *STRCon/USD (Ondo API)*,
+  proxy `0x67d4Ae9f265270aE123c08D2657536771D19cD91` (8 decimals, ~24h heartbeat): the
+  recognized mark. Cross-check — *STRCon/USD (Calculated)*, proxy
+  `0xC353ac4b425f818Ad87E228bf816E15c2173AC07` (prints regular market hours only): an
+  independent path (exchange prints, not Ondo's API).
+- **`getPrice()` — v1-style, reverts unless all of:**
+  1. answer positive and within bounds (min/max, admin-adjustable — the mark compounds with
+     sValue ~1%/mo, so the bounds need periodic raising);
+  2. API feed fresh (staleness ~26h, spanning the 24h weekend heartbeat);
+  3. Ondo's per-asset pause flag clear (`SyntheticSharesOracle.getSValue(STRCon).paused`,
+     set only for scheduled corporate actions);
+  4. **cross-feed deviation tripwire**: when the two feeds' prints are contemporaneous
+     (`|api.updatedAt − calc.updatedAt| ≤ syncWindow`), require
+     `|api − calc| ≤ deviationBps` of calc. Contemporaneous prints disagreeing beyond the
+     threshold means an oracle pricing fault — halt. Non-contemporaneous prints (nights,
+     weekends, pre-market — the Calculated feed prints regular hours only) are a clock skew,
+     not a disagreement: the tripwire disarms and pricing is API-only, the accepted risk
+     (§5). Stateless: a trip clears when live prints re-agree or the sync window closes;
+     divergence that ends only because the session ended escalates to `PAUSER_ROLE`.
+     Initial parameters `syncWindow` ~1h, `deviationBps` 200 (both-fresh agreement measured
+     ~0.15%, Appendix B), admin-tunable.
+
+  A closed market still heartbeats and is priced at the last mark; routine dividends ride
+  the oracle's drift path and never trip (Appendix B). MirrorSTRC's `StrcPriceOracle` is
+  already this shape — the deployed contract continues unchanged. The raw Chainlink feeds
+  remain the public last-price layer: an integrator who wants last-print-with-own-policy
+  reads them directly (the Midas two-layer pattern); sUSDat's own views bind to the
+  validated read.
 - Migration setter: `setBalance(amount)` — vault-only, seed-once (`require(balance == 0)`),
   asserts the custody floor.
 
@@ -201,11 +232,13 @@ position is marked to market.
 
 **Deposits — unchanged.** Atomic, 24/7, into the cash buffer at live blended NAV, less the
 deposit fee (→ `feeRecipient`). No asset is bought at deposit time; the buffer is deployed
-by rotations. Blocked (maxDeposit → 0) in degraded mode.
+by rotations. When any module can't price, deposits revert (`maxDeposit`/`maxMint` report 0,
+§2.2).
 
 **Instant redemption.** Whitelisted addresses only (add/remove: WHITELIST_MANAGER_ROLE).
 Burn shares, pay `previewRedeem(shares) × (1 − instantExitFeeBps)` from the buffer
-immediately. Capped per period against the standing buffer; blocked in degraded mode. The
+immediately. Capped per period against the standing buffer; reverts when any module can't
+price (it prices via `previewRedeem`). The
 whitelist gates immediacy, not value: the queue pays the same NAV-clean price to anyone, and
 the instant fee stays in the vault. Fee number open (§4).
 
@@ -237,7 +270,7 @@ struct Request {
     uint256 shares;          // shares STILL QUEUED — decremented per fill
     uint256 usdatOwed;       // accrued, unclaimed payout
     uint256 timestamp;
-    RequestStatus status;
+    RequestStatus status;    // legacy v1 slot; v2 logic neither reads nor writes it
     uint256 minSharePrice;   // limit: min execution price per 1e18 shares
 }
 ```
@@ -332,7 +365,7 @@ collectManagementFee()   // permissionless
 ```
 
 The amount is time-determined — collection timing and frequency don't change the total — and
-oracle-independent, so collection works even in degraded mode. The fee arrives as shares and
+oracle-independent, so collection works even while pricing is down. The fee arrives as shares and
 stays NAV-exposed until `feeRecipient` exits like any holder.
 
 ### 2.8 Roles
@@ -417,7 +450,8 @@ would renumber `Processed`/`Claimed`) but is never set again.
 
 A small real round-trip through Ondo: **create** STRCon from STRC in-kind (lands in
 Fireblocks) → **sell** it back to USDat, measuring the spread → **price** a small amount in
-the vault, confirming `recognizedValue()` matches the feed and `isPaused()` reads correctly.
+the vault, confirming `recognizedValue()` matches the feed and reverts under a forced
+tripwire/staleness condition.
 
 ### 3.3 Step 2 — `migrate()`
 
@@ -462,11 +496,10 @@ retire with it. `StrcPriceOracle` is orphaned. Optional hygiene upgrade drops th
 
 | # | Question | Blocks | Resolution path |
 |---|---|---|---|
-| 1 | Oracle failure shape: report-with-`isPaused()`-flag vs revert-on-out-of-bounds (v1 style) | module implementations | decide at implementation review |
-| 2 | `instantExitFeeBps` number — flat premium over the queue fee (whitelisted access makes utilization pricing unnecessary) | instant path | pick with #3 |
-| 3 | `redemptionFeeBps` number — flat fee sized so average exit processes at cost | fee params | measure Ondo spread (§3.2 validation) |
-| 4 | Residual ex-date step size (n=2, equity-only) → deposit fee sizing | fee params | accumulate monthly measurements |
-| 5 | Ondo mint/redeem mechanics for contracts: attestations, settlement time, size limits | STRCon module `buy`/`sell` | Ondo docs + §3.2 |
+| 1 | `instantExitFeeBps` number — flat premium over the queue fee (whitelisted access makes utilization pricing unnecessary) | instant path | pick with #2 |
+| 2 | `redemptionFeeBps` number — flat fee sized so average exit processes at cost | fee params | measure Ondo spread (§3.2 validation) |
+| 3 | Residual ex-date step size (n=2, equity-only) → deposit fee sizing | fee params | accumulate monthly measurements |
+| 4 | Ondo mint/redeem mechanics for contracts: attestations, settlement time, size limits | STRCon module `buy`/`sell` | Ondo docs + §3.2 |
 
 ---
 
@@ -481,6 +514,11 @@ retire with it. `StrcPriceOracle` is orphaned. Optional hygiene upgrade drops th
 - **Redemption slippage socialization — mitigated:** redeemers exit at the mark;
   mark-vs-execution gaps land on remaining holders via rotations. Mitigant: `redemptionFeeBps`
   sized to the measured spread, raised in stress; residual exposure beyond the fee remains.
+- **Oracle-halt downtime:** when the STRCon wrapper reverts (staleness, bounds, Ondo flag,
+  or deviation tripwire), all pricing views brick for the duration — including for
+  integrators (a lending market can't liquidate against sUSDat while tripped). Chosen
+  deliberately over serving a disputed mark; the deviation tripwire adds revert surface v1
+  never had, sized by `syncWindow`/`deviationBps` and tuned from measured feed data.
 - **Module registration = accounting god-mode:** a malicious module inflates NAV and drains
   the vault. `MODULE_MANAGER_ROLE` gated; treat with UUPS-upgrade gravity. `maxWeightBps`
   bounds the blast radius of a bad module or oracle.
@@ -512,9 +550,30 @@ compliance/seizure in one place. Modules are pure accounting adapters.
 transfer would inflate NAV. The counter moves only through `buy`/`sell`, so NAV moves only
 through authorized paths; `balanceOf` is merely a floor.
 
-**`recognizedValue()` never reverts; `isPaused()` gates.** In v1 an oracle revert bricks
-`totalAssets()` and the whole vault. Degrading deliberately keeps transfers, requests, and
-claims alive while blocking only what would transact against an unreliable mark.
+**Revert on unpriceable, not a pause flag.** An `isPaused()`-and-last-mark design was
+considered and rejected. Its real benefit was only view liveness during an outage (in v2
+nothing user-critical prices: transfers, `requestRedeem`, and `claim` stay live under either
+design), and it carried two costs. Inside the vault, a gate must be remembered at every
+value-sensitive entrypoint — a forgettable-bug class — where a revert propagates fail-closed
+automatically. Downstream, integrations built on v1 inherit its revert semantics: they treat
+"can't read a price" as "halt." Serving a last mark instead would have them transact —
+liquidate, borrow, rebalance — against a price the vault itself considers unreliable. Wrong
+price is strictly worse than no price for collateral. This matches deployed practice: Midas
+reverts through its validated `DataFeed` in mint/redeem while its raw aggregator stays
+publicly readable, and Morpho documents reverting oracles as an intended fail-closed
+integration mode (halting `borrow`/`withdrawCollateral`/`liquidate`). The one liveness patch
+kept: `maxDeposit`/`maxMint` catch and report 0, per ERC-4626.
+
+**Two-feed STRCon oracle.** The Ondo API feed is single-source — Ondo's own API into
+Chainlink — so alone it concentrates pricing trust in the issuer. The Calculated feed derives
+from exchange prints: an independent failure domain, but it prints regular market hours only.
+Hence the tripwire arms on *contemporaneous prints* (timestamps within `syncWindow`), not on
+wall-clock freshness: two live prints disagreeing is an oracle pricing fault and must halt;
+a fresh API print differing from a hours-old Calculated print measures elapsed time, not
+disagreement — an always-on comparison would false-trip every after-hours session. The trip
+is evaluated statelessly rather than latched: latching needs storage writes from the price
+path and a clearing flow, while the hole it closes (divergence that "clears" only because
+the session ended) is what `PAUSER_ROLE` escalation covers.
 
 **Mark-to-market for STRCon; no vesting.** Vesting exists to smooth *discrete* reward events
 (deposit-sniping around a predictable jump). STRCon's dividend is already continuous in the
@@ -650,19 +709,19 @@ through the event with a residual upward step of roughly **10–30 bps** — ord
 deposit fee, inside daily noise (±1%), no cleanly exploitable step observed. n=2,
 equity-side; keep measuring (§4).
 
-**Feed selection → STRCon/USD (Ondo API)** (`0x67d4Ae9f…cD91`). It tracks all sessions and
-**heartbeats ~24h on a flat price through the weekend closure**; set staleness at ~26h so
-the weekend doesn't false-trip. The *Calculated* feed (`0xC353ac4b…AC07`) prints only in
-regular hours — it went **68h stale** over the Jun 15 weekend and missed the event; keep it
-only as an optional sanity cross-check (~0.15% agreement when both fresh). Overnight print
-density is sparse (~6.6h between prints in the quiet session) — the feed can carry a
-multi-hour-old mark.
+**Feed roles → API as mark, Calculated as cross-check** (§2.3). The API feed
+(`0x67d4Ae9f…cD91`) tracks all sessions and **heartbeats ~24h on a flat price through the
+weekend closure**; set staleness at ~26h so the weekend doesn't false-trip. The *Calculated*
+feed (`0xC353ac4b…AC07`) prints only in regular hours — it went **68h stale** over the
+Jun 15 weekend and missed the event — so it can't be the mark, but agrees ~0.15% when both
+are fresh, which sizes the deviation tripwire. Overnight print density on the API feed is
+sparse (~6.6h between prints in the quiet session) — it can carry a multi-hour-old mark.
 
 **Session structure (Ondo).** STRC trades all sessions including overnight; the only
 scheduled closure is **Friday 8pm ET – Sunday 8pm ET**. Ondo pauses trading for a few
 minutes around session transitions, but **the oracle keeps updating through venue pauses**
-(Chainlink session-aware smoothing) — hence `isPaused()` is defined against feed behavior,
-never venue behavior or a market-hours calendar.
+(Chainlink session-aware smoothing) — hence the wrapper's checks are defined against feed
+behavior, never venue behavior or a market-hours calendar.
 
 **Volatility.** STRC fell ~$100 → $93.40 over 2026-06-01..05 (−6.6%), recovered to ~$96–97;
 the feeds oscillate continuously at their 0.5% deviation threshold. sUSDat NAV carries this
