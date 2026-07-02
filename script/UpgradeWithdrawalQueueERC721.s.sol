@@ -2,7 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Script, console} from "forge-std/Script.sol";
-import {WithdrawalQueueERC721} from "../src/WithdrawalQueueERC721.sol";
+import {WithdrawalQueueERC721} from "../src/v1/WithdrawalQueueERC721.sol";
 
 /**
  * @title UpgradeWithdrawalQueueERC721

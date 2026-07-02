@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {IPriceOracle} from "../../src/interfaces/IPriceOracle.sol";
+import {IPriceOracle} from "../../src/v1/interfaces/IPriceOracle.sol";
 
 /**
  * @title MockChainlinkOracle

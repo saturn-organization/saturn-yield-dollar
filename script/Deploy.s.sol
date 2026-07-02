@@ -4,11 +4,11 @@ pragma solidity ^0.8.20;
 import {Script, console} from "forge-std/Script.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
-import {StrcPriceOracle} from "../src/StrcPriceOracle.sol";
-import {WithdrawalQueueERC721} from "../src/WithdrawalQueueERC721.sol";
-import {StakedUSDat} from "../src/StakedUSDat.sol";
-import {IStrcPriceOracle} from "../src/interfaces/IStrcPriceOracle.sol";
-import {IWithdrawalQueueERC721} from "../src/interfaces/IWithdrawalQueueERC721.sol";
+import {StrcPriceOracle} from "../src/v1/StrcPriceOracle.sol";
+import {WithdrawalQueueERC721} from "../src/v1/WithdrawalQueueERC721.sol";
+import {StakedUSDat} from "../src/v1/StakedUSDat.sol";
+import {IStrcPriceOracle} from "../src/v1/interfaces/IStrcPriceOracle.sol";
+import {IWithdrawalQueueERC721} from "../src/v1/interfaces/IWithdrawalQueueERC721.sol";
 
 interface ICreateX {
     function deployCreate3(bytes32 salt, bytes memory initCode) external payable returns (address);

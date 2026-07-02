@@ -2,11 +2,11 @@
 pragma solidity ^0.8.20;
 
 import {Script, console} from "forge-std/Script.sol";
-import {StrcPriceOracle} from "../src/StrcPriceOracle.sol";
-import {WithdrawalQueueERC721} from "../src/WithdrawalQueueERC721.sol";
-import {StakedUSDat} from "../src/StakedUSDat.sol";
-import {IStrcPriceOracle} from "../src/interfaces/IStrcPriceOracle.sol";
-import {IWithdrawalQueueERC721} from "../src/interfaces/IWithdrawalQueueERC721.sol";
+import {StrcPriceOracle} from "../src/v1/StrcPriceOracle.sol";
+import {WithdrawalQueueERC721} from "../src/v1/WithdrawalQueueERC721.sol";
+import {StakedUSDat} from "../src/v1/StakedUSDat.sol";
+import {IStrcPriceOracle} from "../src/v1/interfaces/IStrcPriceOracle.sol";
+import {IWithdrawalQueueERC721} from "../src/v1/interfaces/IWithdrawalQueueERC721.sol";
 
 /**
  * @title VerifyCodeHash

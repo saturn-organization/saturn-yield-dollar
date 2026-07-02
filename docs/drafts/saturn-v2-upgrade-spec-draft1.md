@@ -9,7 +9,7 @@ backing assets ("multi-asset digital credit").
 > Single document while in design phase. At implementation time, split by lifecycle:
 > a durable **multi-asset vault architecture** spec (§3–4, 6–8: module framework, yield
 > recognition, the STRCon module, liquidity/settlement/allocation, fees) and a
-> time-bound **STRC→STRCon migration plan** (§1–2, §5 the MirrorSTRC bridge, §11
+> time-bound **STRC→STRCon migration plan** (§1, §5 the MirrorSTRC bridge, §11
 > sequencing), archived when the migration completes.
 
 ---
@@ -546,42 +546,62 @@ liveness and capped per period against the standing buffer.
 **Path 2 — the queue (the fallback).** Used when the buffer is exhausted, the exit is oversized, or the holder wants to wait for a better price. Same NAV-clean
 pricing, applied at processing time but the user does not need to pay the instant redemption fee
 
-For an atomic asset, the queue is funded and closed in one transaction:
+Funding and processing are separate primitives:
+
+- **Funding is allocation (§7.2):** the processor tops up the buffer with `sellVia` on its
+  own cadence; sales are never earmarked for the queue.
+- **Processing is queue-side:** the queue settles each request independently against one
+  narrow vault primitive:
 
 ```
-// StakedUSDat, OPERATOR_ROLE, nonReentrant — single transaction
-fundAndProcessRedemptions(SellLeg[] legs, uint256[] tokenIds)
-  for leg in legs: _sellVia(leg.module, leg.assetAmount, leg.minUsdatOut, leg.venueData)
-  WITHDRAWAL_QUEUE.processRequests(tokenIds)        // queue: vault-only caller
-    for each request:
-      payout = previewRedeem(request.shares) × (1 − redemptionFeeBps)
-      if payout < minUsdatReceived → skip (stays queued)   // limit checked NET
-    pull Σ(payouts) from the buffer + burn escrowed shares
-    // held-back fee stays in the vault → NAV/share rises for remaining holders
+// WithdrawalQueueERC721, OPERATOR_ROLE, nonReentrant
+processRequests(uint256[] tokenIds)
+  for each request:
+    sharePrice = previewRedeem(1e18)                  // 1. execution price
+    if sharePrice < request.minSharePrice → skip      // 2. limit check (stays queued)
+    vault.redeemQueuedShares(request.shares)          // 3. burns escrowed shares, pays
+                                                      //    previewRedeem(shares) × (1 − redemptionFeeBps)
+  // held-back fee stays in the vault → NAV/share rises for remaining holders
 ```
 
-It allows for a clean way to close positions in the queue without competing with the cash buffer but if there is a cash buffer we can access it rather than closing positions. 
+`redeemQueuedShares` is safe against even a buggy queue: it burns only shares the queue
+holds, at a price the vault computes, up to the buffer it has.
 
-**Limit semantics.** Each request carries `minUsdatReceived`, making the queue a limit-order
-book against NAV: a request fills at its limit or better, never worse. If NAV falls below the
-limit, the request sits (skipped, not reverted) until NAV recovers or the holder lowers the
-limit. 
+When sell + process atomicity is wanted (e.g. so instant exits can't drain a fresh buffer),
+the operator batches `sellVia` + `processRequests` in one tx from its own tooling.
 
-The current problem with the design is if we are not able to process users within the same day they could end up sitting in the queue for weeks until STRC repegs. 
+**Limit semantics: `minSharePrice` (replaces `minUsdatReceived`).** Each request carries a
+`minSharePrice`: the minimum execution share price (`previewRedeem(1e18)`); the redemption fee
+is charged on the payout after the limit check. The queue is a limit-order book against NAV: a
+request fills at its limit or better; below the limit it sits (skipped, not reverted) until NAV
+recovers or the holder lowers the limit — freely updatable before processing. Per-share because
+the bound is independent of order size, comparable to the live share price, and composes with
+partial fills without proration.
+
+**Migrating existing entries.** The old absolute bound is equivalent in per-share form, so the
+queue `reinit` converts pending entries in place — same slot, no user action, no legacy branch:
+
+```
+for id in pendingIds:   // computed off-chain via getPendingIdsInRange, checked against pendingCount
+    req.minSharePrice = ceilDiv(req.minUsdatReceived × 1e18, req.shares)
+    if req.status == InProgress: req.status = Requested   // locks dropped (§12.1)
+```
+
+`ceilDiv`: never weaker than the user's original bound.
 
 **Redemption fee — anti-dilution, not revenue.** Redeemers exiting create a one way drag because closing a position has a cost. `redemptionFeeBps` charges the user a fee to close the position. The goal of this fee is to target at cost processing.
 
 > ⚠️ **TODO — revisit before settling the fee.** The fee's job is to make exits process *at cost*. 
 > Option 1: charge some flat fee that is configurable but constant. The average should cover redemptions at cost. 
 > Option 2: calculate the actual cost of closing the positions. If a users position request a `sell()` then calculate the cost and charge as `redemptionFee`
+>
+> Option 2 would need funding and processing fused in one call to attribute realized sell cost
+> to specific requests. Option 1 is the working assumption; revisit if measured spreads make a
+> flat fee misprice.
 
 The queue is fully asset-agnostic — its only couplings to the vault are `previewRedeem`,
-share escrow/burn, and the funding pull, so adding an asset never touches it. 
-
-(Dropped from
-the deployed queue: `_validateTotals` and its triangulating checks, the
-`executionPrice`/`totalStrcSold` params, and the oracle/`strcBalance`/`toleranceBps`
-dependencies.)
+share escrow/burn, and the funding pull, so adding an asset never touches it. §12 inventories
+everything this removes from the deployed contracts.
 
 ---
 
@@ -622,6 +642,9 @@ stays in the vault (cost recovery / anti-dilution, never revenue);
 - **Residual ex-date step** ~10–30 bps vs 10 bps deposit fee — fee sizing pending data (§4.2).
 - **Withholding drag** — realized yield < 11.5% headline (quantify via §C.2).
 - **Regulatory/eligibility** — qualified-investor restrictions on STRCon (§C.1).
+- **Parked limit orders** (§7.3): a request whose `minSharePrice` is above NAV sits unfilled
+  indefinitely — by design, but holders may not realize they're parked; the remedy is
+  lowering the limit.
 - **Atomic-exit buffer dynamics** (§7.3): the capped buffer path is first-come
   first-served; in stress it exhausts and exits fall back to the queue — by design, but
   the cap + fee parameters determine how that transition feels. Bounded by the cap;
@@ -650,7 +673,7 @@ service. `DEFAULT_ADMIN_ROLE` stays the OZ root that grants/revokes the rest.
 | `PARAMETER_MANAGER_ROLE` | parameter setters — fees, vesting, tolerance, caps, cash floor, weights |
 | `OPERATOR_ROLE` | rotations, `transferInYield`/`transferInRewards`, queue processing |
 | `BLACKLISTER_ROLE` | blacklist add/remove (freeze only) |
-| `ENFORCER_ROLE` | `redistributeLockedAmount` + `recall` — move a blacklisted holder's shares |
+| `ENFORCER_ROLE` | `redistributeLockedAmount` + `recall` — move a blacklisted holder's shares; queue seizure (`seizeRequests`, `seizeBlacklistedFunds`) |
 | `PAUSER_ROLE` | pause |
 | `UNPAUSER_ROLE` | unpause |
 
@@ -666,10 +689,12 @@ Two renames carry an operational cost, since AccessControl keys membership by
 `keccak256("<NAME>_ROLE")` — changing the string changes the id, so old grants don't carry:
 
 - **`PROCESSOR_ROLE` → `OPERATOR_ROLE`** (OZ's canonical agent noun, replacing the deployed
-  business-actor name; referenced in §1.1, §4.3, §7.3) and **`COMPLIANCE_ROLE` →
-  `BLACKLISTER_ROLE`** both need an explicit re-grant in `StakedUSDat` *and*
-  `WithdrawalQueueERC721`. This is free because §11 step 1 already ships new implementations and
-  re-grants roles during migration — but it must be an explicit step, not assumed.
+  business-actor name; referenced in §1.1, §4.3, §7.3) needs an explicit re-grant in
+  `StakedUSDat` *and* `WithdrawalQueueERC721`. **`COMPLIANCE_ROLE`** re-grants as
+  `BLACKLISTER_ROLE` in `StakedUSDat`; on the queue — where it gated pause *and* seizure — it
+  splits into `ENFORCER_ROLE` (seizure) and `PAUSER_ROLE`, per freeze ≠ seize. This is free
+  because §11 step 1 already ships new implementations and re-grants roles during migration —
+  but it must be an explicit step, not assumed.
 
 `STAKED_USDAT_ROLE` on the queue (a specific contract may call) is left as-is: it's the
 capability/relationship pattern, like LayerZero's `MESSAGE_LIB_ROLE`, not an actor name.
@@ -698,7 +723,7 @@ STRC), and register an empty `STRCon` module. Share price does not move.
 - *No-op:* `totalAssets`, `previewRedeem`, `previewMint`, `convertToShares`, `getUnvestedAmount`
   identical pre/post, at three vesting states (fully unvested after `transferInRewards`,
   mid-vest, fully vested) via time-warp.
-- *Behavior:* deposit → mint → requestRedeem → `fundAndProcessRedemptions` → claim pays
+- *Behavior:* deposit → mint → requestRedeem → `sellVia` (buffer top-up) + `processRequests` → claim pays
   `previewRedeem × (1 − fee)`; `transferInRewards` vests in the mirror; `transferInYield` vests
   then sweeps; a stale mirror oracle zeroes `maxDeposit` and blocks processing while transfers
   and redeem requests stay live.
@@ -713,13 +738,15 @@ STRC), and register an empty `STRCon` module. Share price does not move.
      (`strcBalance` / `vestingAmount` / `lastDistributionTimestamp` / `vestingPeriod`), seeds
      `MirrorSTRC` from them, registers it, and re-grants the §10.1 roles. This is *inside* the
      batch because dropping the STRC leg for even one block would crash NAV.
-   - `WQ.upgradeToAndCall(WQImpl, reinit)`.
+   - `WQ.upgradeToAndCall(WQImpl, reinit)` — converts pending entries in place:
+     `minUsdatReceived` → `minSharePrice`, `InProgress` → `Requested` (§7.3). Don't lock
+     requests once the batch is scheduled.
 3. Wait the 5-day delay.
 4. Executor calls `executeBatch` with the same args — both proxies upgrade in one tx;
    `MirrorSTRC` is seeded and registered.
 5. Verify the upgrade on-chain: no-op values match pre-upgrade; `MirrorSTRC.balance` == old
    `strcBalance` with vesting fields seeded; `OPERATOR_ROLE` / `BLACKLISTER_ROLE` re-granted on
-   both contracts.
+   both contracts; pending queue entries carry converted limits, none `InProgress`.
 6. Register the `STRCon` module with `balance = 0` and its full-position cap; confirm
    `recognizedValue() == 0`.
 
@@ -796,6 +823,56 @@ dropping the spent one-shot `migrate()`.
 ### Future assets
 
 New module per instrument, each with its own oracle and recognition policy.
+
+---
+
+## 12. Dropped from the deployed contracts
+
+Deployed surface this design removes. Dispositions: **dropped**, **replaced**, **moved**
+(lives on in a module, retires with it).
+
+### 12.1 WithdrawalQueueERC721
+
+The queue never prices, validates, or triggers execution anymore — it escrows shares,
+settles each request against `redeemQueuedShares`, and holds payouts for claiming.
+
+| Deployed surface | Disposition |
+|---|---|
+| `processRequests(tokenIds, totalUsdatReceived, totalStrcSold, executionPrice)` | **replaced** by `processRequests(tokenIds)` — per-request settlement, no batch totals (§7.3) |
+| Pro-rata distribution (batch `totalShares` sum, `mulDiv` split, `totalUsdat <= totalUsdatReceived` check) | **dropped** — each request settles independently at `previewRedeem(shares)` |
+| `_validateTotals` (execution price vs oracle, vs `previewRedeem`, vested-balance check) | **dropped** — settlement is NAV-clean by construction; sale validation lives in the modules' `sell()` (§7.2) |
+| `_isWithinTolerance`, `_validateAmount`, `BPS_DENOMINATOR` | **dropped** with the validation above |
+| Oracle/vault reads: `IStrcPriceOracle` import, `getStrcOracle()`, `strcBalance()`, `getUnvestedAmount()`, `toleranceBps()` | **dropped** — the queue's only vault couplings are `previewRedeem` and `redeemQueuedShares` |
+| `lockRequests` / `unlockRequests`, the `InProgress` status, `RequestsLocked`/`RequestsUnlocked` events, `RequestNotLocked` error | **dropped** — locks protected the off-chain execution window; settlement is now atomic. The `InProgress` enum variant stays (storage layout) but is never set; `reinit` unlocks stragglers |
+| `minUsdatReceived` field + `updateMinUsdatReceived` | **replaced** by `minSharePrice` / `updateMinSharePrice` — same storage slot, pending entries converted in place by `reinit` (§7.3) |
+| `updateMinUsdatReceived` lower-only `InProgress` branch | **dropped** — the limit is freely updatable any time before processing (a resting limit order) |
+| Dust flow (`approve` + `STAKED_USDAT.collectDust`) | **dropped** — per-request settlement leaves no remainder |
+| `SlippageExceeded`, `ExecutionPriceMismatch`, `OraclePriceMismatch`, `ExceedsVestedBalance` errors | **dropped** — limit-not-met is a skip, not a revert |
+
+Survives unchanged: request creation and share escrow, `usdatOwed` bookkeeping and the whole
+claim family, seizure/compliance paths, views, pause. (Roles are renamed per §10.1.)
+
+### 12.2 StakedUSDat
+
+The vault sheds everything STRC-specific; what remains is ERC-4626 accounting over
+`usdatBalance` + the module registry.
+
+| Deployed surface | Disposition |
+|---|---|
+| `strcBalance` accounting (`_strcTotalAssets`) | **moved** into MirrorSTRC's `balance()`/`recognizedValue()` (§5); seeded at upgrade, retired at migration |
+| `transferInRewards` + STRC vesting surface (`getUnvestedAmount`, `vestingAmount`, `vestingPeriod`, `setVestingPeriod`, `setMaxRewardsBps`, `StillVesting`) | **moved** into MirrorSTRC (§5.1); retires with it |
+| `convertFromUsdat` / `convertFromStrc` + `_validateConversion` | **replaced** by `buyVia`/`sellVia` (§7.2); price validation is per-module, inside `buy()`/`sell()` |
+| `_isWithinTolerance`, `toleranceBps`, `setTolerance` | **moved** — tolerance is a per-module parameter, not a vault global |
+| `getStrcOracle()` / hard-wired `StrcPriceOracle` | **replaced** by per-module oracles (§3.5); `StrcPriceOracle` becomes MirrorSTRC's and is orphaned post-migration |
+| `burnQueuedShares(shares, strcAmount)` | **replaced** by `redeemQueuedShares(shares)` — burns escrowed shares and transfers the net payout atomically, no processor-supplied amounts (§7.3) |
+| `collectDust` | **dropped** with the queue's dust flow |
+
+Survives unchanged: the ERC-4626 core with the async-redemption overrides (`withdraw`/`redeem`
+disabled, `requestRedeem` — its limit param becomes `minSharePrice`), deposit variants
+(permit/min-shares), deposit fee, blacklist +
+`redistributeLockedAmount` (plus the new `recall`, §10.2), `rescueTokens` (generalized, §3.6),
+pause. New surface (registry, `transferInYield`, `redeemQueuedShares`, instant exit path,
+roles) is specced in §3–4, §7, §10.
 
 ---
 

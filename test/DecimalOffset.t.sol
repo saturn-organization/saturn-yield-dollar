@@ -5,11 +5,11 @@ import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
-import {StakedUSDat} from "../src/StakedUSDat.sol";
-import {WithdrawalQueueERC721} from "../src/WithdrawalQueueERC721.sol";
-import {StrcPriceOracle} from "../src/StrcPriceOracle.sol";
-import {IStrcPriceOracle} from "../src/interfaces/IStrcPriceOracle.sol";
-import {IWithdrawalQueueERC721} from "../src/interfaces/IWithdrawalQueueERC721.sol";
+import {StakedUSDat} from "../src/v1/StakedUSDat.sol";
+import {WithdrawalQueueERC721} from "../src/v1/WithdrawalQueueERC721.sol";
+import {StrcPriceOracle} from "../src/v1/StrcPriceOracle.sol";
+import {IStrcPriceOracle} from "../src/v1/interfaces/IStrcPriceOracle.sol";
+import {IWithdrawalQueueERC721} from "../src/v1/interfaces/IWithdrawalQueueERC721.sol";
 
 // Mock USDat token (6 decimals)
 contract MockUSDat {
