@@ -82,8 +82,15 @@ contract StakedUSDat is
     /// @dev Retired v1 slot (was vestingPeriod); read once by initializeV2 to seed MirrorSTRC
     uint256 private __deprecated_vestingPeriod;
 
-    /// @notice Minimum withdrawal amount (10 USDat, 6 decimals)
-    uint256 public constant MIN_WITHDRAWAL = 10e6;
+    /// @notice Minimum redemption request size (10 sUSDat shares, 18 decimals).
+    /// Share-denominated so requestRedeem never prices.
+    uint256 public constant MIN_REQUEST_SHARES = 10e18;
+
+    /// @notice Maximum redemption fee (5%)
+    uint256 public constant MAX_REDEMPTION_FEE_BPS = 500;
+
+    /// @notice Maximum surplus vesting period (7 days)
+    uint256 public constant MAX_SURPLUS_VESTING_PERIOD = 7 days;
 
     /// @dev Retired v1 slot (was toleranceBps); do not reuse
     uint256 private __deprecated_toleranceBps;
@@ -115,6 +122,23 @@ contract StakedUSDat is
     /// @notice Global cash floor in basis points of totalAssets (governs rotations and
     /// deposit deployment only; queue processing may draw the buffer to zero)
     uint16 public minCashBufferBps;
+
+    /// @notice Redemption fee in basis points; held back in the vault (anti-dilution,
+    /// never revenue)
+    uint16 public redemptionFeeBps;
+
+    /// @notice Per-tranche surplus cap in basis points of totalAssets
+    uint16 public maxSurplusBps;
+
+    /// @notice Current surplus tranche (USDat, 6 decimals) — in the vault but outside
+    /// usdatBalance until swept; only the vested slice counts toward totalAssets
+    uint256 public surplusVestingAmount;
+
+    /// @notice Timestamp when the current surplus tranche started vesting
+    uint256 public lastSurplusTimestamp;
+
+    /// @notice Surplus vesting period in seconds
+    uint256 public surplusVestingPeriod;
 
     modifier notZero(uint256 amount) {
         _notZero(amount);
@@ -158,6 +182,8 @@ contract StakedUSDat is
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
 
         feeRecipient = protocolFeeRecipient;
+        surplusVestingPeriod = 24 hours;
+        maxSurplusBps = 250; // 2.5% of totalAssets per tranche
     }
 
     /// @dev Authorizes an upgrade to a new implementation. Only callable by DEFAULT_ADMIN_ROLE.
@@ -227,10 +253,11 @@ contract StakedUSDat is
     // ============ ERC4626 Overrides ============
 
     /// @inheritdoc IERC4626
-    /// @dev Idle USDat plus the recognized value of every registered module. Reverts
-    /// when any module cannot reliably price — fail-closed for every value-sensitive path.
+    /// @dev Idle USDat, plus the vested slice of the surplus leg, plus the recognized
+    /// value of every registered module. Reverts when any module cannot reliably
+    /// price — fail-closed for every value-sensitive path.
     function totalAssets() public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
-        uint256 total = usdatBalance;
+        uint256 total = usdatBalance + (surplusVestingAmount - getUnvestedSurplus());
 
         uint256 count = _modules.length();
         for (uint256 i = 0; i < count; i++) {
@@ -296,7 +323,7 @@ contract StakedUSDat is
         nonReentrant
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
-        uint256 tracked = token == asset() ? usdatBalance : 0;
+        uint256 tracked = token == asset() ? usdatBalance + surplusVestingAmount : 0;
 
         uint256 count = _modules.length();
         for (uint256 i = 0; i < count; i++) {
@@ -381,6 +408,8 @@ contract StakedUSDat is
         returns (uint256 assetOut)
     {
         require(_modules.contains(module), ModuleNotRegistered());
+
+        _sweep();
         require(usdatBalance >= usdatIn, InsufficientBalance());
 
         usdatBalance -= usdatIn;
@@ -407,6 +436,8 @@ contract StakedUSDat is
     {
         require(_modules.contains(module), ModuleNotRegistered());
 
+        _sweep();
+
         address moduleAsset = IAccountingModule(module).asset();
 
         if (moduleAsset != address(0)) {
@@ -418,6 +449,54 @@ contract StakedUSDat is
         }
 
         usdatBalance += usdatOut;
+    }
+
+    // ============ Surplus Inlet ============
+
+    /// @inheritdoc IStakedUSDat
+    /// @dev One tranche at a time; capped at maxSurplusBps of totalAssets. The amount
+    /// enters the segregated surplus leg and vests linearly into NAV.
+    function transferInSurplus(uint256 amount) external nonReentrant onlyRole(OPERATOR_ROLE) notZero(amount) {
+        _sweep();
+        require(surplusVestingAmount == 0, StillVesting());
+        require(amount <= Math.mulDiv(totalAssets(), maxSurplusBps, BPS_DENOMINATOR), SurplusExceedsMax());
+
+        surplusVestingAmount = amount;
+        lastSurplusTimestamp = block.timestamp;
+
+        IERC20(asset()).safeTransferFrom(msg.sender, address(this), amount);
+
+        emit SurplusReceived(amount);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    /// @dev Rounds up to be conservative (slightly favors protocol over users).
+    function getUnvestedSurplus() public view returns (uint256) {
+        uint256 elapsed = block.timestamp - lastSurplusTimestamp;
+
+        if (elapsed >= surplusVestingPeriod) {
+            return 0;
+        }
+
+        return Math.mulDiv(surplusVestingPeriod - elapsed, surplusVestingAmount, surplusVestingPeriod, Math.Rounding.Ceil);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function sweep() external {
+        _sweep();
+    }
+
+    /// @dev Folds a fully vested surplus tranche into usdatBalance. NAV-neutral (the
+    /// vested slice already counts toward totalAssets); runs atop value-sensitive
+    /// entrypoints and as a permissionless poke.
+    function _sweep() internal {
+        uint256 amount = surplusVestingAmount;
+        if (amount == 0 || getUnvestedSurplus() != 0) return;
+
+        surplusVestingAmount = 0;
+        usdatBalance += amount;
+
+        emit SurplusSwept(amount);
     }
 
     // ============ Deposit Functions ============
@@ -433,6 +512,7 @@ contract StakedUSDat is
         _requireNotBlacklisted(caller);
         _requireNotBlacklisted(receiver);
 
+        _sweep();
         usdatBalance += assets;
 
         super._deposit(caller, receiver, assets, shares);
@@ -539,32 +619,69 @@ contract StakedUSDat is
     }
 
     /// @inheritdoc IStakedUSDat
-    function requestRedeem(uint256 shares, uint256 minUsdatReceived) external returns (uint256 requestId) {
+    /// @dev Never prices — stays live while any module oracle is down (§2.2).
+    function requestRedeem(uint256 shares, uint256 minSharePrice) external returns (uint256 requestId) {
         uint256 maxShares = maxRedeem(msg.sender);
         if (shares > maxShares) {
             revert ERC4626ExceededMaxRedeem(msg.sender, shares, maxShares);
         }
 
-        uint256 assets = previewRedeem(shares);
-
-        requestId = _processWithdrawal(msg.sender, msg.sender, assets, shares, minUsdatReceived);
+        requestId = _processWithdrawal(msg.sender, msg.sender, shares, minSharePrice);
     }
 
     /// @dev Processes a withdrawal request by escrowing shares in the withdrawal queue.
-    function _processWithdrawal(address caller, address owner, uint256 assets, uint256 shares, uint256 minUsdatReceived)
+    function _processWithdrawal(address caller, address owner, uint256 shares, uint256 minSharePrice)
         internal
         nonReentrant
-        notZero(assets)
-        notZero(shares)
         returns (uint256 requestId)
     {
         _requireNotBlacklisted(caller);
         _requireNotBlacklisted(owner);
-        require(assets >= MIN_WITHDRAWAL, WithdrawalTooSmall());
+        require(shares >= MIN_REQUEST_SHARES, WithdrawalTooSmall());
 
         _transfer(owner, address(WITHDRAWAL_QUEUE), shares);
 
-        requestId = WITHDRAWAL_QUEUE.addRequest(owner, shares, minUsdatReceived);
+        requestId = WITHDRAWAL_QUEUE.addRequest(owner, shares, minSharePrice);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    /// @dev The queue's single settlement primitive: clamp to the buffer, price, burn,
+    /// transfer — in one call. Burns only shares the queue holds, at a vault-computed
+    /// price, up to the buffer it has. The held-back fee stays in the vault, raising
+    /// NAV/share for remaining holders.
+    function redeemQueuedShares(uint256 sharesRequested)
+        external
+        nonReentrant
+        onlyWithdrawalQueue
+        notZero(sharesRequested)
+        returns (uint256 sharesRedeemed, uint256 usdat)
+    {
+        _sweep();
+
+        sharesRedeemed = sharesRequested;
+        usdat = _netPayout(previewRedeem(sharesRequested));
+
+        if (usdat > usdatBalance) {
+            // Clamp: the largest share count whose net payout the buffer covers.
+            // Floor-rounding at every step keeps the payout <= usdatBalance.
+            uint256 grossBudget = Math.mulDiv(usdatBalance, BPS_DENOMINATOR, BPS_DENOMINATOR - redemptionFeeBps);
+            sharesRedeemed = Math.min(convertToShares(grossBudget), sharesRequested);
+            if (sharesRedeemed == 0) {
+                return (0, 0);
+            }
+            usdat = _netPayout(previewRedeem(sharesRedeemed));
+        }
+
+        usdatBalance -= usdat;
+        _burn(address(WITHDRAWAL_QUEUE), sharesRedeemed);
+
+        IERC20(asset()).safeTransfer(address(WITHDRAWAL_QUEUE), usdat);
+    }
+
+    /// @dev Gross redemption value less the redemption fee, floor-rounded in the
+    /// vault's favor.
+    function _netPayout(uint256 grossAssets) internal view returns (uint256) {
+        return Math.mulDiv(grossAssets, BPS_DENOMINATOR - redemptionFeeBps, BPS_DENOMINATOR);
     }
 
     // ============ View Functions ============
@@ -575,6 +692,37 @@ contract StakedUSDat is
     }
 
     // ============ Admin Functions ============
+
+    /// @inheritdoc IStakedUSDat
+    function setSurplusVestingPeriod(uint256 newPeriod) external onlyRole(PARAMETER_MANAGER_ROLE) {
+        require(newPeriod > 0 && newPeriod <= MAX_SURPLUS_VESTING_PERIOD, InvalidVestingPeriod());
+
+        _sweep();
+        require(surplusVestingAmount == 0, StillVesting());
+
+        uint256 oldPeriod = surplusVestingPeriod;
+        surplusVestingPeriod = newPeriod;
+
+        emit SurplusVestingPeriodUpdated(oldPeriod, newPeriod);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function setMaxSurplusBps(uint16 newMaxBps) external onlyRole(PARAMETER_MANAGER_ROLE) {
+        require(newMaxBps <= BPS_DENOMINATOR, InvalidWeight());
+
+        maxSurplusBps = newMaxBps;
+
+        emit MaxSurplusBpsUpdated(newMaxBps);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function setRedemptionFee(uint16 newFeeBps) external onlyRole(PARAMETER_MANAGER_ROLE) {
+        require(newFeeBps <= MAX_REDEMPTION_FEE_BPS, InvalidFee());
+
+        redemptionFeeBps = newFeeBps;
+
+        emit RedemptionFeeUpdated(newFeeBps);
+    }
 
     /// @inheritdoc IStakedUSDat
     function setFeeRecipient(address newRecipient) external onlyRole(PARAMETER_MANAGER_ROLE) {

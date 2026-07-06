@@ -32,7 +32,7 @@ NAV-clean from the vault's own buffer.
 | `burnQueuedShares(shares, strcAmount)` | `redeemQueuedShares(shares)` (§2.6) |
 | `collectDust` | dropped — per-request settlement leaves no dust |
 | oracle failure reverts `totalAssets()` and all views | same fail-closed reverts, kept deliberately; `maxDeposit`/`maxMint` catch and report 0 for ERC-4626 (§2.2) |
-| — | `transferInYield` cash yield inlet (§2.1) |
+| — | `transferInSurplus` cash surplus inlet (§2.1) |
 | — | instant redemption path (§2.4) |
 | deposit fee (`depositFeeBps`, fee-adjusted `previewDeposit`/`previewMint`) | dropped — deposits at plain NAV (§2.4) |
 | — | management, redemption, and instant exit fees (§2.7) |
@@ -88,25 +88,25 @@ Normative. Present tense; rationale in Appendix A.
 
 ```
 totalAssets() = usdatBalance
-              + (yieldVestingAmount − getUnvestedYield())   // vested cash yield
+              + (surplusVestingAmount − getUnvestedSurplus())   // vested surplus
               + Σ module.recognizedValue()
 ```
 
 All values 6-decimal USD. `usdatBalance` is idle USDat: the deposit inlet, the redemption
 outlet, and the source/sink of rotations.
 
-**Cash yield inlet.** Saturn's USDat float earns income (M0 treasury yield, incentives)
-independently of the vault; `transferInYield(amount)` (OPERATOR_ROLE) passes it back.
-The amount enters a segregated `yieldVestingAmount` leg — in the vault but outside
-`usdatBalance` — and vests linearly over `yieldVestingPeriod` (default 24h, max ~7d),
-capped per tranche at `maxYieldBps` of `totalAssets()`. One tranche at a time: a new
-transfer requires the prior tranche fully vested. `_sweepVestedYield()` folds a matured
+**Surplus inlet.** Saturn's USDat float earns income (M0 treasury yield, incentives)
+independently of the vault; `transferInSurplus(amount)` (OPERATOR_ROLE) passes it back.
+The amount enters a segregated `surplusVestingAmount` leg — in the vault but outside
+`usdatBalance` — and vests linearly over `surplusVestingPeriod` (default 24h, max ~7d),
+capped per tranche at `maxSurplusBps` of `totalAssets()`. One tranche at a time: a new
+transfer requires the prior tranche fully vested. `_sweep()` folds a matured
 tranche into `usdatBalance`; it runs atop value-sensitive entrypoints and as a
 permissionless poke.
 
 Invariants:
-- `totalAssets()` counts only the vested slice of the yield leg.
-- `usdatBalance` outflow paths never touch `yieldVestingAmount`.
+- `totalAssets()` counts only the vested slice of the surplus leg.
+- `usdatBalance` outflow paths never touch `surplusVestingAmount`.
 
 ### 2.2 Module framework
 
@@ -169,7 +169,7 @@ module whose `asset() == token`.
 Invariants:
 - **Custody floor** (token-backed modules): `asset().balanceOf(vault) ≥ balance()`. Excess
   custody is unrecognized — an external transfer cannot move NAV.
-- NAV changes only through `buy`/`sell`, `transferInYield` vesting, deposits, and redemptions.
+- NAV changes only through `buy`/`sell`, `transferInSurplus` vesting, deposits, and redemptions.
 - A `buyVia` may not push a module above `maxWeightBps` or cash below `minCashBufferBps`;
   **sells are never blocked**. The cash floor governs rotations and deposit deployment only;
   queue processing may draw the buffer to zero.
@@ -378,7 +378,7 @@ dangerous powers move to colder keys.
 | `DEFAULT_ADMIN_ROLE` | grant/revoke roles; UUPS upgrade | same |
 | `MODULE_MANAGER_ROLE` | register / `setMaxWeight` / deregister modules; `migrate()` | — |
 | `PARAMETER_MANAGER_ROLE` | fees, vesting periods, caps, cash floor | — |
-| `OPERATOR_ROLE` | rotations, `transferInYield`, `transferInRewards` | `processRequests` |
+| `OPERATOR_ROLE` | rotations, `transferInSurplus`, `transferInRewards` | `processRequests` |
 | `WHITELIST_MANAGER_ROLE` | instant-redemption whitelist add/remove | — |
 | `BLACKLISTER_ROLE` | blacklist add/remove (freeze only) | — |
 | `ENFORCER_ROLE` | `redistributeLockedAmount`, `seize` | `seizeRequests`, `seizeBlacklistedFunds` |
@@ -445,7 +445,7 @@ would renumber `Processed`/`Claimed`) but is never set again.
 - *Behavior:* deposit → mint → `requestRedeem` → `sellVia` + `processRequests` (whole and
   buffer-clamped partial fills) → claim pays `previewRedeem × (1 − fee)` cumulatively across
   fills; `transferInRewards` vests in the
-  mirror; `transferInYield` vests then sweeps; a stale mirror oracle zeroes `maxDeposit` and
+  mirror; `transferInSurplus` vests then sweeps; a stale mirror oracle zeroes `maxDeposit` and
   blocks processing while transfers and redemption requests stay live.
 
 ### 3.2 Validation gate (before Step 2)
@@ -589,7 +589,7 @@ unmitigated — v2 charges no deposit fee; monitor per §4.
 would make deposits revert nights and weekends. The cost is cash drag — an allocation
 problem, handled by rotations.
 
-**`transferInYield` vault-native, not a module.** USDat is the settlement asset, not
+**`transferInSurplus` vault-native, not a module.** USDat is the settlement asset, not
 backing; `usdatBalance` is the most-written variable in the vault, and vesting alone is too
 thin to justify a module's per-op cross-contract write. Segregating the vesting leg (rather
 than subtracting unvested from `usdatBalance`) keeps every `usdatBalance` outflow path free

@@ -67,9 +67,29 @@ interface IStakedUSDat is IERC4626 {
     error InsufficientBalance();
 
     /**
-     * @dev Thrown when a withdrawal amount is below the minimum threshold.
+     * @dev Thrown when a redemption request is below MIN_REQUEST_SHARES.
      */
     error WithdrawalTooSmall();
+
+    /**
+     * @dev Thrown when a fee exceeds its maximum.
+     */
+    error InvalidFee();
+
+    /**
+     * @dev Thrown when a new surplus tranche arrives while the prior one is still vesting.
+     */
+    error StillVesting();
+
+    /**
+     * @dev Thrown when a surplus tranche exceeds maxSurplusBps of totalAssets.
+     */
+    error SurplusExceedsMax();
+
+    /**
+     * @dev Thrown when an invalid surplus vesting period is provided.
+     */
+    error InvalidVestingPeriod();
 
     /**
      * @dev Thrown when slippage protection is triggered (received less than minimum).
@@ -137,6 +157,37 @@ interface IStakedUSDat is IERC4626 {
      * @param newRecipient The new fee recipient address.
      */
     event FeeRecipientUpdated(address indexed newRecipient);
+
+    /**
+     * @dev Emitted when the redemption fee is updated.
+     * @param newFeeBps The new redemption fee in basis points.
+     */
+    event RedemptionFeeUpdated(uint16 newFeeBps);
+
+    /**
+     * @dev Emitted when a surplus tranche enters vesting.
+     * @param amount The USDat amount of the tranche.
+     */
+    event SurplusReceived(uint256 amount);
+
+    /**
+     * @dev Emitted when a fully vested surplus tranche folds into usdatBalance.
+     * @param amount The USDat amount swept.
+     */
+    event SurplusSwept(uint256 amount);
+
+    /**
+     * @dev Emitted when the surplus vesting period is updated.
+     * @param oldPeriod The previous vesting period in seconds.
+     * @param newPeriod The new vesting period in seconds.
+     */
+    event SurplusVestingPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
+
+    /**
+     * @dev Emitted when the per-tranche surplus cap is updated.
+     * @param newMaxBps The new cap in basis points.
+     */
+    event MaxSurplusBpsUpdated(uint16 newMaxBps);
 
     /**
      * @dev Emitted when a module is registered.
@@ -318,11 +369,26 @@ interface IStakedUSDat is IERC4626 {
      * @notice Requests a redemption by escrowing shares in the withdrawal queue.
      * @dev Standard ERC4626 withdraw/redeem are disabled. Use this function instead.
      * Transfers shares to the withdrawal queue and mints an NFT representing the request.
-     * @param shares The number of shares to redeem.
-     * @param minUsdatReceived The minimum amount of USDat the user will accept.
+     * Never prices — stays live while any module oracle is down.
+     * @param shares The number of shares to redeem (>= MIN_REQUEST_SHARES).
+     * @param minSharePrice Limit: minimum execution price per 1e18 shares. The request
+     * fills at this price or better; below it, it is skipped and stays queued.
      * @return requestId The ID of the withdrawal request NFT.
      */
-    function requestRedeem(uint256 shares, uint256 minUsdatReceived) external returns (uint256 requestId);
+    function requestRedeem(uint256 shares, uint256 minSharePrice) external returns (uint256 requestId);
+
+    /**
+     * @notice Redeems escrowed shares against the cash buffer, clamped to what the
+     * buffer covers.
+     * @dev Only callable by the withdrawal queue (immutable address check). Prices,
+     * burns, and transfers in one call; the held-back redemption fee stays in the vault.
+     * @param sharesRequested The number of escrowed shares to redeem.
+     * @return sharesRedeemed min(sharesRequested, what usdatBalance covers net of fee).
+     * @return usdat The net USDat transferred to the queue for this fill.
+     */
+    function redeemQueuedShares(uint256 sharesRequested)
+        external
+        returns (uint256 sharesRedeemed, uint256 usdat);
 
     // ============ Module Management ============
 
@@ -407,6 +473,47 @@ interface IStakedUSDat is IERC4626 {
         external
         returns (uint256 usdatOut);
 
+    // ============ Surplus Inlet ============
+
+    /**
+     * @notice Transfers surplus USDat from Saturn's float into the vault.
+     * @dev Only callable by addresses with the OPERATOR_ROLE. Enters a segregated leg
+     * outside usdatBalance and vests linearly over surplusVestingPeriod; capped per
+     * tranche at maxSurplusBps of totalAssets. One tranche at a time.
+     * @param amount The USDat amount to transfer in (6 decimals).
+     */
+    function transferInSurplus(uint256 amount) external;
+
+    /**
+     * @notice Returns the unvested slice of the current surplus tranche.
+     * @return The unvested USDat amount.
+     */
+    function getUnvestedSurplus() external view returns (uint256);
+
+    /**
+     * @notice Folds a fully vested surplus tranche into the cash buffer.
+     * @dev Permissionless, NAV-neutral; also runs atop value-sensitive entrypoints.
+     */
+    function sweep() external;
+
+    /**
+     * @notice Returns the current surplus tranche amount.
+     * @return The tranche USDat amount (6 decimals).
+     */
+    function surplusVestingAmount() external view returns (uint256);
+
+    /**
+     * @notice Returns the surplus vesting period.
+     * @return The vesting period in seconds.
+     */
+    function surplusVestingPeriod() external view returns (uint256);
+
+    /**
+     * @notice Returns the per-tranche surplus cap.
+     * @return The cap in basis points of totalAssets.
+     */
+    function maxSurplusBps() external view returns (uint16);
+
     // ============ View Functions ============
 
     /**
@@ -427,7 +534,35 @@ interface IStakedUSDat is IERC4626 {
      */
     function usdatBalance() external view returns (uint256);
 
+    /**
+     * @notice Returns the redemption fee in basis points.
+     * @return The redemption fee in basis points.
+     */
+    function redemptionFeeBps() external view returns (uint16);
+
     // ============ Admin Functions ============
+
+    /**
+     * @notice Updates the surplus vesting period.
+     * @dev Only callable by addresses with the PARAMETER_MANAGER_ROLE.
+     * Cannot be changed while a tranche is still vesting.
+     * @param newPeriod The new period in seconds (must be <= MAX_SURPLUS_VESTING_PERIOD).
+     */
+    function setSurplusVestingPeriod(uint256 newPeriod) external;
+
+    /**
+     * @notice Updates the per-tranche surplus cap.
+     * @dev Only callable by addresses with the PARAMETER_MANAGER_ROLE.
+     * @param newMaxBps The new cap in basis points of totalAssets.
+     */
+    function setMaxSurplusBps(uint16 newMaxBps) external;
+
+    /**
+     * @notice Updates the redemption fee.
+     * @dev Only callable by addresses with the PARAMETER_MANAGER_ROLE.
+     * @param newFeeBps The new fee in basis points (must be <= MAX_REDEMPTION_FEE_BPS).
+     */
+    function setRedemptionFee(uint16 newFeeBps) external;
 
     /**
      * @notice Updates the fee recipient address.

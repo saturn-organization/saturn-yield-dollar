@@ -59,8 +59,8 @@ contract WithdrawalQueueERC721 is
     /// @notice The next token ID to be minted
     uint256 public nextTokenId;
 
-    /// @notice The number of pending requests
-    uint256 public pendingCount;
+    /// @dev Retired v1 slot (was pendingCount); do not reuse
+    uint256 private __deprecated_pendingCount;
 
     /// @dev Contract-relationship gate: immutable address check, deliberately not a
     /// grantable role.
@@ -109,7 +109,7 @@ contract WithdrawalQueueERC721 is
     // ============ Request Creation ============
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function addRequest(address user, uint256 shares, uint256 minUsdatReceived)
+    function addRequest(address user, uint256 shares, uint256 minSharePrice)
         external
         nonReentrant
         whenNotPaused
@@ -119,14 +119,13 @@ contract WithdrawalQueueERC721 is
         require(shares != 0, ZeroAmount());
 
         tokenId = nextTokenId++;
-        pendingCount++;
 
         requests[tokenId] = Request({
             shares: shares,
             usdatOwed: 0,
             timestamp: block.timestamp,
-            status: RequestStatus.Requested,
-            minUsdatReceived: minUsdatReceived
+            status: RequestStatus.NULL, // legacy v1 slot; v2 logic neither reads nor writes it
+            minSharePrice: minSharePrice
         });
 
         _safeMint(user, tokenId);
@@ -134,20 +133,63 @@ contract WithdrawalQueueERC721 is
         emit WithdrawalRequested(tokenId, user, shares, block.timestamp);
     }
 
+    /// @inheritdoc IWithdrawalQueueERC721
+    function updateMinSharePrice(uint256 tokenId, uint256 newMinSharePrice) external whenNotPaused {
+        require(ownerOf(tokenId) == msg.sender, NotOwner());
+        _requireNotBlacklisted(msg.sender);
+
+        Request storage req = requests[tokenId];
+        require(req.shares > 0, RequestNotOpen());
+
+        req.minSharePrice = newMinSharePrice;
+
+        emit MinSharePriceUpdated(tokenId, newMinSharePrice);
+    }
+
+    // ============ Processing Functions ============
+
+    /// @inheritdoc IWithdrawalQueueERC721
+    /// @dev Per-request, buffer-clamped, settled at NAV. Three outcomes per request:
+    /// revert on a dead token (operator bug), skip on an unmet limit (a later request
+    /// may have a lower limit), break when the buffer is dry (nothing later fills either).
+    function processRequests(uint256[] calldata tokenIds) external nonReentrant whenNotPaused onlyRole(OPERATOR_ROLE) {
+        uint256 count = tokenIds.length;
+        for (uint256 i = 0; i < count; i++) {
+            uint256 tokenId = tokenIds[i];
+            Request storage req = requests[tokenId];
+            require(req.shares > 0, RequestNotOpen());
+
+            if (STAKED_USDAT.previewRedeem(1e18) < req.minSharePrice) continue;
+
+            (uint256 filled, uint256 usdat) = STAKED_USDAT.redeemQueuedShares(req.shares);
+            if (filled == 0) break;
+
+            req.usdatOwed += usdat;
+            req.shares -= filled;
+
+            emit WithdrawalProcessed(tokenId, filled, usdat);
+        }
+    }
+
     // ============ Claiming Functions ============
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function claim(uint256 tokenId) external nonReentrant returns (uint256 amount) {
+    /// @dev Pays the accrued usdatOwed and zeroes it; burns the NFT only when the
+    /// request is fully filled and drained. Claimed can fire multiple times per token.
+    function claim(uint256 tokenId) external nonReentrant whenNotPaused returns (uint256 amount) {
         _requireNotBlacklisted(msg.sender);
         require(ownerOf(tokenId) == msg.sender, NotOwner());
 
         Request storage req = requests[tokenId];
-        require(req.status == RequestStatus.Processed, RequestNotProcessed());
-
         amount = req.usdatOwed;
-        req.status = RequestStatus.Claimed;
+        require(amount > 0, NothingToClaim());
 
-        _burn(tokenId);
+        req.usdatOwed = 0;
+
+        if (req.shares == 0) {
+            delete requests[tokenId];
+            _burn(tokenId);
+        }
 
         IERC20(address(USDAT)).safeTransfer(msg.sender, amount);
 
@@ -172,9 +214,7 @@ contract WithdrawalQueueERC721 is
             address owner = ownerOf(tokenId);
             _requireBlacklisted(owner);
 
-            Request storage req = requests[tokenId];
-            require(req.status == RequestStatus.Requested || req.status == RequestStatus.InProgress, AlreadyProcessed());
-
+            // Accrued usdatOwed and the open remainder travel with the token.
             _transfer(owner, to, tokenId);
 
             emit RequestSeized(tokenId, owner, to);
@@ -204,14 +244,20 @@ contract WithdrawalQueueERC721 is
             _requireBlacklisted(owner);
 
             Request storage req = requests[tokenId];
-            require(req.status == RequestStatus.Processed, RequestNotProcessed());
+            uint256 amount = req.usdatOwed;
+            require(amount > 0, NothingToClaim());
 
-            totalUsdatSeized += req.usdatOwed;
-            req.status = RequestStatus.Claimed;
+            totalUsdatSeized += amount;
+            req.usdatOwed = 0;
 
-            _burn(tokenId);
+            // Burn only when fully filled and drained — an open remainder keeps
+            // accruing fills and stays seizable.
+            if (req.shares == 0) {
+                delete requests[tokenId];
+                _burn(tokenId);
+            }
 
-            emit FundsSeized(tokenId, owner, req.usdatOwed, to);
+            emit FundsSeized(tokenId, owner, amount, to);
         }
 
         if (wasPaused) _pause();
