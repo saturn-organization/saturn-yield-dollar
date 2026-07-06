@@ -34,13 +34,14 @@ NAV-clean from the vault's own buffer.
 | oracle failure reverts `totalAssets()` and all views | same fail-closed reverts, kept deliberately; `maxDeposit`/`maxMint` catch and report 0 for ERC-4626 (§2.2) |
 | — | `transferInYield` cash yield inlet (§2.1) |
 | — | instant redemption path (§2.4) |
+| deposit fee (`depositFeeBps`, fee-adjusted `previewDeposit`/`previewMint`) | dropped — deposits at plain NAV (§2.4) |
 | — | management, redemption, and instant exit fees (§2.7) |
-| — | `recall` (§2.8) |
+| — | `seize` (§2.8) |
 | `PROCESSOR_ROLE`, `COMPLIANCE_ROLE` | capability-named role taxonomy (§2.8) |
 
 Survives unchanged: the ERC-4626 core with async-redemption overrides (`withdraw`/`redeem`
 disabled, `requestRedeem` — its limit param becomes `minSharePrice`), deposit variants
-(permit/min-shares), deposit fee, blacklist + `redistributeLockedAmount`, `rescueTokens`
+(permit/min-shares), blacklist + `redistributeLockedAmount`, `rescueTokens`
 (generalized, §2.2), pause.
 
 ### WithdrawalQueueERC721
@@ -65,7 +66,8 @@ Flat list of deployed functions that do not exist in v2 (successor in parenthese
 **StakedUSDat:** `convertFromUsdat` / `convertFromStrc` (→ `buyVia`/`sellVia`),
 `burnQueuedShares` (→ `redeemQueuedShares`), `collectDust`, `claim`, `claimBatch`,
 `transferInRewards`, `getUnvestedAmount`, `setVestingPeriod`, `setMaxRewardsBps` (→ all four
-move into MirrorSTRC), `setTolerance` (→ per-module), `getStrcOracle` (→ per-module oracles).
+move into MirrorSTRC), `setTolerance` (→ per-module), `getStrcOracle` (→ per-module oracles),
+`setDepositFee` (no successor — deposit fee dropped).
 
 **WithdrawalQueueERC721:** `lockRequests`, `unlockRequests`, `claimBatch`, `claimAll`,
 `claimBatchFor`, `claimAllFor` (→ single `claim`), `updateMinUsdatReceived`
@@ -230,10 +232,9 @@ position is marked to market.
 
 ### 2.4 Deposits & instant redemptions
 
-**Deposits — unchanged.** Atomic, 24/7, into the cash buffer at live blended NAV, less the
-deposit fee (→ `feeRecipient`). No asset is bought at deposit time; the buffer is deployed
-by rotations. When any module can't price, deposits revert (`maxDeposit`/`maxMint` report 0,
-§2.2).
+**Deposits.** Atomic, 24/7, into the cash buffer at plain live NAV — no deposit fee. No
+asset is bought at deposit time; the buffer is deployed by rotations. When any module can't
+price, deposits revert (`maxDeposit`/`maxMint` report 0, §2.2).
 
 **Instant redemption.** Whitelisted addresses only (add/remove: WHITELIST_MANAGER_ROLE).
 Burn shares, pay `previewRedeem(shares) × (1 − instantExitFeeBps)` from the buffer
@@ -306,7 +307,7 @@ processRequests(uint256[] tokenIds)
 
 ```solidity
 // StakedUSDat — queue-only; clamp, price, burn, transfer in one call
-function redeemQueuedShares(uint256 sharesRequested) external onlyRole(WITHDRAWAL_QUEUE_ROLE)
+function redeemQueuedShares(uint256 sharesRequested) external onlyWithdrawalQueue
     returns (uint256 sharesRedeemed, uint256 usdat);
 // sharesRedeemed = min(sharesRequested, what usdatBalance covers net of redemptionFeeBps)
 // usdat = previewRedeem(sharesRedeemed) × (1 − redemptionFeeBps), priced before the burn
@@ -349,7 +350,6 @@ Invariants:
 
 | Fee | Destination | Purpose |
 |---|---|---|
-| deposit fee | `feeRecipient` | revenue; backstop for the residual ex-date step (Appendix B) |
 | redemption fee (`redemptionFeeBps`) | stays in the vault | anti-dilution: exits process at cost on average; flat, configurable; never revenue |
 | instant exit fee (`instantExitFeeBps`) | stays in the vault | ≥ redemption fee (same cost plus immediacy); number open (§4) |
 | management fee (`managementFeeBps`) | `feeRecipient` | revenue; **initial 50 bps/yr**, hard cap 200 |
@@ -381,15 +381,17 @@ dangerous powers move to colder keys.
 | `OPERATOR_ROLE` | rotations, `transferInYield`, `transferInRewards` | `processRequests` |
 | `WHITELIST_MANAGER_ROLE` | instant-redemption whitelist add/remove | — |
 | `BLACKLISTER_ROLE` | blacklist add/remove (freeze only) | — |
-| `ENFORCER_ROLE` | `redistributeLockedAmount`, `recall` | `seizeRequests`, `seizeBlacklistedFunds` |
+| `ENFORCER_ROLE` | `redistributeLockedAmount`, `seize` | `seizeRequests`, `seizeBlacklistedFunds` |
 | `PAUSER_ROLE` / `UNPAUSER_ROLE` | pause / unpause | same |
-| `WITHDRAWAL_QUEUE_ROLE` | `redeemQueuedShares` caller | — |
-| `STAKED_USDAT_ROLE` | — | vault-only entrypoint (`addRequest`) |
+
+The two contract-to-contract gates are not roles: `redeemQueuedShares` requires
+`msg.sender == WITHDRAWAL_QUEUE` and `addRequest` requires `msg.sender == STAKED_USDAT` —
+immutable address checks that no key can re-point or widen.
 
 Deliberate separations: **freeze ≠ seize** (a compromised blacklister can freeze, never
 move funds) and **pause ≠ unpause** (a compromised pauser can grief, not un-halt).
 
-**`recall`** (new, ENFORCER_ROLE): transfers a blacklisted holder's sUSDat to a recovery
+**`seize`** (new, ENFORCER_ROLE): transfers a blacklisted holder's sUSDat to a recovery
 address (e.g. court-directed) — moves shares, no burn, no liquidity needed. Third option
 beside freezing and `redistributeLockedAmount`.
 
@@ -498,7 +500,7 @@ retire with it. `StrcPriceOracle` is orphaned. Optional hygiene upgrade drops th
 |---|---|---|---|
 | 1 | `instantExitFeeBps` number — flat premium over the queue fee (whitelisted access makes utilization pricing unnecessary) | instant path | pick with #2 |
 | 2 | `redemptionFeeBps` number — flat fee sized so average exit processes at cost | fee params | measure Ondo spread (§3.2 validation) |
-| 3 | Residual ex-date step size (n=2, equity-only) → deposit fee sizing | fee params | accumulate monthly measurements |
+| 3 | Residual ex-date step size (n=2, equity-only) — confirm it stays inside noise now that no deposit fee backstops it | risk acceptance | accumulate monthly measurements |
 | 4 | Ondo mint/redeem mechanics for contracts: attestations, settlement time, size limits | STRCon module `buy`/`sell` | Ondo docs + §3.2 |
 
 ---
@@ -509,8 +511,8 @@ retire with it. `StrcPriceOracle` is orphaned. Optional hygiene upgrade drops th
 - **NAV volatility at feed granularity** — −6.6% week observed (Appendix B) — now
   user-visible; product/communication concern.
 - **Weekend stale-price minting — accepted:** mints stay atomic at the last print while the
-  market is closed (~2% observed weekend gaps vs 10 bps deposit fee), in exchange for 24/7
-  atomic minting. Revisit if gap-capture is observed.
+  market is closed (~2% observed weekend gaps, unmitigated — v2 charges no deposit fee), in
+  exchange for 24/7 atomic minting. Revisit if gap-capture is observed.
 - **Redemption slippage socialization — mitigated:** redeemers exit at the mark;
   mark-vs-execution gaps land on remaining holders via rotations. Mitigant: `redemptionFeeBps`
   sized to the measured spread, raised in stress; residual exposure beyond the fee remains.
@@ -580,7 +582,8 @@ the session ended) is what `PAUSER_ROLE` escalation covers.
 token price via `sValue`; smoothing a live-priced asset would itself create an exploitable
 lag. General snipe defenses, in order: mark to a live price; gate on price reliability, not
 the calendar (no hard-coded market-hours windows); redemptions stay async and priced at
-execution; deposit fee as backstop for the small residual ex-date step.
+execution. The small residual ex-date step (~10–30 bps measured, Appendix B) is accepted
+unmitigated — v2 charges no deposit fee; monitor per §4.
 
 **Deposits decoupled from buying.** Ondo's venue is 24/5 with spreads and pauses; coupling
 would make deposits revert nights and weekends. The cost is cash drag — an allocation
@@ -667,8 +670,10 @@ average and can be raised in stress.
 **Role taxonomy.** Names follow the OZ/LayerZero capability convention (agent nouns /
 `…_MANAGER`), never team or service names. Freeze ≠ seize and pause ≠ unpause bound the
 blast radius of any single compromised key. Renames change the role id
-(`keccak256` of the string), so §3.1 re-grants explicitly. `STAKED_USDAT_ROLE` keeps the
-contract-relationship pattern.
+(`keccak256` of the string), so §3.1 re-grants explicitly. The contract-to-contract gates
+(`addRequest`, `redeemQueuedShares`) are immutable address checks rather than roles: the
+counterpart proxy address never changes, and a role would only add a way for a compromised
+admin to widen access.
 
 **One-shot in-kind `migrate()` over attrition.** Rotating the position out through
 `sellVia` over weeks would pay the venue spread on the whole book and hold a mixed state
@@ -705,8 +710,8 @@ measurement dates.
 
 STRC drops by ~70–85% of the dividend on ex-date — normal preferred-stock behavior, not
 pinned-at-par. Combined with the sValue bump, the STRCon price is approximately continuous
-through the event with a residual upward step of roughly **10–30 bps** — order of the
-deposit fee, inside daily noise (±1%), no cleanly exploitable step observed. n=2,
+through the event with a residual upward step of roughly **10–30 bps** — inside daily
+noise (±1%), no cleanly exploitable step observed. n=2,
 equity-side; keep measuring (§4).
 
 **Feed roles → API as mark, Calculated as cross-check** (§2.3). The API feed

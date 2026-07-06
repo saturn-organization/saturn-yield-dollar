@@ -9,11 +9,20 @@ import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
  * @notice Interface for the StakedUSDat (sUSDat) ERC4626 vault contract.
  * @dev StakedUSDat is a UUPS upgradeable ERC4626 vault for staking USDat.
  * Users deposit USDat and receive sUSDat shares representing their stake.
- * The vault holds both USDat and tracks STRC holdings internally via strcBalance.
- * STRC holdings are managed by the Saturn entity. Rewards are distributed as STRC
- * and vest linearly over a configurable period to prevent front-running attacks.
+ * Backing assets are recognized through registered accounting modules;
+ * totalAssets() is idle USDat plus each module's recognizedValue().
  */
 interface IStakedUSDat is IERC4626 {
+    // ============ Structs ============
+
+    /**
+     * @notice Per-module configuration.
+     * @param maxWeightBps Hard cap on the module's share of totalAssets, in basis points.
+     */
+    struct ModuleConfig {
+        uint16 maxWeightBps;
+    }
+
     // ============ Errors ============
 
     /**
@@ -27,7 +36,8 @@ interface IStakedUSDat is IERC4626 {
     error ZeroAmount();
 
     /**
-     * @dev Thrown when an operation is not allowed (e.g., direct withdraw/redeem).
+     * @dev Thrown when an operation is not allowed (e.g., direct withdraw/redeem,
+     * caller not the withdrawal queue).
      */
     error OperationNotAllowed();
 
@@ -57,16 +67,6 @@ interface IStakedUSDat is IERC4626 {
     error InsufficientBalance();
 
     /**
-     * @dev Thrown when attempting to change vesting period or add rewards while rewards are still vesting.
-     */
-    error StillVesting();
-
-    /**
-     * @dev Thrown when an invalid vesting period is provided.
-     */
-    error InvalidVestingPeriod();
-
-    /**
      * @dev Thrown when a withdrawal amount is below the minimum threshold.
      */
     error WithdrawalTooSmall();
@@ -77,24 +77,39 @@ interface IStakedUSDat is IERC4626 {
     error SlippageExceeded();
 
     /**
-     * @dev Thrown when the execution price doesn't match expected within tolerance.
+     * @dev Thrown when a basis-points weight exceeds the denominator.
      */
-    error ExecutionPriceMismatch();
+    error InvalidWeight();
 
     /**
-     * @dev Thrown when the execution price doesn't match the oracle price within tolerance.
+     * @dev Thrown when registering a module would exceed MAX_MODULES.
      */
-    error OraclePriceMismatch();
+    error MaxModulesReached();
 
     /**
-     * @dev Thrown when an invalid fee value is provided.
+     * @dev Thrown when registering a module that is already registered.
      */
-    error InvalidFee();
+    error ModuleAlreadyRegistered();
 
     /**
-     * @dev Thrown when rewards exceed the maximum allowed percentage of totalAssets.
+     * @dev Thrown when the target module is not registered.
      */
-    error RewardsExceedMax();
+    error ModuleNotRegistered();
+
+    /**
+     * @dev Thrown when deregistering a module whose balance is not zero.
+     */
+    error ModuleBalanceNotZero();
+
+    /**
+     * @dev Thrown when a buy would push a module above its maxWeightBps.
+     */
+    error MaxWeightExceeded();
+
+    /**
+     * @dev Thrown when a buy would push cash below minCashBufferBps.
+     */
+    error CashBufferBreached();
 
     // ============ Events ============
 
@@ -111,38 +126,11 @@ interface IStakedUSDat is IERC4626 {
     event UnBlacklisted(address indexed target);
 
     /**
-     * @dev Emitted when USDat is converted to/from tSTRC.
-     * @param usdatAmount The amount of USDat involved in the conversion.
-     * @param strcAmount The amount of tSTRC involved in the conversion.
-     */
-    event Converted(uint256 usdatAmount, uint256 strcAmount);
-
-    /**
-     * @dev Emitted when rewards are transferred into the contract.
-     * @param amount The amount of tSTRC rewards received.
-     * @param newVestingAmount The total amount now vesting.
-     */
-    event RewardsReceived(uint256 amount, uint256 newVestingAmount);
-
-    /**
      * @dev Emitted when locked amounts are redistributed from a blacklisted address.
      * @param from The blacklisted address whose funds were redistributed.
      * @param amount The amount of shares that were burned.
      */
     event LockedAmountRedistributed(address indexed from, uint256 amount);
-
-    /**
-     * @dev Emitted when the vesting period is updated.
-     * @param oldPeriod The previous vesting period in seconds.
-     * @param newPeriod The new vesting period in seconds.
-     */
-    event VestingPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
-
-    /**
-     * @dev Emitted when the deposit fee is updated.
-     * @param newFee The new deposit fee in basis points.
-     */
-    event DepositFeeUpdated(uint256 newFee);
 
     /**
      * @dev Emitted when the fee recipient is updated.
@@ -151,22 +139,36 @@ interface IStakedUSDat is IERC4626 {
     event FeeRecipientUpdated(address indexed newRecipient);
 
     /**
-     * @dev Emitted when the price tolerance is updated.
-     * @param newToleranceBps The new tolerance in basis points.
+     * @dev Emitted when a module is registered.
+     * @param module The module address.
+     * @param maxWeightBps The module's weight cap in basis points.
      */
-    event ToleranceUpdated(uint256 newToleranceBps);
+    event ModuleRegistered(address indexed module, uint16 maxWeightBps);
 
     /**
-     * @dev Emitted when the max rewards basis points is updated.
-     * @param newMaxBps The new max rewards in basis points.
+     * @dev Emitted when a module's weight cap is updated.
+     * @param module The module address.
+     * @param maxWeightBps The new weight cap in basis points.
      */
-    event MaxRewardsBpsUpdated(uint256 newMaxBps);
+    event ModuleMaxWeightUpdated(address indexed module, uint16 maxWeightBps);
+
+    /**
+     * @dev Emitted when a module is deregistered.
+     * @param module The module address.
+     */
+    event ModuleDeregistered(address indexed module);
+
+    /**
+     * @dev Emitted when the global cash floor is updated.
+     * @param newMinCashBufferBps The new cash floor in basis points.
+     */
+    event MinCashBufferUpdated(uint16 newMinCashBufferBps);
 
     // ============ Blacklist Functions ============
 
     /**
      * @notice Adds an address to the blacklist.
-     * @dev Only callable by addresses with the COMPLIANCE_ROLE.
+     * @dev Only callable by addresses with the BLACKLISTER_ROLE.
      * Cannot blacklist addresses with DEFAULT_ADMIN_ROLE.
      * @param target The address to blacklist.
      */
@@ -174,7 +176,7 @@ interface IStakedUSDat is IERC4626 {
 
     /**
      * @notice Removes an address from the blacklist.
-     * @dev Only callable by addresses with the COMPLIANCE_ROLE.
+     * @dev Only callable by addresses with the BLACKLISTER_ROLE.
      * @param target The address to un-blacklist.
      */
     function removeFromBlacklist(address target) external;
@@ -188,7 +190,7 @@ interface IStakedUSDat is IERC4626 {
 
     /**
      * @notice Burns shares from a blacklisted address, redistributing value to other holders.
-     * @dev Only callable by addresses with the DEFAULT_ADMIN_ROLE.
+     * @dev Only callable by addresses with the ENFORCER_ROLE.
      * The target address must be blacklisted and have a positive balance.
      * @param from The blacklisted address to redistribute from.
      */
@@ -205,36 +207,6 @@ interface IStakedUSDat is IERC4626 {
      * @param to The address to send the rescued tokens to.
      */
     function rescueTokens(address token, uint256 amount, address to) external;
-
-    /**
-     * @notice Converts USDat to STRC when the entity purchases STRC from the market.
-     * @dev Only callable by addresses with the PROCESSOR_ROLE.
-     * Decreases usdatBalance and increases strcBalance based on the purchase price.
-     * @param usdatAmount The amount of USDat to convert.
-     * @param strcAmount The amount of STRC to add.
-     * @param strcPurchasePrice The price per STRC in USDat terms (8 decimals).
-     */
-    function convertFromUsdat(uint256 usdatAmount, uint256 strcAmount, uint256 strcPurchasePrice) external;
-
-    /**
-     * @notice Converts STRC to USDat when the entity sells STRC to the market.
-     * @dev Only callable by addresses with the PROCESSOR_ROLE.
-     * Decreases strcBalance and increases usdatBalance based on the sale price.
-     * Can only convert vested STRC (unvested rewards are protected).
-     * @param strcAmount The amount of STRC to remove.
-     * @param usdatAmount The amount of USDat to add.
-     * @param strcSalePrice The price per STRC in USDat terms (8 decimals).
-     */
-    function convertFromStrc(uint256 strcAmount, uint256 usdatAmount, uint256 strcSalePrice) external;
-
-    /**
-     * @notice Transfers STRC rewards into the contract with linear vesting.
-     * @dev Only callable by addresses with the PROCESSOR_ROLE.
-     * Cannot be called while previous rewards are still vesting.
-     * Rewards vest linearly over the vestingPeriod to prevent front-running.
-     * @param amount The amount of STRC to add as rewards.
-     */
-    function transferInRewards(uint256 amount) external;
 
     // ============ Deposit Functions ============
 
@@ -352,93 +324,96 @@ interface IStakedUSDat is IERC4626 {
      */
     function requestRedeem(uint256 shares, uint256 minUsdatReceived) external returns (uint256 requestId);
 
-    /**
-     * @notice Claims all processed withdrawals for the caller.
-     * @dev Delegates to the withdrawal queue to process claims.
-     * @return totalAmount The total amount of USDat claimed.
-     */
-    function claim() external returns (uint256 totalAmount);
+    // ============ Module Management ============
 
     /**
-     * @notice Claims specific withdrawal requests for the caller.
-     * @dev Delegates to the withdrawal queue to process claims.
-     * @param tokenIds Array of withdrawal request NFT token IDs to claim.
-     * @return totalAmount The total amount of USDat claimed.
+     * @notice Registers an accounting module.
+     * @dev Only callable by addresses with the MODULE_MANAGER_ROLE.
+     * Reverts if MAX_MODULES modules are already registered.
+     * @param module The module address.
+     * @param maxWeightBps Hard cap on the module's share of totalAssets, in basis points.
      */
-    function claimBatch(uint256[] calldata tokenIds) external returns (uint256 totalAmount);
+    function registerModule(address module, uint16 maxWeightBps) external;
 
     /**
-     * @notice Burns escrowed shares and decreases strcBalance for the STRC sold off-chain.
-     * @dev Only callable by the withdrawal queue during processing.
-     * @param shares The number of shares to burn.
-     * @param strcAmount The amount of STRC that was sold off-chain.
+     * @notice Updates a module's weight cap.
+     * @dev Only callable by addresses with the MODULE_MANAGER_ROLE.
+     * @param module The module address.
+     * @param maxWeightBps The new weight cap in basis points.
      */
-    function burnQueuedShares(uint256 shares, uint256 strcAmount) external;
+    function setMaxWeight(address module, uint16 maxWeightBps) external;
 
     /**
-     * @notice Collects dust from withdrawal queue processing.
-     * @dev Only callable by the withdrawal queue. Pulls USDat dust and
-     * adds it to the internal accounting balance.
-     * @param amount The amount of USDat dust to collect.
+     * @notice Deregisters a module. Real removal; config cleared.
+     * @dev Only callable by addresses with the MODULE_MANAGER_ROLE.
+     * Requires the module's balance() to be zero (checked without pricing).
+     * @param module The module address.
      */
-    function collectDust(uint256 amount) external;
+    function deregisterModule(address module) external;
+
+    /**
+     * @notice Updates the global cash floor.
+     * @dev Only callable by addresses with the PARAMETER_MANAGER_ROLE.
+     * @param newMinCashBufferBps The new cash floor in basis points.
+     */
+    function setMinCashBuffer(uint16 newMinCashBufferBps) external;
+
+    /**
+     * @notice Returns the registered module addresses.
+     * @return The module addresses.
+     */
+    function getModules() external view returns (address[] memory);
+
+    /**
+     * @notice Returns a module's configuration.
+     * @param module The module address.
+     * @return The module configuration.
+     */
+    function moduleConfig(address module) external view returns (ModuleConfig memory);
+
+    /**
+     * @notice Returns the global cash floor in basis points of totalAssets.
+     * @return The cash floor in basis points.
+     */
+    function minCashBufferBps() external view returns (uint16);
+
+    // ============ Rotations ============
+
+    /**
+     * @notice Acquires a backing asset with idle USDat via a registered module.
+     * @dev Only callable by addresses with the OPERATOR_ROLE. May not push the module
+     * above its maxWeightBps or cash below minCashBufferBps.
+     * @param module The registered module to buy through.
+     * @param usdatIn The amount of USDat to spend (6 decimals).
+     * @param minAssetOut The minimum acceptable amount of asset acquired.
+     * @param venueData Venue-specific execution data, forwarded to the module.
+     * @return assetOut The amount of asset recognized.
+     */
+    function buyVia(address module, uint256 usdatIn, uint256 minAssetOut, bytes calldata venueData)
+        external
+        returns (uint256 assetOut);
+
+    /**
+     * @notice Closes part of a backing position back to USDat via a registered module.
+     * @dev Only callable by addresses with the OPERATOR_ROLE. Never blocked by weight
+     * or cash-floor checks.
+     * @param module The registered module to sell through.
+     * @param assetIn The amount of asset to sell.
+     * @param minUsdatOut The minimum acceptable amount of USDat received.
+     * @param venueData Venue-specific execution data, forwarded to the module.
+     * @return usdatOut The amount of USDat returned to the buffer (6 decimals).
+     */
+    function sellVia(address module, uint256 assetIn, uint256 minUsdatOut, bytes calldata venueData)
+        external
+        returns (uint256 usdatOut);
 
     // ============ View Functions ============
-
-    /**
-     * @notice Returns the amount of STRC that is still vesting.
-     * @dev Rounds up to be conservative (slightly favors protocol over users).
-     * @return The unvested STRC amount.
-     */
-    function getUnvestedAmount() external view returns (uint256);
 
     /**
      * @notice Returns the withdrawal queue contract address.
      * @return The address of the WithdrawalQueueERC721 contract.
      */
     function getWithdrawalQueue() external view returns (address);
-
-    /**
-     * @notice Returns the STRC price oracle contract address.
-     * @return The address of the StrcPriceOracle contract.
-     */
-    function getStrcOracle() external view returns (address);
-
-    /**
-     * @notice Returns the current tolerance in basis points for conversion validation.
-     * @return The tolerance value in basis points.
-     */
-    function toleranceBps() external view returns (uint256);
-
-    /**
-     * @notice Returns the internally tracked STRC balance.
-     * @return The STRC balance.
-     */
-    function strcBalance() external view returns (uint256);
-
-    /**
-     * @notice Returns the current amount of STRC vesting.
-     * @return The vesting amount.
-     */
-    function vestingAmount() external view returns (uint256);
-
-    /**
-     * @notice Returns the timestamp of the last reward distribution.
-     * @return The Unix timestamp.
-     */
-    function lastDistributionTimestamp() external view returns (uint256);
-
-    /**
-     * @notice Returns the current vesting period duration.
-     * @return The vesting period in seconds.
-     */
-    function vestingPeriod() external view returns (uint256);
-
-    /**
-     * @notice Returns the current deposit fee in basis points.
-     * @return The fee in basis points.
-     */
-    function depositFeeBps() external view returns (uint256);
 
     /**
      * @notice Returns the current fee recipient address.
@@ -452,63 +427,25 @@ interface IStakedUSDat is IERC4626 {
      */
     function usdatBalance() external view returns (uint256);
 
-    /**
-     * @notice Returns the maximum rewards per transfer in basis points of totalAssets.
-     * @return The max rewards basis points.
-     */
-    function maxRewardsBps() external view returns (uint256);
-
     // ============ Admin Functions ============
 
     /**
-     * @notice Updates the vesting period for reward distributions.
-     * @dev Only callable by addresses with the PROCESSOR_ROLE.
-     * Cannot be changed while rewards are still vesting.
-     * @param newVestingPeriod The new vesting period in seconds (must be <= MAX_VESTING_PERIOD).
-     */
-    function setVestingPeriod(uint256 newVestingPeriod) external;
-
-    /**
-     * @notice Updates the deposit fee.
-     * @dev Only callable by addresses with the PROCESSOR_ROLE.
-     * Can be set to 0 to disable fees.
-     * @param newFeeBps The new fee in basis points (must be <= MAX_DEPOSIT_FEE_BPS).
-     */
-    function setDepositFee(uint256 newFeeBps) external;
-
-    /**
      * @notice Updates the fee recipient address.
-     * @dev Only callable by addresses with the PROCESSOR_ROLE.
-     * Can be set to address(0) to disable fees.
+     * @dev Only callable by addresses with the PARAMETER_MANAGER_ROLE.
      * @param newRecipient The new fee recipient address.
      */
     function setFeeRecipient(address newRecipient) external;
 
     /**
-     * @notice Updates the price tolerance for conversion validation.
-     * @dev Only callable by addresses with the DEFAULT_ADMIN_ROLE.
-     * Use during black swan events when market prices deviate significantly.
-     * @param newToleranceBps The new tolerance in basis points (MIN_TOLERANCE_BPS to MAX_TOLERANCE_BPS).
-     */
-    function setTolerance(uint256 newToleranceBps) external;
-
-    /**
-     * @notice Updates the maximum rewards per transfer as a percentage of totalAssets.
-     * @dev Only callable by addresses with the DEFAULT_ADMIN_ROLE.
-     * @param newMaxBps The new maximum in basis points (e.g., 250 = 2.5%).
-     */
-    function setMaxRewardsBps(uint256 newMaxBps) external;
-
-    /**
      * @notice Pauses the contract.
-     * @dev Only callable by addresses with the COMPLIANCE_ROLE.
+     * @dev Only callable by addresses with the PAUSER_ROLE.
      * When paused, deposits, mints, and redemption requests are disabled.
      */
     function pause() external;
 
     /**
      * @notice Unpauses the contract.
-     * @dev Only callable by addresses with the DEFAULT_ADMIN_ROLE.
+     * @dev Only callable by addresses with the UNPAUSER_ROLE.
      */
     function unpause() external;
 }

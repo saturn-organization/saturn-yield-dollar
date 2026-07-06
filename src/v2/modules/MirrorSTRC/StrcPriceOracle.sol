@@ -3,8 +3,8 @@ pragma solidity ^0.8.20;
 
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 
-import {IStrcPriceOracle} from "./interfaces/IStrcPriceOracle.sol";
-import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
+import {IStrcPriceOracle} from "../../interfaces/IStrcPriceOracle.sol";
+import {IPriceOracle} from "../../interfaces/IPriceOracle.sol";
 
 /**
  * @title StrcPriceOracle
