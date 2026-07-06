@@ -7,8 +7,8 @@ via accounting modules, the STRC → STRCon migration, and the withdrawal-queue 
 
 Layout: §1 what changes, §2 the normative v2 spec, §3 the migration runbook, §4 open
 questions, §5 risks. Appendix A records why choices were made; Appendix B the STRCon
-empirical findings. When the migration completes, §3 and Appendix B archive; §2 and
-Appendix A remain the durable architecture doc.
+empirical findings; Appendix C a deferred feature. When the migration completes, §3 and
+Appendix B archive; §2 and Appendix A remain the durable architecture doc.
 
 ---
 
@@ -742,3 +742,61 @@ Ondo/Chainlink as more ex-dates accumulate.
 | Ondo `GMTokenManager` (mint/redeem) | `0x2c158BC456e027b2AfFCCadF1BDBD9f5fC4c5C8c` |
 | sValue history API (needs `x-api-key`) | `GET https://api.gm.ondo.finance/v1/assets/STRCon/shares-multiplier?range=all`; also the market-data endpoint |
 | STRC daily OHLC | stockanalysis.com **raw** prices (Yahoo returns dividend-adjusted prices that erase ex-date drops — do not use) |
+
+---
+
+## Appendix C — Deferred: in-kind minting (`depositInKind`)
+
+Minting sUSDat directly with STRCon is out of scope for v2, deferred to a later upgrade.
+Nothing in v2 forecloses it: the vault is UUPS, the module hook is a module-side addition,
+and it reuses the whitelist role and fee pattern shipping now. Until it's built,
+`IAccountingModule` stays at the five §2.2 functions. Trigger to build: a concrete OTC
+counterparty.
+
+**For anonymous users the answer is periphery, not the vault** — a wrapper that sells
+STRCon on venue and deposits the cash. The user eats the spread and the timing risk at a
+real execution price; the vault needs no changes and extends no trust. A vault-native path
+exists only for large entries where the venue spread matters, and only whitelisted.
+
+**Agreed shape** — the mirror image of instant redemption (§2.4):
+
+```
+// WHITELISTED only, per-period capped
+depositInKind(address module, uint256 assetIn, uint256 minShares, address receiver)
+  usdValue = module.creditInKind(assetIn)        // module prices at its own oracle, increments balance()
+  asset.safeTransferFrom(caller, vault, assetIn) // custody lands in the vault; assert custody floor
+  check module ≤ maxWeightBps post-credit        // same guard as buyVia
+  shares = convertToShares(usdValue × (1 − inKindFeeBps))   // priced on pre-credit totalAssets
+  require shares ≥ minShares; mint to receiver
+```
+
+Pricing stays in the module (`creditInKind` marks at the module's validated oracle, so a
+tripped oracle reverts the whole path with no gating code); value is computed on pre-credit
+`totalAssets()` — standard ERC-4626 deposit ordering. `creditInKind` is a second writer of
+`balance()` beside `buy`/`sell` — the real cost of the feature: the §2.2 invariant weakens
+from "buy/sell only" to "vault-authorized module calls only."
+
+**Risks (why whitelisted, capped, and fee-floored):**
+
+- **Stale-mark capture, both directions.** The vault buys STRCon at its own mark, not a
+  venue execution; a depositor profits whenever the asset is marked high (weekend gaps,
+  sparse overnight prints, a mark lagging a fast drop, the ex-date window — Appendix B).
+  Unlike cash deposits, the fee must cover the asset's mark error, not just NAV drift.
+- **Round-trip arb with instant redemption.** A counterparty holding both permissions can
+  in-kind mint at a stale-high mark and instant-redeem at the same NAV;
+  `inKindFeeBps + instantExitFeeBps` becomes a hard floor sized to the worst plausible mark
+  error, not to cost recovery.
+- **Structural adverse selection.** Even honest counterparties route rationally: in-kind
+  when the mark beats their venue execution, venue when it doesn't — a per-event-invisible
+  drag on holders no fee level fully removes.
+- **Second NAV-writer.** A bug in `creditInKind` is direct NAV inflation — mint-from-nothing;
+  widens the module-registration god-mode risk (§5).
+- **Liquidity degradation.** Adds backing, no cash: pushes toward `maxWeightBps`, dilutes
+  the buffer ratio; the operator rotates behind large entries.
+- **Restricted-asset intake.** The vault receives STRCon from third parties rather than only
+  buying via Ondo: vault-address eligibility, Ondo transfer restrictions/freezes, and
+  post-delivery blacklisting of the depositor become intake-path questions.
+
+The first three share a root cause — the vault pricing a user-timed trade at its own oracle
+instead of a venue execution. The residual never reaches zero; it is the §5 "redemption
+slippage socialization" class run in reverse, with the depositor picking the moment.
