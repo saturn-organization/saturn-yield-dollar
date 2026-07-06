@@ -264,7 +264,9 @@ Exits are NAV-clean: priced off the vault's mark, never a venue quote. Redeemers
 claim on value, not on any specific asset.
 
 **Request.** `requestRedeem(shares, minSharePrice)` on the vault escrows the shares in the
-queue and mints an NFT:
+queue and mints an NFT. Minimum request `MIN_REQUEST_SHARES` (10 shares) — denominated in
+shares, not assets, because `requestRedeem` never prices (§2.2 liveness; v1's 10-USDat
+minimum required a `previewRedeem`):
 
 ```solidity
 struct Request {
@@ -331,10 +333,10 @@ claim). A partially filled holder claims accrued payout anytime — never hostag
 unfilled remainder. Integrator note: `Claimed` can fire multiple times per token, and a
 claim does not imply a burn.
 
-**Compliance.** `seizeRequests` transfers a blacklisted holder's live request NFTs (accrued
-`usdatOwed` and the open remainder travel with the token); `seizeBlacklistedFunds` seizes
+**Compliance.** `seizeRequest` transfers a blacklisted holder's live request NFT (accrued
+`usdatOwed` and the open remainder travel with the token); `seize` seizes
 accrued `usdatOwed`, burning the token only if fully filled — an open remainder keeps
-accruing fills and stays seizable. Both ENFORCER_ROLE (§2.8).
+accruing fills and stays seizable. Both single-token, ENFORCER_ROLE (§2.8).
 
 Invariants:
 - Every fill pays exactly `previewRedeem(filled)` net of fee at its own moment — NAV-neutral
@@ -350,7 +352,7 @@ Invariants:
 
 | Fee | Destination | Purpose |
 |---|---|---|
-| redemption fee (`redemptionFeeBps`) | stays in the vault | anti-dilution: exits process at cost on average; flat, configurable; never revenue |
+| redemption fee (`redemptionFeeBps`) | stays in the vault | anti-dilution: exits process at cost on average; flat, configurable, hard cap 500 (the limit check is pre-fee, so the cap bounds what user slippage protection doesn't cover); never revenue |
 | instant exit fee (`instantExitFeeBps`) | stays in the vault | ≥ redemption fee (same cost plus immediacy); number open (§4) |
 | management fee (`managementFeeBps`) | `feeRecipient` | revenue; **initial 50 bps/yr**, hard cap 200 |
 
@@ -368,6 +370,11 @@ The amount is time-determined — collection timing and frequency don't change t
 oracle-independent, so collection works even while pricing is down. The fee arrives as shares and
 stays NAV-exposed until `feeRecipient` exits like any holder.
 
+`setManagementFee` and `setFeeRecipient` collect first, so a rate change never applies
+retroactively and accrued fees mint to the recipient they accrued under. `lastFeeCollection`
+must be stamped whenever the fee turns on (initialize / §3.1 reinit) — unstamped with a
+nonzero rate, the first collection mints decades of fees.
+
 ### 2.8 Roles
 
 Capability-named (`keccak256("<NAME>_ROLE")`), one address may hold several; the split lets
@@ -381,7 +388,7 @@ dangerous powers move to colder keys.
 | `OPERATOR_ROLE` | rotations, `transferInSurplus`, `transferInRewards` | `processRequests` |
 | `WHITELIST_MANAGER_ROLE` | instant-redemption whitelist add/remove | — |
 | `BLACKLISTER_ROLE` | blacklist add/remove (freeze only) | — |
-| `ENFORCER_ROLE` | `redistributeLockedAmount`, `seize` | `seizeRequests`, `seizeBlacklistedFunds` |
+| `ENFORCER_ROLE` | `redistributeLockedAmount`, `seize` | `seizeRequest`, `seize` |
 | `PAUSER_ROLE` / `UNPAUSER_ROLE` | pause / unpause | same |
 
 The two contract-to-contract gates are not roles: `redeemQueuedShares` requires
@@ -413,8 +420,11 @@ STRCon registers empty.
    `scheduleBatch(delay = 5 days)`:
    - `sUSDat.upgradeToAndCall(impl, reinit)` — reads the v1 STRC slots (`strcBalance`,
      `vestingAmount`, `lastDistributionTimestamp`, `vestingPeriod`), seeds MirrorSTRC from
-     them, registers it, re-grants §2.8 roles. Inside the batch: dropping the STRC leg for
-     one block would crash NAV.
+     them, registers it, re-grants §2.8 roles, and seeds the v2 params: `managementFeeBps`
+     (50), **stamps `lastFeeCollection`** (§2.7 — unstamped with a nonzero rate, the first
+     collection mints decades of fees), `surplusVestingPeriod` (24h), `maxSurplusBps` (250),
+     `redemptionFeeBps` (per §4). Inside the batch: dropping the STRC leg for one block
+     would crash NAV.
    - `WQ.upgradeToAndCall(impl, reinit)` — re-grants roles and converts every pending entry
      in place, scanning on-chain at execution time (the reinit calldata is fixed 5 days
      before it runs, so a frozen id list would miss requests created during the delay):
@@ -429,7 +439,8 @@ STRCon registers empty.
 3. Wait 5 days; executor calls `executeBatch` — both proxies upgrade in one tx.
 4. Verify on-chain: no-op values match pre-upgrade; `MirrorSTRC.balance` == old
    `strcBalance` with vesting fields seeded; roles re-granted on both contracts; pending
-   queue entries carry converted limits, none `InProgress`.
+   queue entries carry converted limits, none `InProgress`; v2 params seeded and
+   `lastFeeCollection` == upgrade timestamp.
 5. Register STRCon with `balance = 0` and a full-position cap; confirm
    `recognizedValue() == 0`.
 
@@ -529,7 +540,6 @@ retire with it. `StrcPriceOracle` is orphaned. Optional hygiene upgrade drops th
 - **Atomic-exit buffer dynamics:** the whitelisted, capped instant path is first-come
   first-served within the whitelist; in stress it exhausts and exits fall back to the queue —
   by design, but cap + fee parameters set how the transition feels.
-- **Withholding drag:** realized STRCon yield < 11.5% headline.
 - **Regulatory/eligibility:** STRCon is restricted to qualified non-US investors.
 
 ---

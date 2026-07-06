@@ -92,6 +92,9 @@ contract StakedUSDat is
     /// @notice Maximum surplus vesting period (7 days)
     uint256 public constant MAX_SURPLUS_VESTING_PERIOD = 7 days;
 
+    /// @notice Maximum management fee (2% per year)
+    uint256 public constant MAX_MANAGEMENT_FEE_BPS = 200;
+
     /// @dev Retired v1 slot (was toleranceBps); do not reuse
     uint256 private __deprecated_toleranceBps;
 
@@ -130,6 +133,9 @@ contract StakedUSDat is
     /// @notice Per-tranche surplus cap in basis points of totalAssets
     uint16 public maxSurplusBps;
 
+    /// @notice Management fee in basis points per year, taken as supply dilution
+    uint16 public managementFeeBps;
+
     /// @notice Current surplus tranche (USDat, 6 decimals) — in the vault but outside
     /// usdatBalance until swept; only the vested slice counts toward totalAssets
     uint256 public surplusVestingAmount;
@@ -139,6 +145,9 @@ contract StakedUSDat is
 
     /// @notice Surplus vesting period in seconds
     uint256 public surplusVestingPeriod;
+
+    /// @notice Timestamp of the last management fee collection
+    uint256 public lastFeeCollection;
 
     modifier notZero(uint256 amount) {
         _notZero(amount);
@@ -150,6 +159,15 @@ contract StakedUSDat is
     modifier onlyWithdrawalQueue() {
         require(msg.sender == address(WITHDRAWAL_QUEUE), OperationNotAllowed());
         _;
+    }
+
+    /// @dev Lifts an active pause for the duration of the call (enforcement actions
+    /// work while paused).
+    modifier whileUnpaused() {
+        bool wasPaused = paused();
+        if (wasPaused) _unpause();
+        _;
+        if (wasPaused) _pause();
     }
 
     /// @dev Reverts if the given amount is zero.
@@ -184,6 +202,8 @@ contract StakedUSDat is
         feeRecipient = protocolFeeRecipient;
         surplusVestingPeriod = 24 hours;
         maxSurplusBps = 250; // 2.5% of totalAssets per tranche
+        managementFeeBps = 50; // 0.5% per year
+        lastFeeCollection = block.timestamp;
     }
 
     /// @dev Authorizes an upgrade to a new implementation. Only callable by DEFAULT_ADMIN_ROLE.
@@ -235,19 +255,32 @@ contract StakedUSDat is
     }
 
     /// @inheritdoc IStakedUSDat
-    function redistributeLockedAmount(address from) external nonReentrant onlyRole(ENFORCER_ROLE) {
+    function redistributeLockedAmount(address from) external nonReentrant onlyRole(ENFORCER_ROLE) whileUnpaused {
         require(_blacklisted[from], AddressNotBlacklisted());
         uint256 amountToDistribute = balanceOf(from);
 
         require(amountToDistribute > 0, ZeroAmount());
         require(totalSupply() > amountToDistribute, NoRecipientsForRedistribution());
 
-        bool wasPaused = paused();
-        if (wasPaused) _unpause();
         _burn(from, amountToDistribute);
-        if (wasPaused) _pause();
 
         emit LockedAmountRedistributed(from, amountToDistribute);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    /// @dev Moves shares, no burn, no liquidity needed — value-preserving enforcement
+    /// (e.g. court-directed recovery). Third option beside freezing and
+    /// redistributeLockedAmount.
+    function seize(address from, address to) external nonReentrant onlyRole(ENFORCER_ROLE) whileUnpaused {
+        require(_blacklisted[from], AddressNotBlacklisted());
+        _requireNotBlacklisted(to);
+
+        uint256 amount = balanceOf(from);
+        require(amount > 0, ZeroAmount());
+
+        _transfer(from, to, amount);
+
+        emit Seized(from, to, amount);
     }
 
     // ============ ERC4626 Overrides ============
@@ -499,6 +532,31 @@ contract StakedUSDat is
         emit SurplusSwept(amount);
     }
 
+    // ============ Management Fee ============
+
+    /// @inheritdoc IStakedUSDat
+    /// @dev Permissionless. Mints shares to feeRecipient equal to the accrued fraction
+    /// of post-mint supply — pure supply dilution, no price read, no cash movement.
+    /// Time-determined: collection timing and frequency don't change the total. Always
+    /// stamps lastFeeCollection, even when nothing mints.
+    function collectManagementFee() public {
+        uint256 elapsed = block.timestamp - lastFeeCollection;
+        if (elapsed == 0) return;
+        lastFeeCollection = block.timestamp;
+
+        address recipient = feeRecipient;
+        if (managementFeeBps == 0 || recipient == address(0)) return;
+
+        // minted/(supply+minted) = feeBps·elapsed/(1e4·365d), solved for minted
+        uint256 accrual = uint256(managementFeeBps) * elapsed;
+        uint256 minted = Math.mulDiv(totalSupply(), accrual, BPS_DENOMINATOR * 365 days - accrual);
+        if (minted == 0) return;
+
+        _mint(recipient, minted);
+
+        emit ManagementFeeCollected(recipient, minted);
+    }
+
     // ============ Deposit Functions ============
 
     /// @dev Deposit/mint common workflow with blacklist checks.
@@ -725,7 +783,20 @@ contract StakedUSDat is
     }
 
     /// @inheritdoc IStakedUSDat
+    /// @dev Collects at the old rate first so a rate change never applies retroactively.
+    function setManagementFee(uint16 newFeeBps) external onlyRole(PARAMETER_MANAGER_ROLE) {
+        require(newFeeBps <= MAX_MANAGEMENT_FEE_BPS, InvalidFee());
+
+        collectManagementFee();
+        managementFeeBps = newFeeBps;
+
+        emit ManagementFeeUpdated(newFeeBps);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    /// @dev Collects first so accrued fees mint to the recipient they accrued under.
     function setFeeRecipient(address newRecipient) external onlyRole(PARAMETER_MANAGER_ROLE) {
+        collectManagementFee();
         feeRecipient = newRecipient;
 
         emit FeeRecipientUpdated(newRecipient);

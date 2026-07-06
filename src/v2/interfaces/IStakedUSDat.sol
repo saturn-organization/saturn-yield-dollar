@@ -153,6 +153,14 @@ interface IStakedUSDat is IERC4626 {
     event LockedAmountRedistributed(address indexed from, uint256 amount);
 
     /**
+     * @dev Emitted when a blacklisted holder's shares are seized to a recovery address.
+     * @param from The blacklisted address seized from.
+     * @param to The recovery address the shares were transferred to.
+     * @param amount The amount of shares transferred.
+     */
+    event Seized(address indexed from, address indexed to, uint256 amount);
+
+    /**
      * @dev Emitted when the fee recipient is updated.
      * @param newRecipient The new fee recipient address.
      */
@@ -188,6 +196,19 @@ interface IStakedUSDat is IERC4626 {
      * @param newMaxBps The new cap in basis points.
      */
     event MaxSurplusBpsUpdated(uint16 newMaxBps);
+
+    /**
+     * @dev Emitted when accrued management fees are collected.
+     * @param recipient The fee recipient the shares were minted to.
+     * @param shares The number of shares minted.
+     */
+    event ManagementFeeCollected(address indexed recipient, uint256 shares);
+
+    /**
+     * @dev Emitted when the management fee rate is updated.
+     * @param newFeeBps The new fee in basis points per year.
+     */
+    event ManagementFeeUpdated(uint16 newFeeBps);
 
     /**
      * @dev Emitted when a module is registered.
@@ -246,6 +267,15 @@ interface IStakedUSDat is IERC4626 {
      * @param from The blacklisted address to redistribute from.
      */
     function redistributeLockedAmount(address from) external;
+
+    /**
+     * @notice Transfers a blacklisted holder's full sUSDat balance to a recovery address.
+     * @dev Only callable by addresses with the ENFORCER_ROLE. Moves shares, no burn,
+     * no liquidity needed. The recovery address must not be blacklisted.
+     * @param from The blacklisted address to seize from.
+     * @param to The recovery address to receive the shares.
+     */
+    function seize(address from, address to) external;
 
     // ============ Asset Management Functions ============
 
@@ -540,6 +570,25 @@ interface IStakedUSDat is IERC4626 {
      */
     function redemptionFeeBps() external view returns (uint16);
 
+    /**
+     * @notice Returns the management fee in basis points per year.
+     * @return The management fee in basis points per year.
+     */
+    function managementFeeBps() external view returns (uint16);
+
+    /**
+     * @notice Returns the timestamp of the last management fee collection.
+     * @return The Unix timestamp.
+     */
+    function lastFeeCollection() external view returns (uint256);
+
+    /**
+     * @notice Collects the accrued management fee as newly minted shares to feeRecipient.
+     * @dev Permissionless; pure supply dilution, oracle-independent. Time-determined —
+     * collection timing and frequency don't change the total.
+     */
+    function collectManagementFee() external;
+
     // ============ Admin Functions ============
 
     /**
@@ -563,6 +612,14 @@ interface IStakedUSDat is IERC4626 {
      * @param newFeeBps The new fee in basis points (must be <= MAX_REDEMPTION_FEE_BPS).
      */
     function setRedemptionFee(uint16 newFeeBps) external;
+
+    /**
+     * @notice Updates the management fee rate.
+     * @dev Only callable by addresses with the PARAMETER_MANAGER_ROLE. Collects at the
+     * old rate first so the change never applies retroactively.
+     * @param newFeeBps The new fee in basis points per year (<= MAX_MANAGEMENT_FEE_BPS).
+     */
+    function setManagementFee(uint16 newFeeBps) external;
 
     /**
      * @notice Updates the fee recipient address.

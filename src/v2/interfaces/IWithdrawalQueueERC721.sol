@@ -205,22 +205,22 @@ interface IWithdrawalQueueERC721 {
     // ============ Compliance Functions ============
 
     /**
-     * @notice Seizes live request NFTs from blacklisted holders.
-     * @dev Transfers the NFTs to the specified address; accrued usdatOwed and the open
+     * @notice Seizes a live request NFT from a blacklisted holder.
+     * @dev Transfers the NFT to the specified address; accrued usdatOwed and the open
      * remainder travel with the token.
      * Only callable by addresses with the ENFORCER_ROLE.
-     * @param tokenIds Array of token IDs to seize.
-     * @param to The address to transfer the NFTs to.
+     * @param tokenId The token ID to seize.
+     * @param to The address to transfer the NFT to.
      */
-    function seizeRequests(uint256[] calldata tokenIds, address to) external;
+    function seizeRequest(uint256 tokenId, address to) external;
 
     /**
-     * @notice Seizes accrued payouts from blacklisted holders.
-     * @dev Transfers each request's usdatOwed to the specified address, burning the
+     * @notice Seizes a request's accrued payout from a blacklisted holder.
+     * @dev Transfers the request's usdatOwed to the specified address, burning the
      * token only if fully filled — an open remainder keeps accruing fills and stays
      * seizable. Only callable by addresses with the ENFORCER_ROLE.
-     * @param tokenIds Array of token IDs to seize.
+     * @param tokenId The token ID to seize.
      * @param to The address to transfer the USDat to.
      */
-    function seizeBlacklistedFunds(uint256[] calldata tokenIds, address to) external;
+    function seize(uint256 tokenId, address to) external;
 }

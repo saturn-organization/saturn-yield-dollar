@@ -69,6 +69,15 @@ contract WithdrawalQueueERC721 is
         _;
     }
 
+    /// @dev Lifts an active pause for the duration of the call (enforcement actions
+    /// work while paused).
+    modifier whileUnpaused() {
+        bool wasPaused = paused();
+        if (wasPaused) _unpause();
+        _;
+        if (wasPaused) _pause();
+    }
+
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor(address usdat, address stakedUsdat) {
         require(usdat != address(0) && stakedUsdat != address(0), ZeroAmount());
@@ -199,70 +208,44 @@ contract WithdrawalQueueERC721 is
     // ============ Compliance Functions ============
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function seizeRequests(uint256[] calldata tokenIds, address to) external nonReentrant onlyRole(ENFORCER_ROLE) {
-        require(to != address(0), ZeroAmount());
+    function seizeRequest(uint256 tokenId, address to) external nonReentrant onlyRole(ENFORCER_ROLE) whileUnpaused {
         _requireNotBlacklisted(to);
+        address owner = ownerOf(tokenId);
+        _requireBlacklisted(owner);
 
-        uint256 len = tokenIds.length;
-        require(len > 0, ZeroAmount());
+        // Accrued usdatOwed and the open remainder travel with the token.
+        _transfer(owner, to, tokenId);
 
-        bool wasPaused = paused();
-        if (wasPaused) _unpause();
-
-        for (uint256 i = 0; i < len; i++) {
-            uint256 tokenId = tokenIds[i];
-            address owner = ownerOf(tokenId);
-            _requireBlacklisted(owner);
-
-            // Accrued usdatOwed and the open remainder travel with the token.
-            _transfer(owner, to, tokenId);
-
-            emit RequestSeized(tokenId, owner, to);
-        }
-
-        if (wasPaused) _pause();
+        emit RequestSeized(tokenId, owner, to);
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function seizeBlacklistedFunds(uint256[] calldata tokenIds, address to)
+    function seize(uint256 tokenId, address to)
         external
         nonReentrant
         onlyRole(ENFORCER_ROLE)
+        whileUnpaused
     {
         require(to != address(0), ZeroAmount());
-        uint256 len = tokenIds.length;
-        require(len > 0, ZeroAmount());
+        address owner = ownerOf(tokenId);
+        _requireBlacklisted(owner);
 
-        bool wasPaused = paused();
-        if (wasPaused) _unpause();
+        Request storage req = requests[tokenId];
+        uint256 amount = req.usdatOwed;
+        require(amount > 0, NothingToClaim());
 
-        uint256 totalUsdatSeized = 0;
+        req.usdatOwed = 0;
 
-        for (uint256 i = 0; i < len; i++) {
-            uint256 tokenId = tokenIds[i];
-            address owner = ownerOf(tokenId);
-            _requireBlacklisted(owner);
-
-            Request storage req = requests[tokenId];
-            uint256 amount = req.usdatOwed;
-            require(amount > 0, NothingToClaim());
-
-            totalUsdatSeized += amount;
-            req.usdatOwed = 0;
-
-            // Burn only when fully filled and drained — an open remainder keeps
-            // accruing fills and stays seizable.
-            if (req.shares == 0) {
-                delete requests[tokenId];
-                _burn(tokenId);
-            }
-
-            emit FundsSeized(tokenId, owner, amount, to);
+        // Burn only when fully filled and drained — an open remainder keeps
+        // accruing fills and stays seizable.
+        if (req.shares == 0) {
+            delete requests[tokenId];
+            _burn(tokenId);
         }
 
-        if (wasPaused) _pause();
+        IERC20(address(USDAT)).safeTransfer(to, amount);
 
-        IERC20(address(USDAT)).safeTransfer(to, totalUsdatSeized);
+        emit FundsSeized(tokenId, owner, amount, to);
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
