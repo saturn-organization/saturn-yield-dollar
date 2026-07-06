@@ -168,7 +168,7 @@ contract WithdrawalQueueERC721 is
             Request storage req = requests[tokenId];
             require(req.shares > 0, RequestNotOpen());
 
-            if (STAKED_USDAT.previewRedeem(1e18) < req.minSharePrice) continue;
+            if (STAKED_USDAT.convertToAssets(1e18) < req.minSharePrice) continue;
 
             (uint256 filled, uint256 usdat) = STAKED_USDAT.redeemQueuedShares(req.shares);
             if (filled == 0) break;

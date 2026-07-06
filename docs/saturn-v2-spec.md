@@ -50,7 +50,7 @@ disabled, `requestRedeem` — its limit param becomes `minSharePrice`), deposit 
 |---|---|
 | `processRequests(tokenIds, totalUsdatReceived, totalStrcSold, executionPrice)` — batch pro-rata against an attested STRC sale | `processRequests(tokenIds)` — per-request, buffer-clamped partial fills, settled at NAV (§2.6) |
 | `claim` + `claimBatch`/`claimAll`/`claimBatchFor`/`claimAllFor` | single `claim(tokenId)` (§2.6) |
-| `_validateTotals`, `_isWithinTolerance`, `_validateAmount`, oracle/vault reads | dropped — the queue never prices; couplings are `previewRedeem` and `redeemQueuedShares` only |
+| `_validateTotals`, `_isWithinTolerance`, `_validateAmount`, oracle/vault reads | dropped — the queue never prices; couplings are `convertToAssets` and `redeemQueuedShares` only |
 | `lockRequests` / `unlockRequests`, `InProgress` | dropped — settlement is atomic at the live mark |
 | `minUsdatReceived` (absolute payout bound) | `minSharePrice` (per-share execution-price limit, §2.6); pending entries converted in place at upgrade (§3.1) |
 | dust flow (`approve` + `collectDust`) | dropped |
@@ -283,7 +283,7 @@ Two derived states drive all logic — *open* (`shares > 0`) and *claimable* (`u
 the `WithdrawalRequested` event; a token exists ⟺ `shares > 0 || usdatOwed > 0`.
 
 **Limit semantics.** `minSharePrice` is the minimum execution share price
-(`previewRedeem(1e18)`); the redemption fee is charged on the payout after the limit check.
+(`convertToAssets(1e18)`); the redemption fee is charged on the payout after the limit check.
 The queue is a limit-order book against NAV: a request fills at its limit or better; below
 the limit it is skipped, not reverted, and sits until NAV recovers or the holder lowers the
 limit via `updateMinSharePrice` — freely updatable while open; a change applies to future
@@ -299,7 +299,7 @@ ordered tokenIds and no amounts; the buffer decides fill sizes:
 processRequests(uint256[] tokenIds)
   for each request:
     require request.shares > 0                              // dead token → revert (operator bug)
-    if previewRedeem(1e18) < request.minSharePrice → skip   // limit not met (stays queued)
+    if convertToAssets(1e18) < request.minSharePrice → skip   // limit not met (stays queued)
     (filled, usdat) = vault.redeemQueuedShares(request.shares)  // clamped: min(asked, buffer)
     if filled == 0 → break                                  // buffer dry — nothing later fills either
     request.usdatOwed += usdat
@@ -312,7 +312,7 @@ processRequests(uint256[] tokenIds)
 function redeemQueuedShares(uint256 sharesRequested) external onlyWithdrawalQueue
     returns (uint256 sharesRedeemed, uint256 usdat);
 // sharesRedeemed = min(sharesRequested, what usdatBalance covers net of redemptionFeeBps)
-// usdat = previewRedeem(sharesRedeemed) × (1 − redemptionFeeBps), priced before the burn
+// usdat = convertToAssets(sharesRedeemed) × (1 − redemptionFeeBps), priced before the burn
 ```
 
 Three outcomes per request, deliberately distinct: **revert** on a dead token (operator
@@ -339,11 +339,11 @@ accrued `usdatOwed`, burning the token only if fully filled — an open remainde
 accruing fills and stays seizable. Both single-token, ENFORCER_ROLE (§2.8).
 
 Invariants:
-- Every fill pays exactly `previewRedeem(filled)` net of fee at its own moment — NAV-neutral
+- Every fill pays exactly `convertToAssets(filled)` net of fee at its own moment — NAV-neutral
   for remaining holders by construction (assets and shares leave proportionally), fee
   excepted — and satisfies the request's `minSharePrice` at that moment.
 - Escrowed shares equal Σ `shares` over live requests; queue USDat equals Σ `usdatOwed`.
-- The queue's only vault couplings: `previewRedeem`, `redeemQueuedShares`. Adding a backing
+- The queue's only vault couplings: `convertToAssets`, `redeemQueuedShares`. Adding a backing
   asset never touches the queue.
 - Escrowed shares remain NAV-exposed until burned — a request is a place in line, not a
   price commitment.
@@ -454,7 +454,7 @@ would renumber `Processed`/`Claimed`) but is never set again.
   `getUnvestedAmount` identical pre/post at three vesting states (fresh
   `transferInRewards`, mid-vest, fully vested).
 - *Behavior:* deposit → mint → `requestRedeem` → `sellVia` + `processRequests` (whole and
-  buffer-clamped partial fills) → claim pays `previewRedeem × (1 − fee)` cumulatively across
+  buffer-clamped partial fills) → claim pays `convertToAssets × (1 − fee)` cumulatively across
   fills; `transferInRewards` vests in the
   mirror; `transferInSurplus` vests then sweeps; a stale mirror oracle zeroes `maxDeposit` and
   blocks processing while transfers and redemption requests stay live.

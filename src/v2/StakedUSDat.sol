@@ -717,7 +717,7 @@ contract StakedUSDat is
         _sweep();
 
         sharesRedeemed = sharesRequested;
-        usdat = _netPayout(previewRedeem(sharesRequested));
+        usdat = _netPayout(convertToAssets(sharesRequested));
 
         if (usdat > usdatBalance) {
             // Clamp: the largest share count whose net payout the buffer covers.
@@ -727,7 +727,7 @@ contract StakedUSDat is
             if (sharesRedeemed == 0) {
                 return (0, 0);
             }
-            usdat = _netPayout(previewRedeem(sharesRedeemed));
+            usdat = _netPayout(convertToAssets(sharesRedeemed));
         }
 
         usdatBalance -= usdat;

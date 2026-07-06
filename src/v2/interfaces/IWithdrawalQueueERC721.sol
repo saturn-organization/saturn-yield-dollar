@@ -10,7 +10,7 @@ pragma solidity ^0.8.20;
  * their shares are escrowed, and they receive an NFT representing their claim.
  * The queue is a limit-order book against NAV: the operator processes requests
  * against the vault's cash buffer, each fill priced by the vault at its live mark.
- * The queue never prices; its only vault couplings are previewRedeem and
+ * The queue never prices; its only vault couplings are convertToAssets and
  * redeemQueuedShares.
  */
 interface IWithdrawalQueueERC721 {
