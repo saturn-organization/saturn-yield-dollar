@@ -7,8 +7,8 @@ via accounting modules, the STRC → STRCon migration, and the withdrawal-queue 
 
 Layout: §1 what changes, §2 the normative v2 spec, §3 the migration runbook, §4 open
 questions, §5 risks. Appendix A records why choices were made; Appendix B the STRCon
-empirical findings; Appendix C a deferred feature. When the migration completes, §3 and
-Appendix B archive; §2 and Appendix A remain the durable architecture doc.
+empirical findings; Appendices C and D deferred features. When the migration completes, §3
+and Appendix B archive; §2 and Appendix A remain the durable architecture doc.
 
 ---
 
@@ -33,9 +33,8 @@ NAV-clean from the vault's own buffer.
 | `collectDust` | dropped — per-request settlement leaves no dust |
 | oracle failure reverts `totalAssets()` and all views | same fail-closed reverts, kept deliberately; `maxDeposit`/`maxMint` catch and report 0 for ERC-4626 (§2.2) |
 | — | `transferInSurplus` cash surplus inlet (§2.1) |
-| — | instant redemption path (§2.4) |
 | deposit fee (`depositFeeBps`, fee-adjusted `previewDeposit`/`previewMint`) | dropped — deposits at plain NAV (§2.4) |
-| — | management, redemption, and instant exit fees (§2.7) |
+| — | management and redemption fees (§2.7) |
 | — | `seize` (§2.8) |
 | `PROCESSOR_ROLE`, `COMPLIANCE_ROLE` | capability-named role taxonomy (§2.8) |
 
@@ -154,8 +153,8 @@ deregisterModule(address module)                     // only when balance() == 0
 
 **Failure semantics — fail-closed by construction.** When a module cannot reliably price,
 `recognizedValue()` reverts and the revert propagates through `totalAssets()` into every
-value-sensitive path automatically: mints, queue processing, instant redemptions, and
-rotations halt with no gating code anywhere. Operations that never price — share transfers,
+value-sensitive path automatically: mints, queue processing, and rotations halt with no
+gating code anywhere. Operations that never price — share transfers,
 `requestRedeem`, `updateMinSharePrice`, `claim`, seizures — stay live by construction.
 Downstream integrators pricing sUSDat via `convertToAssets`/`previewRedeem` inherit the same
 protection: they halt rather than transact on a disputed mark. One ERC-4626 compliance
@@ -230,18 +229,14 @@ position is marked to market.
 - Migration setter: `setBalance(amount)` — vault-only, seed-once (`require(balance == 0)`),
   asserts the custody floor.
 
-### 2.4 Deposits & instant redemptions
+### 2.4 Deposits
 
-**Deposits.** Atomic, 24/7, into the cash buffer at plain live NAV — no deposit fee. No
-asset is bought at deposit time; the buffer is deployed by rotations. When any module can't
-price, deposits revert (`maxDeposit`/`maxMint` report 0, §2.2).
+Atomic, 24/7, into the cash buffer at plain live NAV — no deposit fee. No asset is bought
+at deposit time; the buffer is deployed by rotations. When any module can't price, deposits
+revert (`maxDeposit`/`maxMint` report 0, §2.2).
 
-**Instant redemption.** Whitelisted addresses only (add/remove: WHITELIST_MANAGER_ROLE).
-Burn shares, pay `previewRedeem(shares) × (1 − instantExitFeeBps)` from the buffer
-immediately. Capped per period against the standing buffer; reverts when any module can't
-price (it prices via `previewRedeem`). The
-whitelist gates immediacy, not value: the queue pays the same NAV-clean price to anyone, and
-the instant fee stays in the vault. Fee number open (§4).
+Instant redemptions are **deferred** (Appendix D — design final); `withdraw`/`redeem` stay
+disabled in v2 and the queue is the only exit.
 
 ### 2.5 Rotations
 
@@ -273,8 +268,8 @@ struct Request {
     uint256 shares;          // shares STILL QUEUED — decremented per fill
     uint256 usdatOwed;       // accrued, unclaimed payout
     uint256 timestamp;
+    uint256 minSharePrice;   // limit: min execution price per 1e18 shares (v1 minUsdatReceived slot)
     RequestStatus status;    // legacy v1 slot; v2 logic neither reads nor writes it
-    uint256 minSharePrice;   // limit: min execution price per 1e18 shares
 }
 ```
 
@@ -311,21 +306,22 @@ processRequests(uint256[] tokenIds)
 // StakedUSDat — queue-only; clamp, price, burn, transfer in one call
 function redeemQueuedShares(uint256 sharesRequested) external onlyWithdrawalQueue
     returns (uint256 sharesRedeemed, uint256 usdat);
-// sharesRedeemed = min(sharesRequested, what usdatBalance covers net of redemptionFeeBps)
-// usdat = convertToAssets(sharesRedeemed) × (1 − redemptionFeeBps), priced before the burn
+// sharesRedeemed = min(sharesRequested, what usdatBalance covers net of the fee)
+// usdat = convertToAssets(sharesRedeemed) × (1 − fee), priced before the burn
+// fee = elevatedFeeActive ? elevatedRedemptionFeeBps : baseRedemptionFeeBps — one tier per fill
 ```
 
 Three outcomes per request, deliberately distinct: **revert** on a dead token (operator
 bug), **skip** on an unmet limit (a later request may have a lower limit), **break** when
 the buffer is dry. Clamping inside the vault means no amounts are computed anywhere else —
-a concurrent instant redemption just shrinks the clamp, never reverts the batch — and each
+a concurrent buffer draw just shrinks the clamp, never reverts the batch — and each
 fill floors independently in the vault's favor (a request filled in N slices receives at
 most N wei less than one whole fill; no dust machinery).
 
 `redeemQueuedShares` is safe against even a buggy queue: it burns only shares the queue
 holds, at a price the vault computes, up to the buffer it has. When sell + process atomicity
-is wanted (e.g. so instant exits can't drain a fresh buffer), the operator batches `sellVia`
-+ `processRequests` in one tx from its own tooling.
+is wanted (so no other buffer draw can front-run a fresh top-up), the operator batches
+`sellVia` + `processRequests` in one tx from its own tooling.
 
 **Claiming.** One function. `claim(tokenId)` pays the accrued `usdatOwed` and zeroes it;
 the NFT burns only when the request is fully filled and drained (`shares == 0` after the
@@ -352,9 +348,16 @@ Invariants:
 
 | Fee | Destination | Purpose |
 |---|---|---|
-| redemption fee (`redemptionFeeBps`) | stays in the vault | anti-dilution: exits process at cost on average; flat, configurable, hard cap 500 (the limit check is pre-fee, so the cap bounds what user slippage protection doesn't cover); never revenue |
-| instant exit fee (`instantExitFeeBps`) | stays in the vault | ≥ redemption fee (same cost plus immediacy); number open (§4) |
+| redemption fee (`baseRedemptionFeeBps` / `elevatedRedemptionFeeBps`) | stays in the vault | anti-dilution: exits process at cost on average. Two tiers set together (`setRedemptionFees`, PARAMETER_MANAGER, base ≤ elevated ≤ 500 — the limit check is pre-fee, so the cap bounds what user slippage protection doesn't cover); the operator selects the tier (`setElevatedFeeActive`, e.g. off-hours settlement, stress) but never the numbers; never revenue |
 | management fee (`managementFeeBps`) | `feeRecipient` | revenue; **initial 50 bps/yr**, hard cap 200 |
+
+**Tier mechanics.** `redemptionFeeBps()` (public view) returns the tier in effect;
+integrators query it rather than re-deriving the selection rule. Each fill samples the tier
+at its own moment (a mid-batch flip is NAV-movement semantics, not a race); a holder's worst
+case is `limit × (1 − elevatedRedemptionFeeBps)`. `previewRedeem` stays gross
+(= `convertToAssets`): with `redeem()` disabled, 4626 doesn't bind previews to the queue
+fee, and a tier-flipping preview would destabilize integrators that read it as a price —
+frontends quote net as `convertToAssets(shares) × (1 − redemptionFeeBps())`.
 
 **Management fee.** A fixed fraction of assets per year, taken as pure supply dilution —
 collection never reads a price:
@@ -385,8 +388,7 @@ dangerous powers move to colder keys.
 | `DEFAULT_ADMIN_ROLE` | grant/revoke roles; UUPS upgrade | same |
 | `MODULE_MANAGER_ROLE` | register / `setMaxWeight` / deregister modules; `migrate()` | — |
 | `PARAMETER_MANAGER_ROLE` | fees, vesting periods, caps, cash floor | — |
-| `OPERATOR_ROLE` | rotations, `transferInSurplus`, `transferInRewards` | `processRequests` |
-| `WHITELIST_MANAGER_ROLE` | instant-redemption whitelist add/remove | — |
+| `OPERATOR_ROLE` | rotations, `transferInSurplus`, `transferInRewards`, `setElevatedFeeActive` | `processRequests` |
 | `BLACKLISTER_ROLE` | blacklist add/remove (freeze only) | — |
 | `ENFORCER_ROLE` | `redistributeLockedAmount`, `seize` | `seizeRequest`, `seize` |
 | `PAUSER_ROLE` / `UNPAUSER_ROLE` | pause / unpause | same |
@@ -423,31 +425,42 @@ STRCon registers empty.
      them, registers it, re-grants §2.8 roles, and seeds the v2 params: `managementFeeBps`
      (50), **stamps `lastFeeCollection`** (§2.7 — unstamped with a nonzero rate, the first
      collection mints decades of fees), `surplusVestingPeriod` (24h), `maxSurplusBps` (250),
-     `redemptionFeeBps` (per §4). Inside the batch: dropping the STRC leg for one block
+     the redemption fee tiers (per §4). Inside the batch: dropping the STRC leg for one block
      would crash NAV.
-   - `WQ.upgradeToAndCall(impl, reinit)` — re-grants roles and converts every pending entry
-     in place, scanning on-chain at execution time (the reinit calldata is fixed 5 days
-     before it runs, so a frozen id list would miss requests created during the delay):
+   - `WQ.upgradeToAndCall(impl, reinit)` — re-grants roles and converts every historical
+     entry in place, scanning on-chain at execution time (the reinit calldata is fixed 5
+     days before it runs, so a frozen id list would miss requests created during the
+     delay). v1 never zeroed `shares`/`usdatOwed`, so each v1 status needs its own arm to
+     satisfy v2's derived states (open = `shares > 0`, claimable = `usdatOwed > 0`):
      ```
      for id in 0..nextTokenId:                    // bounded by total historical requests
-         if requests[id] is pending:
-             req.minSharePrice = ceilDiv(req.minUsdatReceived × 1e18, req.shares)  // same slot
-             if req.status == InProgress: req.status = Requested
+         switch requests[id].status:
+             Requested, InProgress:               // shares genuinely still escrowed
+                 req.minSharePrice = ceilDiv(req.minUsdatReceived × 1e18, req.shares)  // same slot
+                 if req.status == InProgress: req.status = Requested
+             Processed:                           // settled in v1, only the claim remains
+                 req.shares = 0                   //  — else reads as open and would process
+                                                  //    again, burning other requests' escrow
+             Claimed:                             // NFT already burned, struct left populated
+                 delete requests[id]              //  — restores token exists ⟺ shares|owed > 0
      ```
      `ceilDiv`: never weaker than the user's original bound. Don't lock requests once the
      batch is scheduled.
 3. Wait 5 days; executor calls `executeBatch` — both proxies upgrade in one tx.
 4. Verify on-chain: no-op values match pre-upgrade; `MirrorSTRC.balance` == old
    `strcBalance` with vesting fields seeded; roles re-granted on both contracts; pending
-   queue entries carry converted limits, none `InProgress`; v2 params seeded and
+   queue entries carry converted limits, none `InProgress`; Processed entries hold only
+   their claim (`shares == 0`) and Claimed entries are cleared; v2 params seeded and
    `lastFeeCollection` == upgrade timestamp.
 5. Register STRCon with `balance = 0` and a full-position cap; confirm
    `recognizedValue() == 0`.
 
 **Storage compatibility:** the queue's `Request` struct reuses the `minUsdatReceived` slot
 as `minSharePrice`, and `shares` changes meaning from total to still-queued — v1 pending
-entries conform as-is (nothing filled yet). The `InProgress` enum variant stays (removing it
-would renumber `Processed`/`Claimed`) but is never set again.
+entries conform as-is (nothing filled yet); Processed and Claimed entries do not (v1 left
+their `shares`/`usdatOwed` populated) and are cleaned by the reinit arms above. The
+`InProgress` enum variant stays (removing it would renumber `Processed`/`Claimed`) but is
+never set again.
 
 **Fork-test first** (prank the timelock):
 - *No-op:* `totalAssets`, `previewRedeem`, `previewMint`, `convertToShares`,
@@ -509,10 +522,9 @@ retire with it. `StrcPriceOracle` is orphaned. Optional hygiene upgrade drops th
 
 | # | Question | Blocks | Resolution path |
 |---|---|---|---|
-| 1 | `instantExitFeeBps` number — flat premium over the queue fee (whitelisted access makes utilization pricing unnecessary) | instant path | pick with #2 |
-| 2 | `redemptionFeeBps` number — flat fee sized so average exit processes at cost | fee params | measure Ondo spread (§3.2 validation) |
-| 3 | Residual ex-date step size (n=2, equity-only) — confirm it stays inside noise now that no deposit fee backstops it | risk acceptance | accumulate monthly measurements |
-| 4 | Ondo mint/redeem mechanics for contracts: attestations, settlement time, size limits | STRCon module `buy`/`sell` | Ondo docs + §3.2 |
+| 1 | Redemption fee tier numbers — base sized so the average exit processes at cost; elevated sized to off-hours/stress spread | fee params | measure Ondo spread, regular vs off-hours (§3.2 validation) |
+| 2 | Residual ex-date step size (n=2, equity-only) — confirm it stays inside noise now that no deposit fee backstops it | risk acceptance | accumulate monthly measurements |
+| 3 | Ondo mint/redeem mechanics for contracts: attestations, settlement time, size limits | STRCon module `buy`/`sell` | Ondo docs + §3.2 |
 
 ---
 
@@ -525,8 +537,9 @@ retire with it. `StrcPriceOracle` is orphaned. Optional hygiene upgrade drops th
   market is closed (~2% observed weekend gaps, unmitigated — v2 charges no deposit fee), in
   exchange for 24/7 atomic minting. Revisit if gap-capture is observed.
 - **Redemption slippage socialization — mitigated:** redeemers exit at the mark;
-  mark-vs-execution gaps land on remaining holders via rotations. Mitigant: `redemptionFeeBps`
-  sized to the measured spread, raised in stress; residual exposure beyond the fee remains.
+  mark-vs-execution gaps land on remaining holders via rotations. Mitigant: the base
+  redemption fee sized to the measured spread, the elevated tier flipped on for off-hours
+  settlement and stress; residual exposure beyond the fee remains.
 - **Oracle-halt downtime:** when the STRCon wrapper reverts (staleness, bounds, Ondo flag,
   or deviation tripwire), all pricing views brick for the duration — including for
   integrators (a lending market can't liquidate against sUSDat while tripped). Chosen
@@ -537,9 +550,6 @@ retire with it. `StrcPriceOracle` is orphaned. Optional hygiene upgrade drops th
   bounds the blast radius of a bad module or oracle.
 - **Parked limit orders:** a request with `minSharePrice` above NAV sits unfilled
   indefinitely — by design, but holders may not realize; remedy is lowering the limit.
-- **Atomic-exit buffer dynamics:** the whitelisted, capped instant path is first-come
-  first-served within the whitelist; in stress it exhausts and exits fall back to the queue —
-  by design, but cap + fee parameters set how the transition feels.
 - **Regulatory/eligibility:** STRCon is restricted to qualified non-US investors.
 
 ---
@@ -658,24 +668,19 @@ watermark can't sweep past a parked `minSharePrice` limit order). The accepted r
 cost: a non-linear request lifecycle — open and claimable coexist, `Claimed` fires
 repeatedly per token, claim does not imply burn — which integrators must handle.
 
-**Whitelisted instant redemptions.** Instant redemption is the only user-timed
-value-sensitive operation in v2 (deposits are fee-backstopped; processing and rotations are
-operator-timed; claims don't price), so the caller chooses the moment they transact against
-the mark — and the moments worth choosing are the bad ones (weekend-stale mark, the ex-date
-window). A whitelist restricts that timing option to counterparties with contractual
-recourse, turns the buffer from a first-exit race into a sized liquidity facility for
-curators/integrators, and makes a flat fee sufficient (utilization pricing existed for
-anonymous access competing for the last slice). Value access stays universal through the
-queue; the whitelist gates immediacy only.
-
 **Management fee.** With STRCon the dividend auto-reinvests on-chain — no off-chain
 touchpoint exists, so the protocol fee must be an explicit mechanism. Supply dilution keeps
 it time-determined and oracle-free (§2.7).
 
-**Flat redemption fee.** Exact per-request cost attribution is a policy choice dressed as a
-measurement (which module was sold? how much was buffer refill?) and required fusing funding
-with processing. A flat, configurable fee sized to the measured spread achieves at-cost on
-average and can be raised in stress.
+**Flat redemption fee, two tiers.** Exact per-request cost attribution is a policy choice
+dressed as a measurement (which module was sold? how much was buffer refill?) and required
+fusing funding with processing. A flat fee sized to the measured spread achieves at-cost on
+average. Two governance-set tiers (base/elevated) let settlement continue through
+higher-spread windows (off-hours, stress) at a fee that matches: the operator — who already
+times processing — selects the tier but never the numbers, and the state is explicit
+(`setElevatedFeeActive(bool)`), not a toggle, so scheduled flips are idempotent under tx
+retries. An automated session signal (feed-freshness of the Calculated print) was considered
+and rejected as machinery the operator's existing scheduling duty doesn't need.
 
 **Role taxonomy.** Names follow the OZ/LayerZero capability convention (agent nouns /
 `…_MANAGER`), never team or service names. Freeze ≠ seize and pause ≠ unpause bound the
@@ -764,7 +769,7 @@ Ondo/Chainlink as more ex-dates accumulate.
 
 Minting sUSDat directly with STRCon is out of scope for v2, deferred to a later upgrade.
 Nothing in v2 forecloses it: the vault is UUPS, the module hook is a module-side addition,
-and it reuses the whitelist role and fee pattern shipping now. Until it's built,
+and it reuses the whitelist role and fee pattern of Appendix D. Until it's built,
 `IAccountingModule` stays at the five §2.2 functions. Trigger to build: a concrete OTC
 counterparty.
 
@@ -773,7 +778,7 @@ STRCon on venue and deposits the cash. The user eats the spread and the timing r
 real execution price; the vault needs no changes and extends no trust. A vault-native path
 exists only for large entries where the venue spread matters, and only whitelisted.
 
-**Agreed shape** — the mirror image of instant redemption (§2.4):
+**Agreed shape** — the mirror image of instant redemption (Appendix D):
 
 ```
 // WHITELISTED only, per-period capped
@@ -815,3 +820,56 @@ from "buy/sell only" to "vault-authorized module calls only."
 The first three share a root cause — the vault pricing a user-timed trade at its own oracle
 instead of a venue execution. The residual never reaches zero; it is the §5 "redemption
 slippage socialization" class run in reverse, with the depositor picking the moment.
+
+---
+
+## Appendix D — Deferred: instant redemptions (`withdraw`/`redeem`)
+
+Whitelist-gated instant exits are out of scope for v2; `withdraw`/`redeem` stay disabled and
+the queue is the only exit. Design final (below); ships as a self-contained later upgrade.
+Trigger to build: a concrete curator/integrator who accepts the cap sizing and fee.
+
+**Why deferred.** The cap paradox: a capped, first-come-first-served instant path cannot
+provide what integrators actually need — assured liquidity at liquidation time, which is
+exactly when everyone exits at once. A small cap is useless; a large cap recreates the
+buffer-drain race against the queue; no cap size fixes FCFS-under-stress. In calm markets
+the path is a convenience, and a convenience does not justify its cost in the audited
+migration: a rolling cap, fee-bearing previews, a second buffer consumer, and three-way
+rounding proofs in `maxWithdraw`/`maxRedeem` — each a new interacting invariant. v2.1 ships
+exactly this feature as an isolated, auditable diff.
+
+**Agreed shape — standard ERC-4626, not a bespoke function.** `withdraw`/`redeem` come
+alive for whitelisted owners (add/remove: WHITELIST_MANAGER_ROLE), so integrators use stock
+4626 tooling:
+
+- `maxWithdraw`/`maxRedeem`: 0 unless whitelisted; else
+  `min(owner's net value, per-period cap remaining, spendable buffer)` — true instant
+  capacity, readable on-chain; 0 when paused or pricing is down (try/catch, §2.2 pattern).
+- `previewWithdraw`/`previewRedeem`: execution quotes **net of `instantExitFeeBps`**
+  (4626 requires previews to reflect the fee `redeem` charges). This is why the queue and
+  all internal pricing already bind to `convertToAssets` — the fee-free NAV mark — leaving
+  the previews free; the retrofit touches nothing outside the instant path. Integrator
+  note: price sUSDat via `convertToAssets`, never `previewRedeem`.
+- Flow: sweep → consume per-period cap → pay net from the buffer; the fee difference stays
+  in the vault (NAV-accretive, same mechanism as the redemption fee). Cap in net USDat per
+  fixed period; `instantExitFeeBps ≥ baseRedemptionFeeBps` (same cost plus immediacy), hard cap
+  500.
+- No permit or slippage variants: redeeming your own shares touches no allowance (the vault
+  is the share token), and the whitelisted audience is contracts that enforce their own
+  bounds; `redeemWithMinAssets` is a 5-line addition on concrete demand.
+- `requestRedeem` must check the raw balance, not `maxRedeem` (which becomes instant-only
+  capacity).
+
+**Rationale retained from the original design.** Instant redemption is the only user-timed
+value-sensitive operation (deposits are atomic but passive; processing and rotations are
+operator-timed; claims don't price), so the caller picks the moment they transact against
+the mark — and the moments worth picking are the bad ones (weekend-stale mark, the ex-date
+window). The whitelist restricts that timing option to counterparties with contractual
+recourse and makes a flat fee sufficient; value access stays universal through the queue.
+The buffer-priority ordering also stands: the operator batches `sellVia` + `processRequests`
+atomically, so instant exits can only touch the standing buffer, never front-run queue
+funding.
+
+**Interaction with Appendix C:** shipping in-kind minting and instant redemption to the same
+counterparty creates the round-trip arb (mint at a stale-high mark, exit at the same NAV) —
+size `inKindFeeBps + instantExitFeeBps` to worst plausible mark error if both ever coexist.

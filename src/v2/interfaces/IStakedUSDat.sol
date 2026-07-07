@@ -167,10 +167,17 @@ interface IStakedUSDat is IERC4626 {
     event FeeRecipientUpdated(address indexed newRecipient);
 
     /**
-     * @dev Emitted when the redemption fee is updated.
-     * @param newFeeBps The new redemption fee in basis points.
+     * @dev Emitted when the redemption fee tiers are updated.
+     * @param baseBps The base redemption fee in basis points.
+     * @param elevatedBps The elevated redemption fee in basis points.
      */
-    event RedemptionFeeUpdated(uint16 newFeeBps);
+    event RedemptionFeesUpdated(uint16 baseBps, uint16 elevatedBps);
+
+    /**
+     * @dev Emitted when the active redemption fee tier changes.
+     * @param active True if the elevated tier now applies.
+     */
+    event ElevatedFeeActiveUpdated(bool active);
 
     /**
      * @dev Emitted when a surplus tranche enters vesting.
@@ -565,8 +572,26 @@ interface IStakedUSDat is IERC4626 {
     function usdatBalance() external view returns (uint256);
 
     /**
-     * @notice Returns the redemption fee in basis points.
-     * @return The redemption fee in basis points.
+     * @notice Returns the base redemption fee in basis points.
+     * @return The base redemption fee in basis points.
+     */
+    function baseRedemptionFeeBps() external view returns (uint16);
+
+    /**
+     * @notice Returns the elevated redemption fee in basis points.
+     * @return The elevated redemption fee in basis points.
+     */
+    function elevatedRedemptionFeeBps() external view returns (uint16);
+
+    /**
+     * @notice Returns whether the elevated redemption fee tier currently applies.
+     * @return True if the elevated tier is active.
+     */
+    function elevatedFeeActive() external view returns (bool);
+
+    /**
+     * @notice Returns the redemption fee currently in effect (the active tier).
+     * @return The applicable fee in basis points.
      */
     function redemptionFeeBps() external view returns (uint16);
 
@@ -607,11 +632,21 @@ interface IStakedUSDat is IERC4626 {
     function setMaxSurplusBps(uint16 newMaxBps) external;
 
     /**
-     * @notice Updates the redemption fee.
+     * @notice Updates both redemption fee tiers.
      * @dev Only callable by addresses with the PARAMETER_MANAGER_ROLE.
-     * @param newFeeBps The new fee in basis points (must be <= MAX_REDEMPTION_FEE_BPS).
+     * Requires base <= elevated <= MAX_REDEMPTION_FEE_BPS.
+     * @param baseBps The base fee in basis points.
+     * @param elevatedBps The elevated fee in basis points.
      */
-    function setRedemptionFee(uint16 newFeeBps) external;
+    function setRedemptionFees(uint16 baseBps, uint16 elevatedBps) external;
+
+    /**
+     * @notice Selects which redemption fee tier applies.
+     * @dev Only callable by addresses with the OPERATOR_ROLE, e.g. flipped with the
+     * settlement risk environment (off-hours, stress). Explicit state, not a toggle.
+     * @param active True to apply the elevated tier.
+     */
+    function setElevatedFeeActive(bool active) external;
 
     /**
      * @notice Updates the management fee rate.

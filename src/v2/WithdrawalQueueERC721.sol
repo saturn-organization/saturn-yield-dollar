@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
@@ -99,6 +100,59 @@ contract WithdrawalQueueERC721 is
         __Pausable_init();
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
+    }
+
+    /// @notice v1 → v2 migration reinitializer (§3.1), executed atomically inside
+    /// upgradeToAndCall.
+    /// @dev Grants the §2.8 roles (new role ids, nothing carries over from v1) and
+    /// converts every historical request in place, scanning at execution time so
+    /// requests created during the timelock delay are covered. v1 never zeroed
+    /// `shares`/`usdatOwed`, so each v1 status needs its own conversion to satisfy
+    /// v2's derived states (open = shares > 0, claimable = usdatOwed > 0):
+    /// - Requested/InProgress: shares are genuinely still escrowed; the
+    ///   minUsdatReceived slot converts to a per-share limit (ceilDiv — never weaker
+    ///   than the user's original bound). InProgress resets to Requested.
+    /// - Processed: settled in v1 (those shares were already burned) — zero `shares`
+    ///   so only the claim remains; left as-is it would read as open and process
+    ///   again, burning other requests' escrow.
+    /// - Claimed: the NFT is already burned but v1 left the struct populated —
+    ///   deleted, restoring "token exists iff shares > 0 || usdatOwed > 0".
+    /// @param operator The OPERATOR_ROLE holder (processRequests).
+    /// @param enforcer The ENFORCER_ROLE holder (seizeRequest, seize).
+    /// @param pauser The PAUSER_ROLE holder.
+    /// @param unpauser The UNPAUSER_ROLE holder.
+    function initializeV2(address operator, address enforcer, address pauser, address unpauser)
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+        reinitializer(2)
+    {
+        require(
+            operator != address(0) && enforcer != address(0) && pauser != address(0) && unpauser != address(0),
+            ZeroAmount()
+        );
+
+        _grantRole(OPERATOR_ROLE, operator);
+        _grantRole(ENFORCER_ROLE, enforcer);
+        _grantRole(PAUSER_ROLE, pauser);
+        _grantRole(UNPAUSER_ROLE, unpauser);
+
+        __deprecated_pendingCount = 0;
+
+        uint256 count = nextTokenId;
+        for (uint256 id = 0; id < count; id++) {
+            Request storage req = requests[id];
+
+            if (req.status == RequestStatus.Requested || req.status == RequestStatus.InProgress) {
+                req.minSharePrice = Math.ceilDiv(req.minSharePrice * 1e18, req.shares);
+                if (req.status == RequestStatus.InProgress) {
+                    req.status = RequestStatus.Requested;
+                }
+            } else if (req.status == RequestStatus.Processed) {
+                req.shares = 0;
+            } else if (req.status == RequestStatus.Claimed) {
+                delete requests[id];
+            }
+        }
     }
 
     /// @dev Authorizes an upgrade to a new implementation. Only callable by DEFAULT_ADMIN_ROLE.

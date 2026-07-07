@@ -23,6 +23,7 @@ import {IWithdrawalQueueERC721} from "./interfaces/IWithdrawalQueueERC721.sol";
 import {IAccountingModule} from "./interfaces/IAccountingModule.sol";
 import {IStakedUSDat} from "./interfaces/IStakedUSDat.sol";
 import {IERC20PermitExtended} from "./interfaces/IERC20PermitExtended.sol";
+import {MirrorSTRC} from "./modules/MirrorSTRC/MirrorSTRC.sol";
 
 /**
  * @title StakedUSDat
@@ -126,9 +127,16 @@ contract StakedUSDat is
     /// deposit deployment only; queue processing may draw the buffer to zero)
     uint16 public minCashBufferBps;
 
-    /// @notice Redemption fee in basis points; held back in the vault (anti-dilution,
-    /// never revenue)
-    uint16 public redemptionFeeBps;
+    /// @notice Redemption fee in basis points while elevatedFeeActive is false; held
+    /// back in the vault (anti-dilution, never revenue)
+    uint16 public baseRedemptionFeeBps;
+
+    /// @notice Redemption fee in basis points while elevatedFeeActive is true
+    /// (off-hours settlement, stress); >= baseRedemptionFeeBps
+    uint16 public elevatedRedemptionFeeBps;
+
+    /// @notice Which redemption fee tier applies; flipped by the operator
+    bool public elevatedFeeActive;
 
     /// @notice Per-tranche surplus cap in basis points of totalAssets
     uint16 public maxSurplusBps;
@@ -204,6 +212,80 @@ contract StakedUSDat is
         maxSurplusBps = 250; // 2.5% of totalAssets per tranche
         managementFeeBps = 50; // 0.5% per year
         lastFeeCollection = block.timestamp;
+    }
+
+    /// @notice Role-holder addresses granted at the v2 upgrade (§2.8). The v2 role ids
+    /// are new (capability-renamed), so nothing carries over from v1's grants.
+    struct RoleHolders {
+        address operator;
+        address moduleManager;
+        address parameterManager;
+        address blacklister;
+        address enforcer;
+        address pauser;
+        address unpauser;
+    }
+
+    /// @notice v1 → v2 migration reinitializer (§3.1), executed atomically inside
+    /// upgradeToAndCall.
+    /// @dev Reads the v1 STRC slots once to seed MirrorSTRC, registers it uncapped
+    /// (it carries the whole position at upgrade), seeds the v2 parameters, stamps
+    /// lastFeeCollection (unstamped with a nonzero rate, the first collection would
+    /// mint decades of fees), and grants the §2.8 roles.
+    /// @param mirror The freshly deployed MirrorSTRC module.
+    /// @param baseBps The base redemption fee tier in basis points.
+    /// @param elevatedBps The elevated redemption fee tier in basis points.
+    /// @param roles The §2.8 role-holder addresses.
+    function initializeV2(MirrorSTRC mirror, uint16 baseBps, uint16 elevatedBps, RoleHolders calldata roles)
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+        reinitializer(2)
+    {
+        require(address(mirror) != address(0), InvalidZeroAddress());
+        require(baseBps <= elevatedBps && elevatedBps <= MAX_REDEMPTION_FEE_BPS, InvalidFee());
+        require(
+            roles.operator != address(0) && roles.moduleManager != address(0)
+                && roles.parameterManager != address(0) && roles.blacklister != address(0)
+                && roles.enforcer != address(0) && roles.pauser != address(0) && roles.unpauser != address(0),
+            InvalidZeroAddress()
+        );
+
+        // Move the v1 STRC leg into the mirror module and retire the v1 slots.
+        mirror.seed(
+            __deprecated_strcBalance,
+            __deprecated_vestingAmount,
+            __deprecated_lastDistributionTimestamp,
+            __deprecated_vestingPeriod
+        );
+        __deprecated_strcBalance = 0;
+        __deprecated_vestingAmount = 0;
+        __deprecated_lastDistributionTimestamp = 0;
+        __deprecated_vestingPeriod = 0;
+        __deprecated_toleranceBps = 0;
+        __deprecated_depositFeeBps = 0;
+        __deprecated_maxRewardsBps = 0;
+
+        // safe: BPS_DENOMINATOR == 10000 fits uint16
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint16 fullWeight = uint16(BPS_DENOMINATOR);
+        _modules.add(address(mirror));
+        _moduleConfigs[address(mirror)] = ModuleConfig({maxWeightBps: fullWeight});
+        emit ModuleRegistered(address(mirror), fullWeight);
+
+        baseRedemptionFeeBps = baseBps;
+        elevatedRedemptionFeeBps = elevatedBps;
+        surplusVestingPeriod = 24 hours;
+        maxSurplusBps = 250; // 2.5% of totalAssets per tranche
+        managementFeeBps = 50; // 0.5% per year
+        lastFeeCollection = block.timestamp;
+
+        _grantRole(OPERATOR_ROLE, roles.operator);
+        _grantRole(MODULE_MANAGER_ROLE, roles.moduleManager);
+        _grantRole(PARAMETER_MANAGER_ROLE, roles.parameterManager);
+        _grantRole(BLACKLISTER_ROLE, roles.blacklister);
+        _grantRole(ENFORCER_ROLE, roles.enforcer);
+        _grantRole(PAUSER_ROLE, roles.pauser);
+        _grantRole(UNPAUSER_ROLE, roles.unpauser);
     }
 
     /// @dev Authorizes an upgrade to a new implementation. Only callable by DEFAULT_ADMIN_ROLE.
@@ -716,18 +798,21 @@ contract StakedUSDat is
     {
         _sweep();
 
+        // One tier per fill: the quote and the clamp must agree.
+        uint16 feeBps = redemptionFeeBps();
+
         sharesRedeemed = sharesRequested;
-        usdat = _netPayout(convertToAssets(sharesRequested));
+        usdat = _net(convertToAssets(sharesRequested), feeBps);
 
         if (usdat > usdatBalance) {
             // Clamp: the largest share count whose net payout the buffer covers.
             // Floor-rounding at every step keeps the payout <= usdatBalance.
-            uint256 grossBudget = Math.mulDiv(usdatBalance, BPS_DENOMINATOR, BPS_DENOMINATOR - redemptionFeeBps);
+            uint256 grossBudget = Math.mulDiv(usdatBalance, BPS_DENOMINATOR, BPS_DENOMINATOR - feeBps);
             sharesRedeemed = Math.min(convertToShares(grossBudget), sharesRequested);
             if (sharesRedeemed == 0) {
                 return (0, 0);
             }
-            usdat = _netPayout(convertToAssets(sharesRedeemed));
+            usdat = _net(convertToAssets(sharesRedeemed), feeBps);
         }
 
         usdatBalance -= usdat;
@@ -736,10 +821,14 @@ contract StakedUSDat is
         IERC20(asset()).safeTransfer(address(WITHDRAWAL_QUEUE), usdat);
     }
 
-    /// @dev Gross redemption value less the redemption fee, floor-rounded in the
-    /// vault's favor.
-    function _netPayout(uint256 grossAssets) internal view returns (uint256) {
-        return Math.mulDiv(grossAssets, BPS_DENOMINATOR - redemptionFeeBps, BPS_DENOMINATOR);
+    /// @inheritdoc IStakedUSDat
+    function redemptionFeeBps() public view returns (uint16) {
+        return elevatedFeeActive ? elevatedRedemptionFeeBps : baseRedemptionFeeBps;
+    }
+
+    /// @dev Gross value less `feeBps`, floor-rounded in the vault's favor.
+    function _net(uint256 grossAssets, uint256 feeBps) internal pure returns (uint256) {
+        return Math.mulDiv(grossAssets, BPS_DENOMINATOR - feeBps, BPS_DENOMINATOR);
     }
 
     // ============ View Functions ============
@@ -774,12 +863,22 @@ contract StakedUSDat is
     }
 
     /// @inheritdoc IStakedUSDat
-    function setRedemptionFee(uint16 newFeeBps) external onlyRole(PARAMETER_MANAGER_ROLE) {
-        require(newFeeBps <= MAX_REDEMPTION_FEE_BPS, InvalidFee());
+    function setRedemptionFees(uint16 baseBps, uint16 elevatedBps) external onlyRole(PARAMETER_MANAGER_ROLE) {
+        require(baseBps <= elevatedBps && elevatedBps <= MAX_REDEMPTION_FEE_BPS, InvalidFee());
 
-        redemptionFeeBps = newFeeBps;
+        baseRedemptionFeeBps = baseBps;
+        elevatedRedemptionFeeBps = elevatedBps;
 
-        emit RedemptionFeeUpdated(newFeeBps);
+        emit RedemptionFeesUpdated(baseBps, elevatedBps);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    /// @dev The operator chooses between the two governance-set tiers, never the numbers.
+    /// Explicit state, not a toggle — idempotent under tx retries.
+    function setElevatedFeeActive(bool active) external onlyRole(OPERATOR_ROLE) {
+        elevatedFeeActive = active;
+
+        emit ElevatedFeeActiveUpdated(active);
     }
 
     /// @inheritdoc IStakedUSDat
