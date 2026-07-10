@@ -244,9 +244,9 @@ contract StakedUSDat is
         require(address(mirror) != address(0), InvalidZeroAddress());
         require(baseBps <= elevatedBps && elevatedBps <= MAX_REDEMPTION_FEE_BPS, InvalidFee());
         require(
-            roles.operator != address(0) && roles.moduleManager != address(0)
-                && roles.parameterManager != address(0) && roles.blacklister != address(0)
-                && roles.enforcer != address(0) && roles.pauser != address(0) && roles.unpauser != address(0),
+            roles.operator != address(0) && roles.moduleManager != address(0) && roles.parameterManager != address(0)
+                && roles.blacklister != address(0) && roles.enforcer != address(0) && roles.pauser != address(0)
+                && roles.unpauser != address(0),
             InvalidZeroAddress()
         );
 
@@ -593,7 +593,8 @@ contract StakedUSDat is
             return 0;
         }
 
-        return Math.mulDiv(surplusVestingPeriod - elapsed, surplusVestingAmount, surplusVestingPeriod, Math.Rounding.Ceil);
+        return
+            Math.mulDiv(surplusVestingPeriod - elapsed, surplusVestingAmount, surplusVestingPeriod, Math.Rounding.Ceil);
     }
 
     /// @inheritdoc IStakedUSDat

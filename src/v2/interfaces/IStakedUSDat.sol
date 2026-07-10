@@ -423,9 +423,7 @@ interface IStakedUSDat is IERC4626 {
      * @return sharesRedeemed min(sharesRequested, what usdatBalance covers net of fee).
      * @return usdat The net USDat transferred to the queue for this fill.
      */
-    function redeemQueuedShares(uint256 sharesRequested)
-        external
-        returns (uint256 sharesRedeemed, uint256 usdat);
+    function redeemQueuedShares(uint256 sharesRequested) external returns (uint256 sharesRedeemed, uint256 usdat);
 
     // ============ Module Management ============
 

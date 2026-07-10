@@ -28,9 +28,7 @@ interface IExchanger {
      * forwarded opaquely by the module.
      * @return strconOut The amount of STRCon delivered.
      */
-    function swapIn(uint256 usdatIn, uint256 minStrconOut, bytes calldata data)
-        external
-        returns (uint256 strconOut);
+    function swapIn(uint256 usdatIn, uint256 minStrconOut, bytes calldata data) external returns (uint256 strconOut);
 
     /**
      * @notice Swaps STRCon into USDat (the sell direction).
@@ -41,7 +39,5 @@ interface IExchanger {
      * @param data Route-specific execution data, forwarded opaquely by the module.
      * @return usdatOut The amount of USDat delivered.
      */
-    function swapOut(uint256 strconIn, uint256 minUsdatOut, bytes calldata data)
-        external
-        returns (uint256 usdatOut);
+    function swapOut(uint256 strconIn, uint256 minUsdatOut, bytes calldata data) external returns (uint256 usdatOut);
 }

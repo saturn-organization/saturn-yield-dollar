@@ -274,12 +274,7 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function seize(uint256 tokenId, address to)
-        external
-        nonReentrant
-        onlyRole(ENFORCER_ROLE)
-        whileUnpaused
-    {
+    function seize(uint256 tokenId, address to) external nonReentrant onlyRole(ENFORCER_ROLE) whileUnpaused {
         require(to != address(0), ZeroAmount());
         address owner = ownerOf(tokenId);
         _requireBlacklisted(owner);

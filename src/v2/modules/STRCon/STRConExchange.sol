@@ -44,13 +44,7 @@ contract STRConExchange is IExchanger {
     /// @notice M0's SwapFacility (zero-fee USDC → USDat mint)
     ISwapFacility public immutable SWAP_FACILITY;
 
-    constructor(
-        IERC20 usdat,
-        IERC20 usdc,
-        IERC20 strcon,
-        IGMTokenManager gmTokenManager,
-        ISwapFacility swapFacility
-    ) {
+    constructor(IERC20 usdat, IERC20 usdc, IERC20 strcon, IGMTokenManager gmTokenManager, ISwapFacility swapFacility) {
         require(
             address(usdat) != address(0) && address(usdc) != address(0) && address(strcon) != address(0)
                 && address(gmTokenManager) != address(0) && address(swapFacility) != address(0),
@@ -65,10 +59,7 @@ contract STRConExchange is IExchanger {
 
     /// @inheritdoc IExchanger
     /// @dev Will route USDat → USDC (current cash venue) → STRCon (Ondo).
-    function swapIn(uint256 usdatIn, uint256 minStrconOut, bytes calldata data)
-        external
-        returns (uint256 strconOut)
-    {
+    function swapIn(uint256 usdatIn, uint256 minStrconOut, bytes calldata data) external returns (uint256 strconOut) {
         revert NotImplemented();
     }
 
@@ -80,12 +71,8 @@ contract STRConExchange is IExchanger {
     /// is quote.quantity, so it must equal strconIn exactly (a smaller quote would
     /// strand the difference here). USDC and USDat are both 6 decimals and swap 1:1,
     /// so minUsdatOut doubles as the USDC minimum on the Ondo leg.
-    function swapOut(uint256 strconIn, uint256 minUsdatOut, bytes calldata data)
-        external
-        returns (uint256 usdatOut)
-    {
-        (IGMTokenManager.Quote memory quote, bytes memory signature) =
-            abi.decode(data, (IGMTokenManager.Quote, bytes));
+    function swapOut(uint256 strconIn, uint256 minUsdatOut, bytes calldata data) external returns (uint256 usdatOut) {
+        (IGMTokenManager.Quote memory quote, bytes memory signature) = abi.decode(data, (IGMTokenManager.Quote, bytes));
         require(quote.quantity == strconIn, QuantityMismatch());
 
         STRCON.safeTransferFrom(msg.sender, address(this), strconIn);
