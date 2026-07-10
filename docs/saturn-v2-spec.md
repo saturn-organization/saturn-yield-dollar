@@ -122,7 +122,7 @@ interface IAccountingModule {
     function asset() external view returns (address);
     /// recognized quantity of asset(), a counter — not a live balanceOf
     function balance() external view returns (uint256);
-    /// acquire the asset with USDat (venueData: venue-specific, e.g. Ondo RFQ attestation)
+    /// acquire the asset with USDat (venueData: venue/route-specific, forwarded opaquely)
     function buy(uint256 usdatIn, uint256 minAssetOut, bytes calldata venueData)
         external returns (uint256 assetOut);
     /// close position back to USDat
@@ -192,33 +192,42 @@ monthly STRC dividend arrives off-chain and is pushed in via `transferInRewards(
 setters (vault-only, bypass `buy`/`sell`): `seed(strcBalance, vestingAmount,
 lastDistributionTimestamp, vestingPeriod)` one-shot; `setBalance(0)`.
 
-**STRCon** (durable). Ondo Global Markets' tokenized STRC: a structured note backed 1:1 by
+**STRCon** (durable; token `0xECABE1Ff8a9e1dC55899cf58dac8497ecE5Ae84c`, 18 decimals).
+Ondo Global Markets' tokenized STRC: a structured note backed 1:1 by
 STRC shares, price-accumulating — dividends reinvest into the `sValue` multiplier
 (`STRCon price = STRC price × sValue`), so yield is continuous in the token price.
 `balance()` is a tracked counter under the custody-floor invariant. **No vesting** — the
 position is marked to market.
 
-- **Price source:** a wrapper over two Chainlink feeds. Primary — *STRCon/USD (Ondo API)*,
-  proxy `0x67d4Ae9f265270aE123c08D2657536771D19cD91` (8 decimals, ~24h heartbeat): the
-  recognized mark. Cross-check — *STRCon/USD (Calculated)*, proxy
+- **Price source (`STRConPriceOracle`):** a wrapper over two Chainlink feeds. Primary —
+  *STRCon/USD (Ondo API)*, proxy `0x67d4Ae9f265270aE123c08D2657536771D19cD91` (8 decimals,
+  ~24h heartbeat): the recognized mark. Secondary — *STRCon/USD (Calculated)*, proxy
   `0xC353ac4b425f818Ad87E228bf816E15c2173AC07` (prints regular market hours only): an
-  independent path (exchange prints, not Ondo's API).
-- **`getPrice()` — v1-style, reverts unless all of:**
-  1. answer positive and within bounds (min/max, admin-adjustable — the mark compounds with
-     sValue ~1%/mo, so the bounds need periodic raising);
-  2. API feed fresh (staleness ~26h, spanning the 24h weekend heartbeat);
-  3. Ondo's per-asset pause flag clear (`SyntheticSharesOracle.getSValue(STRCon).paused`,
-     set only for scheduled corporate actions);
+  independent path (exchange prints, not Ondo's API), cross-check only, never the mark.
+  Both re-pointable (`setPrimaryFeed`/`setSecondaryFeed`, vault `DEFAULT_ADMIN_ROLE`;
+  matching decimals enforced). The oracle defines no roles of its own — all access resolves
+  against the vault's registry; numeric params are `PARAMETER_MANAGER_ROLE`.
+- **`getPrice()` — reverts unless all of:**
+  1. primary answer positive and fresh (`maxPriceStaleness`, default 26h spanning the 24h
+     weekend heartbeat, cap 36h);
+  2. Ondo's per-asset pause flag clear and `sValue` nonzero
+     (`SyntheticSharesOracle.getSValue(STRCon)`; paused is set only for scheduled corporate
+     actions);
+  3. **sValue-adjusted bounds:** `price / sValue` — the underlying STRC-equivalent — within
+     `[minPrice, maxPrice]` (default $20–$150, v1's bounds). Dividing out the multiplier
+     makes the bounds stationary: dividend compounding (~1%/mo) never requires raising them;
   4. **cross-feed deviation tripwire**: when the two feeds' prints are contemporaneous
-     (`|api.updatedAt − calc.updatedAt| ≤ syncWindow`), require
-     `|api − calc| ≤ deviationBps` of calc. Contemporaneous prints disagreeing beyond the
-     threshold means an oracle pricing fault — halt. Non-contemporaneous prints (nights,
-     weekends, pre-market — the Calculated feed prints regular hours only) are a clock skew,
-     not a disagreement: the tripwire disarms and pricing is API-only, the accepted risk
-     (§5). Stateless: a trip clears when live prints re-agree or the sync window closes;
-     divergence that ends only because the session ended escalates to `PAUSER_ROLE`.
-     Initial parameters `syncWindow` ~1h, `deviationBps` 200 (both-fresh agreement measured
-     ~0.15%, Appendix B), admin-tunable.
+     (`|primary.updatedAt − secondary.updatedAt| ≤ syncWindow`), require
+     `|primary − secondary| ≤ deviationBps` of secondary. Contemporaneous prints disagreeing
+     beyond the threshold means an oracle pricing fault — halt. Non-contemporaneous prints
+     (nights, weekends, holidays — the secondary prints regular hours only) are clock skew,
+     not disagreement: the tripwire disarms and pricing is primary-only, the accepted risk
+     (§5). The secondary carries **no staleness bound** — closures have no fixed length, so
+     `syncWindow` is sized to price velocity (legitimate movement over the window ≪
+     `deviationBps`), never to closure gaps. Stateless: a trip clears when live prints
+     re-agree or the sync window closes; divergence that ends only because the session ended
+     escalates to `PAUSER_ROLE`. Initial parameters `syncWindow` 1h (cap 24h),
+     `deviationBps` 200 (both-fresh agreement measured ~0.15%, Appendix B).
 
   A closed market still heartbeats and is priced at the last mark; routine dividends ride
   the oracle's drift path and never trip (Appendix B). MirrorSTRC's `StrcPriceOracle` is
@@ -226,6 +235,22 @@ position is marked to market.
   remain the public last-price layer: an integrator who wants last-print-with-own-policy
   reads them directly (the Midas two-layer pattern); sUSDat's own views bind to the
   validated read.
+- **Execution (`buy`/`sell`): atomic on-chain, behind a swappable exchanger.** The cash
+  legs (USDat → USDC → STRCon and back) churn — the USDat/USDC venue moves (currently the
+  Fluid DEX pool) and the backing changes (M → PYUSD) — so routing lives behind `IExchanger`:
+  `swapIn(usdatIn, minStrconOut, data)` / `swapOut(strconIn, minUsdatOut, data)`,
+  asymmetric by design (swapIn routes through the current cash venue; swapOut is the stable
+  path — sell STRCon for USDC, mint USDat through the Swap Facility at zero fee). A venue
+  change is an exchanger redeploy + re-point (`setExchanger`, vault `DEFAULT_ADMIN_ROLE`) —
+  the position is never unwound. The exchanger is **low-trust by construction**: the module
+  measures delivery as its own balance delta (the exchanger's return value is ignored),
+  bounds it by `minAssetOut`/`minUsdatOut`, and requires the realized end-to-end price
+  within `toleranceBps` of the oracle (initial 500; `setTolerance`,
+  `PARAMETER_MANAGER_ROLE`, 100–10000) — one check bounding every hop of whatever route
+  ran. Recognition ordering is conservative: buy recognizes after delivery, sell
+  derecognizes before the route runs — mid-transaction NAV never overstates. Only
+  recognized balance is sellable (donated excess stays unrecognized); the custody floor is
+  asserted after every trade; approvals are per-call exact-amount, zeroed after.
 - Migration setter: `setBalance(amount)` — vault-only, seed-once (`require(balance == 0)`),
   asserts the custody floor.
 
@@ -417,7 +442,8 @@ Ships the module system with behavior identical to v1: MirrorSTRC holds today's 
 STRCon registers empty.
 
 1. Deployer EOA deploys: new `StakedUSDat` impl, new `WithdrawalQueueERC721` impl,
-   `MirrorSTRC`, `STRCon`.
+   `MirrorSTRC`, `STRConPriceOracle`, the exchanger, `STRConModule` (takes the exchanger at
+   construction — deploy order matters).
 2. Set the timelock's `EXECUTOR_ROLE` (currently open). `PROPOSER_ROLE` calls
    `scheduleBatch(delay = 5 days)`:
    - `sUSDat.upgradeToAndCall(impl, reinit)` — reads the v1 STRC slots (`strcBalance`,
@@ -524,7 +550,7 @@ retire with it. `StrcPriceOracle` is orphaned. Optional hygiene upgrade drops th
 |---|---|---|---|
 | 1 | Redemption fee tier numbers — base sized so the average exit processes at cost; elevated sized to off-hours/stress spread | fee params | measure Ondo spread, regular vs off-hours (§3.2 validation) |
 | 2 | Residual ex-date step size (n=2, equity-only) — confirm it stays inside noise now that no deposit fee backstops it | risk acceptance | accumulate monthly measurements |
-| 3 | Ondo mint/redeem mechanics for contracts: attestations, settlement time, size limits | STRCon module `buy`/`sell` | Ondo docs + §3.2 |
+| 3 | Ondo mint/redeem mechanics for contracts: eligibility of the exchanger address, quote/RFQ format, size limits, session-pause behavior | exchanger implementation (`swapIn`/`swapOut` routes) — the module no longer blocks on this | Ondo docs + §3.2 |
 
 ---
 
@@ -548,6 +574,11 @@ retire with it. `StrcPriceOracle` is orphaned. Optional hygiene upgrade drops th
 - **Module registration = accounting god-mode:** a malicious module inflates NAV and drains
   the vault. `MODULE_MANAGER_ROLE` gated; treat with UUPS-upgrade gravity. `maxWeightBps`
   bounds the blast radius of a bad module or oracle.
+- **Exchanger compromise — bounded:** the execution route is untrusted by construction
+  (measured delivery, min-out bounds, oracle-bounded realized price), so a malicious or
+  buggy exchanger is limited to `toleranceBps` slippage per operator-initiated rotation.
+  Re-pointing the exchanger or the oracle feeds moves NAV-adjacent trust —
+  `DEFAULT_ADMIN_ROLE` gated, module-registration gravity.
 - **Parked limit orders:** a request with `minSharePrice` above NAV sits unfilled
   indefinitely — by design, but holders may not realize; remedy is lowering the limit.
 - **Regulatory/eligibility:** STRCon is restricted to qualified non-US investors.
@@ -596,6 +627,26 @@ disagreement — an always-on comparison would false-trip every after-hours sess
 is evaluated statelessly rather than latched: latching needs storage writes from the price
 path and a clearing flow, while the hole it closes (divergence that "clears" only because
 the session ended) is what `PAUSER_ROLE` escalation covers.
+
+**Exchanger behind the STRCon module.** Attested-counterparty settlement (the MirrorSTRC
+pattern) was rejected for the durable module: it needs a counterparty fronting balance-sheet
+liquidity on every trade, which doesn't scale beyond Saturn's own book. STRCon trades
+atomically on-chain, so `buy`/`sell` execute atomically — but the cash legs churn
+(DEX venue migrations; M → PYUSD) while module replacement requires `balance() == 0`, so baking a
+route into the module would mean unwinding the position to change a swap venue. The split:
+the trust kernel (counter accounting, custody floor, min-out bounds, oracle-bounded realized
+price) lives in the module and never changes; routing lives behind the two-function
+`IExchanger` (asymmetric — `swapIn` churns, `swapOut` is the stable
+Ondo-sell → Swap-Facility-mint path) and is redeployed per venue change. The exchanger only
+ever needs to be functional, never correct for safety: checks live in the module, so they
+survive every exchanger swap, and a bad exchanger caps out at tolerance-bounded slippage on
+an operator-initiated trade.
+
+**sValue-adjusted price bounds.** Static bounds on the STRCon mark compound out of range
+(~1%/mo) and become a standing maintenance chore with a halt on the day it's forgotten;
+bounding `price / sValue` — the underlying STRC-equivalent — keeps the bounds stationary
+(v1's $20–$150 carry over unchanged) and reuses the same `getSValue` read that carries the
+corporate-action pause flag.
 
 **Mark-to-market for STRCon; no vesting.** Vesting exists to smooth *discrete* reward events
 (deposit-sniping around a predictable jump). STRCon's dividend is already continuous in the
@@ -756,6 +807,7 @@ Ondo/Chainlink as more ex-dates accumulate.
 
 | What | Where |
 |---|---|
+| STRCon token (Ethereum) | `0xECABE1Ff8a9e1dC55899cf58dac8497ecE5Ae84c`, 18 dec |
 | STRCon/USD (Ondo API) Chainlink feed | `0x67d4Ae9f265270aE123c08D2657536771D19cD91`, 8 dec, ~24h heartbeat, ~0.5% deviation |
 | STRCon/USD (Calculated) Chainlink feed | `0xC353ac4b425f818Ad87E228bf816E15c2173AC07`, 8 dec, regular hours only |
 | Ondo `SyntheticSharesOracle` (Ethereum) | `0x9BC39DB6fbB44B91a48b8D5A6C208B82B1741bE6` — `getSValue(asset)`, drift params (2% / 24h) |
