@@ -17,24 +17,28 @@ contract SimulateProcess591 is Script {
 
     function run() external {
         address processor = vm.envAddress("PROCESSOR");
-        uint256 feeBps = uint256(1900); // 2000 = 0.2
-        uint256 positionUsdat = uint256(932108468646);
-        uint256 positionStrc = uint256(10635651171);
+        // uint256 feeBps = uint256(250); // 2000 = 0.2
+        // uint256 positionUsdat = uint256(178396428163);
+        // uint256 positionStrc = uint256(2040682088);
 
-        uint256 usdatAmount = (positionUsdat * (10000 - feeBps)) / 10000;
-        uint256 strcAmount = (positionStrc * (10000 - feeBps)) / 10000;
-        uint256 strcPrice = uint256(8764000000);
+        // uint256 usdatAmount = (positionUsdat * (10000 - feeBps)) / 10000;
+        // uint256 strcAmount = (positionStrc * (10000 - feeBps)) / 10000;
+        uint256 usdatAmount = uint256(409000000000);
+        uint256 strcAmount = uint256(4636136930);
 
-        IWithdrawalQueueERC721.Request memory req = WQ.getRequest(591);
+        uint256 strcPrice = uint256(8822000000);
+        uint256 tokenId = 606;
+
+        IWithdrawalQueueERC721.Request memory req = WQ.getRequest(tokenId);
         console2.log("BEFORE  usdatAmount:", usdatAmount);
         console2.log("BEFORE  strcAmount:", strcAmount);
-        console2.log("BEFORE  positionUsdat:", positionUsdat);
-        console2.log("BEFORE  positionStrc:", positionStrc);
+        // console2.log("BEFORE  positionUsdat:", positionUsdat);
+        // console2.log("BEFORE  positionStrc:", positionStrc);
         console2.log("BEFORE  sUSDat usdatBalance:", SUSDAT.usdatBalance());
         console2.log("BEFORE  sUSDat strcBalance:", SUSDAT.strcBalance());
 
         uint256[] memory ids = new uint256[](1);
-        ids[0] = 591;
+        ids[0] = tokenId;
 
         vm.startPrank(processor);
         SUSDAT.convertFromUsdat(usdatAmount, strcAmount, strcPrice); // vault funds processor with USDat
@@ -42,7 +46,7 @@ contract SimulateProcess591 is Script {
         WQ.processRequests(ids, usdatAmount, strcAmount, strcPrice);
         vm.stopPrank();
 
-        req = WQ.getRequest(591);
+        req = WQ.getRequest(tokenId);
         require(
             req.status == IWithdrawalQueueERC721.RequestStatus.Processed,
             "not Processed"
