@@ -603,16 +603,21 @@ contract DecimalValidationTest is Test {
     /// @dev Computes CREATE1 address for contract deployment prediction.
     /// The typecasts are safe because each branch checks bounds before casting.
     function _computeCreate1Address(address deployer, uint256 nonce) internal pure returns (address) {
+        require(nonce <= type(uint24).max, "nonce too large");
         bytes memory data;
         if (nonce == 0) {
             data = abi.encodePacked(bytes1(0xd6), bytes1(0x94), deployer, bytes1(0x80));
         } else if (nonce <= 0x7f) {
+            // forge-lint: disable-next-line(unsafe-typecast)
             data = abi.encodePacked(bytes1(0xd6), bytes1(0x94), deployer, bytes1(uint8(nonce)));
         } else if (nonce <= 0xff) {
+            // forge-lint: disable-next-line(unsafe-typecast)
             data = abi.encodePacked(bytes1(0xd7), bytes1(0x94), deployer, bytes1(0x81), bytes1(uint8(nonce)));
         } else if (nonce <= 0xffff) {
+            // forge-lint: disable-next-line(unsafe-typecast)
             data = abi.encodePacked(bytes1(0xd8), bytes1(0x94), deployer, bytes1(0x82), bytes2(uint16(nonce)));
         } else {
+            // forge-lint: disable-next-line(unsafe-typecast)
             data = abi.encodePacked(bytes1(0xd9), bytes1(0x94), deployer, bytes1(0x83), bytes3(uint24(nonce)));
         }
         return address(uint160(uint256(keccak256(data))));

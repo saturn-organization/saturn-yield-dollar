@@ -76,13 +76,16 @@ contract StakedUSDat is
     mapping(address account => bool isBlacklisted) private _blacklisted;
 
     /// @dev Retired v1 slot (was vestingAmount); read once by initializeV2 to seed MirrorSTRC
-    uint256 private __deprecated_vestingAmount;
+    // forge-lint: disable-next-line(mixed-case-variable)
+    uint256 private __deprecatedVestingAmount;
 
     /// @dev Retired v1 slot (was lastDistributionTimestamp); read once by initializeV2 to seed MirrorSTRC
-    uint256 private __deprecated_lastDistributionTimestamp;
+    // forge-lint: disable-next-line(mixed-case-variable)
+    uint256 private __deprecatedLastDistributionTimestamp;
 
     /// @dev Retired v1 slot (was vestingPeriod); read once by initializeV2 to seed MirrorSTRC
-    uint256 private __deprecated_vestingPeriod;
+    // forge-lint: disable-next-line(mixed-case-variable)
+    uint256 private __deprecatedVestingPeriod;
 
     /// @notice Minimum redemption request size (10 sUSDat shares, 18 decimals).
     /// Share-denominated so requestRedeem never prices.
@@ -98,13 +101,15 @@ contract StakedUSDat is
     uint256 public constant MAX_MANAGEMENT_FEE_BPS = 200;
 
     /// @dev Retired v1 slot (was toleranceBps); do not reuse
-    uint256 private __deprecated_toleranceBps;
+    // forge-lint: disable-next-line(mixed-case-variable)
+    uint256 private __deprecatedToleranceBps;
 
     /// @notice Basis points denominator
     uint256 public constant BPS_DENOMINATOR = 10000;
 
     /// @dev Retired v1 slot (was depositFeeBps); do not reuse
-    uint256 private __deprecated_depositFeeBps;
+    // forge-lint: disable-next-line(mixed-case-variable)
+    uint256 private __deprecatedDepositFeeBps;
 
     /// @notice Address that receives protocol fees
     address public feeRecipient;
@@ -113,10 +118,12 @@ contract StakedUSDat is
     uint256 public usdatBalance;
 
     /// @dev Retired v1 slot (was strcBalance); read once by initializeV2 to seed MirrorSTRC
-    uint256 private __deprecated_strcBalance;
+    // forge-lint: disable-next-line(mixed-case-variable)
+    uint256 private __deprecatedStrcBalance;
 
     /// @dev Retired v1 slot (was maxRewardsBps); do not reuse
-    uint256 private __deprecated_maxRewardsBps;
+    // forge-lint: disable-next-line(mixed-case-variable)
+    uint256 private __deprecatedMaxRewardsBps;
 
     /// @dev Registered accounting modules; totalAssets() iterates this set
     EnumerableSet.AddressSet private _modules;
@@ -169,12 +176,13 @@ contract StakedUSDat is
     /// @dev Contract-relationship gate: immutable address check, deliberately not a
     /// grantable role.
     modifier onlyWithdrawalQueue() {
-        require(msg.sender == address(WITHDRAWAL_QUEUE), OperationNotAllowed());
+        _requireWithdrawalQueue();
         _;
     }
 
     /// @dev Lifts an active pause for the duration of the call (enforcement actions
     /// work while paused).
+    // Pre-call pause state must remain available after the modified function runs.
     modifier whileUnpaused() {
         bool wasPaused = paused();
         if (wasPaused) _unpause();
@@ -185,6 +193,10 @@ contract StakedUSDat is
     /// @dev Reverts if the given amount is zero.
     function _notZero(uint256 amount) internal pure {
         require(amount != 0, ZeroAmount());
+    }
+
+    function _requireWithdrawalQueue() internal view {
+        require(msg.sender == address(WITHDRAWAL_QUEUE), OperationNotAllowed());
     }
 
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -259,18 +271,18 @@ contract StakedUSDat is
 
         // Move the v1 STRC leg into the mirror module and retire the v1 slots.
         mirror.seed(
-            __deprecated_strcBalance,
-            __deprecated_vestingAmount,
-            __deprecated_lastDistributionTimestamp,
-            __deprecated_vestingPeriod
+            __deprecatedStrcBalance,
+            __deprecatedVestingAmount,
+            __deprecatedLastDistributionTimestamp,
+            __deprecatedVestingPeriod
         );
-        __deprecated_strcBalance = 0;
-        __deprecated_vestingAmount = 0;
-        __deprecated_lastDistributionTimestamp = 0;
-        __deprecated_vestingPeriod = 0;
-        __deprecated_toleranceBps = 0;
-        __deprecated_depositFeeBps = 0;
-        __deprecated_maxRewardsBps = 0;
+        __deprecatedStrcBalance = 0;
+        __deprecatedVestingAmount = 0;
+        __deprecatedLastDistributionTimestamp = 0;
+        __deprecatedVestingPeriod = 0;
+        __deprecatedToleranceBps = 0;
+        __deprecatedDepositFeeBps = 0;
+        __deprecatedMaxRewardsBps = 0;
 
         // safe: BPS_DENOMINATOR == 10000 fits uint16
         // forge-lint: disable-next-line(unsafe-typecast)

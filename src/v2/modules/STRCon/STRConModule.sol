@@ -98,13 +98,21 @@ contract STRConModule is IAccountingModule {
     // ============ Modifiers ============
 
     modifier onlyVault() {
-        require(msg.sender == VAULT, NotVault());
+        _requireVault();
         _;
     }
 
     modifier onlyVaultRole(bytes32 role) {
-        require(IAccessControl(VAULT).hasRole(role, msg.sender), Unauthorized());
+        _requireVaultRole(role);
         _;
+    }
+
+    function _requireVault() internal view {
+        require(msg.sender == VAULT, NotVault());
+    }
+
+    function _requireVaultRole(bytes32 role) internal view {
+        require(IAccessControl(VAULT).hasRole(role, msg.sender), Unauthorized());
     }
 
     constructor(address vault, STRConPriceOracle oracle, IERC20 strcon, IERC20 usdat, IExchanger exchanger_) {
@@ -219,7 +227,7 @@ contract STRConModule is IAccountingModule {
 
     /// @notice One-shot balance seed at migrate() (§3.3).
     /// @dev Will be vault-only, seed-once (balance == 0), asserting the custody floor.
-    function setBalance(uint256 newBalance) external {
+    function setBalance(uint256) external pure {
         revert NotImplemented();
     }
 

@@ -10,4 +10,9 @@ remappings = [
     "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/"
 ]
 
+[lint]
+# whileUnpaused must retain pre-call state across the modified function to restore
+# an existing pause; the linter's helper extraction is not behavior-preserving.
+exclude_lints = ["unwrapped-modifier-logic"]
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

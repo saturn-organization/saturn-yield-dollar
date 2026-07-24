@@ -92,8 +92,12 @@ contract STRConPriceOracle {
     uint256 public maxPrice;
 
     modifier onlyVaultRole(bytes32 role) {
-        require(IAccessControl(VAULT).hasRole(role, msg.sender), Unauthorized());
+        _requireVaultRole(role);
         _;
+    }
+
+    function _requireVaultRole(bytes32 role) internal view {
+        require(IAccessControl(VAULT).hasRole(role, msg.sender), Unauthorized());
     }
 
     constructor(

@@ -12,8 +12,12 @@ import {IStakedUSDat} from "../../src/v2/interfaces/IStakedUSDat.sol";
 import {IWithdrawalQueueERC721} from "../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
 
 contract SettlementUSDatMock {
+    // Lowercase public constants preserve the ERC20 metadata ABI.
+    // forge-lint: disable-next-line(screaming-snake-case-const)
     string public constant name = "USDat";
+    // forge-lint: disable-next-line(screaming-snake-case-const)
     string public constant symbol = "USDat";
+    // forge-lint: disable-next-line(screaming-snake-case-const)
     uint8 public constant decimals = 6;
 
     uint256 public totalSupply;

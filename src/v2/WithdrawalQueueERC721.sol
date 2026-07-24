@@ -63,22 +63,31 @@ contract WithdrawalQueueERC721 is
 
     /// @dev Retired v1 slot; do not reuse.
     /// @custom:oz-renamed-from pendingCount
-    uint256 private __deprecated_pendingCount;
+    // The double-underscore prefix marks retired storage slots.
+    // forge-lint: disable-next-line(mixed-case-variable)
+    uint256 private __deprecatedPendingCount;
 
     /// @dev Contract-relationship gate: immutable address check, deliberately not a
     /// grantable role.
+    // forge-lint: disable-next-line(mixed-case-function)
     modifier onlyStakedUSDat() {
-        require(msg.sender == address(STAKED_USDAT), OperationNotAllowed());
+        _requireStakedUSDat();
         _;
     }
 
     /// @dev Lifts an active pause for the duration of the call (enforcement actions
     /// work while paused).
+    // Pre-call pause state must remain available after the modified function runs.
     modifier whileUnpaused() {
         bool wasPaused = paused();
         if (wasPaused) _unpause();
         _;
         if (wasPaused) _pause();
+    }
+
+    // forge-lint: disable-next-line(mixed-case-function)
+    function _requireStakedUSDat() internal view {
+        require(msg.sender == address(STAKED_USDAT), OperationNotAllowed());
     }
 
     /// @custom:oz-upgrades-unsafe-allow constructor

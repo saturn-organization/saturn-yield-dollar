@@ -114,13 +114,21 @@ contract MirrorSTRC is IAccountingModule {
     // ============ Modifiers ============
 
     modifier onlyVault() {
-        require(msg.sender == VAULT, NotVault());
+        _requireVault();
         _;
     }
 
     modifier onlyVaultRole(bytes32 role) {
-        require(IAccessControl(VAULT).hasRole(role, msg.sender), Unauthorized());
+        _requireVaultRole(role);
         _;
+    }
+
+    function _requireVault() internal view {
+        require(msg.sender == VAULT, NotVault());
+    }
+
+    function _requireVaultRole(bytes32 role) internal view {
+        require(IAccessControl(VAULT).hasRole(role, msg.sender), Unauthorized());
     }
 
     constructor(address vault, IStrcPriceOracle oracle, IERC20 usdat) {
