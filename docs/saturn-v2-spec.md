@@ -1,7 +1,7 @@
 # sUSDat v2 — Technical Specification
 
 **Status:** Draft 2 (rewrite of [draft 1](./saturn-v2-upgrade-spec-draft1.md))
-**Date:** 2026-07-23
+**Date:** 2026-07-24
 **Scope:** The v2 upgrade of `StakedUSDat` and `WithdrawalQueueERC721`: fixed accounting
 modules for the legacy STRC mirror and STRCon, the STRC → STRCon migration, and the
 withdrawal-queue rework. Arbitrary multi-asset support is deferred.
@@ -42,7 +42,8 @@ the sole token-backed tradable module.
 Unchanged: the ERC-4626 core with async-redemption overrides (`withdraw`/`redeem` disabled;
 `requestRedeem`'s limit becomes `minSharePrice`), deposit variants (permit/min-shares),
 blacklist + `redistributeLockedAmount`, and `rescueTokens` (generalized, §2.2). Vault pause
-remains and becomes protocol-wide through queue gating (§2.6).
+remains scoped to vault and sUSDat mutations; queue-local pause separately gates queue-only
+actions (§2.6).
 
 ### WithdrawalQueueERC721
 
@@ -55,11 +56,12 @@ remains and becomes protocol-wide through queue gating (§2.6).
 | `minUsdatReceived` (absolute payout bound) | `minSharePrice` (6-decimal minimum gross USDat per `1e18` shares, §2.6); the same storage slot is reinterpreted without conversion and legacy owners receive a grace period to update or cancel (§3.1) |
 | dust flow (`approve` + `collectDust`) | dropped |
 | `SlippageExceeded` revert on unmet limit | below-limit requests are skipped, not reverted |
-| no cancellation | NFT owner may cancel an open request and recover all escrowed shares while neither the queue nor vault is paused |
-| queue-local pause only | local pause remains; vault hard pause also blocks the complete queue lifecycle (§2.6) |
+| no cancellation | NFT owner may cancel an open request and recover all escrowed shares while the queue is unpaused; a vault pause makes the sUSDat return transfer revert |
+| queue-local pause only | local pause remains authoritative for queue-only actions; vault pause indirectly blocks request creation, processing, and cancellation, but not funded claims, limit updates, or request-NFT transfers (§2.6) |
 
-Retained with narrower surfaces: request creation and share escrow, single-request views,
-NFT ownership, and pause. Cancellation, compliance, and roles change per §2.6–2.8.
+Retained with narrower surfaces: request creation and share escrow, single-request reads,
+current-owner request enumeration, NFT ownership, and pause. Cancellation, compliance, and
+roles change per §2.6–2.8.
 
 ### Removed functions
 
@@ -76,10 +78,11 @@ move into STRCMirror), `setTolerance` (→ `StakedUSDat.setExecutionTolerance`),
 `claimBatchFor`, `claimAllFor` (→ single `claim`), `updateMinUsdatReceived`
 (→ `updateMinSharePrice`), and the view surface — `getRequest`, `getStatus`, `isClaimable`,
 `getPendingCount`, `getTotalRequests` (→ the `requests` / `nextTokenId` public getters),
-`getMyRequests`, `getUserRequests`, `getClaimable`, `getPending`, `getTotalPendingShares`,
-`getPendingIdsInRange` (→ ERC721Enumerable views + multicall/events), plus the
-`pendingCount` variable (no on-chain consumer). Remaining reads: the `requests` mapping,
-`nextTokenId`, and inherited ERC721Enumerable.
+`getMyRequests` (→ `getUserRequests(msg.sender)`), `getClaimable`, `getPending`,
+`getTotalPendingShares`, `getPendingIdsInRange` (→ `getUserRequests` /
+ERC721Enumerable views + multicall/events), plus the `pendingCount` variable (no on-chain
+consumer). Remaining reads: the `requests` mapping, `nextTokenId`, `getUserRequests`, and
+inherited ERC721Enumerable.
 
 ---
 
@@ -553,8 +556,9 @@ struct Request {
 
 Lifecycle is `Requested → Processed → Claimed` or `Requested → Cancelled`. `InProgress`
 only preserves v1 numbering; migration clears all v1 locks and v2 never creates it.
-Processed USDat stays in the queue until claimed. There are no partial fills: `shares`
-remains unchanged until burned or returned.
+Processed USDat stays in the queue until claimed. There are no partial fills: the stored
+`shares` value is never decremented; the corresponding escrowed shares are either burned
+on complete settlement or returned on cancellation.
 
 **Limit semantics.** `minSharePrice` is the minimum **gross** execution price in 6-decimal
 USDat per `1e18` shares, checked before the redemption fee. A below-limit request is skipped
@@ -572,7 +576,8 @@ modifier onlySUSDAT() {
 }
 ```
 
-No administrator can re-point or widen it.
+No administrator can re-point or widen it. The queue also rejects a user restricted by
+either the sUSDat blacklist or USDat freeze list before minting the request NFT.
 
 **Processing.** Funding and processing are separate. The vault tops up `usdatBalance` on
 its own cadence; sales are not earmarked. The operator passes ordered token IDs, not
@@ -583,10 +588,8 @@ enum RedemptionResult { Settled, BelowLimit, InsufficientLiquidity }
 
 // WithdrawalQueueERC721: OPERATOR_ROLE, nonReentrant, queue-local whenNotPaused
 processRequests(uint256[] tokenIds)
-  require(!STAKED_USDAT.paused(), VaultPaused());
-  require(STAKED_USDAT.marketMode() != MarketMode.RESTRICTED, MarketRestricted());
-  for each request:
-    require(request.status == RequestStatus.Requested, InvalidRequest());
+  for each request in caller-supplied order:
+    require(request.status == RequestStatus.Requested, RequestNotOpen());
     (result, usdat) = vault.redeemQueuedShares(request.shares, request.minSharePrice)
     if result == BelowLimit → continue                 // request stays open
     if result == InsufficientLiquidity → continue      // a later smaller request may fit
@@ -594,14 +597,24 @@ processRequests(uint256[] tokenIds)
     request.status = Processed
 ```
 
+The queue does not inspect `marketMode()`. `redeemQueuedShares` owns the Restricted-mode
+gate, so a non-empty batch reverts atomically in Restricted mode; an empty batch remains a
+no-op.
+
+Duplicate IDs need no separate validation. A skipped request may be retried later in the
+same caller-supplied sequence. Once an occurrence settles, its status becomes `Processed`,
+so any later duplicate fails the `Requested` check and atomically rolls back the complete
+transaction. A duplicate therefore cannot burn shares or fund an obligation twice.
+
 ```solidity
 // StakedUSDat — queue-only; price, check, burn, and transfer atomically
 function redeemQueuedShares(uint256 shares, uint256 minSharePrice)
     external onlyWithdrawalQueue whenNotPaused whenNotRestricted
     returns (RedemptionResult result, uint256 usdat);
 // gross = convertToAssets(shares), floor-rounded and priced before the burn
-// minimumGross = Math.mulDiv(shares, minSharePrice, 1e18, Math.Rounding.Ceil)
-// gross < minimumGross → BelowLimit
+// maximumSharePrice = Math.mulDiv(gross, 1e18, shares)
+// minSharePrice > maximumSharePrice → BelowLimit
+// (equivalent to gross < ceil(shares * minSharePrice / 1e18), without limit overflow)
 // fee = Math.mulDiv(gross, redemptionFeeBps(), 10_000, Math.Rounding.Ceil)
 // net = gross - fee
 // usdatBalance < net → InsufficientLiquidity
@@ -626,29 +639,55 @@ enabled. Backing-asset and liquidity-path changes do not touch the queue.
 
 **Cancellation.** While active, the current NFT owner may call `cancelRequest(tokenId)` on
 an open request. It is nonReentrant, returns all shares to that owner, marks `Cancelled`,
-and burns the NFT without a fee. Blacklisted owners cannot cancel; enforcement handles
-their positions. Pause blocks cancellation.
+and burns the NFT without a fee. Restricted owners cannot cancel; enforcement handles
+their positions. Queue pause blocks cancellation. Vault pause also causes cancellation to
+revert when the queue attempts to return the escrowed sUSDat.
 
 **Claiming.** `claim(tokenId)` is the only claim function. While active, the current owner
 of a `Processed` request receives all `usdatOwed`; the request becomes `Claimed` and the NFT
 burns. V2 has no `claimBatch`, `claimAll`, `claimBatchFor`, or `claimAllFor`. Pause blocks
-claims.
+claims only when the queue itself is paused; an already-funded claim remains available
+during a vault pause.
 
-**Queue pause semantics.** The queue is active only if its local `paused()` and
-`StakedUSDat.paused()` are both false. Either pause blocks `addRequest`,
+**Owner request view.** `getUserRequests(user)` returns every live request NFT currently
+owned by `user`, regardless of request status. Claimed and cancelled requests are excluded
+because their NFTs are burned. The returned ERC721Enumerable order is not stable.
+
+**Queue pause semantics.** The queue relies on its own `whenNotPaused` gate and does not
+mirror `StakedUSDat.paused()`. Queue-local pause blocks `addRequest`,
 `updateMinSharePrice`, `processRequests`, `cancelRequest`, `claim`, and ordinary NFT
-movement. Restricted mode blocks only `processRequests` among queue actions; it is not a
-pause. Views remain available. Separate `PAUSER_ROLE` and `UNPAUSER_ROLE` apply (§2.8).
-Explicit internal bypasses keep enforcement available without temporarily unpausing either
-contract.
+movement. Vault pause independently blocks vault calls and sUSDat movement, so request
+creation, processing, and cancellation revert without an extra queue-side pause check.
+Already-funded claims, limit updates, and request-NFT transfers remain available during a
+vault pause. Restricted mode blocks only non-empty processing among queue actions, through
+the vault-side `redeemQueuedShares` gate; it is not a pause. Views remain available.
+Separate `PAUSER_ROLE` and `UNPAUSER_ROLE` apply (§2.8). Queue enforcement uses
+`whileUnpaused`: an active queue pause is temporarily lifted for the enforcement call and
+restored afterward. A successful call while paused emits `Unpaused` followed by `Paused`;
+a revert rolls back both pause-state changes and their events.
 
-**Compliance.** The queue has no blacklist role or storage; canonical restriction is
-`StakedUSDat.isBlacklisted`. A blacklisted owner cannot transfer the NFT, update its limit,
-cancel, or claim. `seizeRequest(tokenId)` transfers an open NFT from that owner to
+**Compliance.** The queue has no blacklist role or storage. It treats either the canonical
+sUSDat blacklist or the USDat freeze list as a queue restriction:
+
+```solidity
+function _requireNotBlacklisted(address account) internal view {
+    require(!STAKED_USDAT.isBlacklisted(account), AddressBlacklisted());
+    require(!USDAT.isFrozen(account), AddressBlacklisted());
+}
+
+function _requireBlacklisted(address account) internal view {
+    require(
+        STAKED_USDAT.isBlacklisted(account) || USDAT.isFrozen(account),
+        NotBlacklisted()
+    );
+}
+```
+
+A restricted owner cannot transfer the NFT, update its limit, cancel, or claim.
+`seizeRequest(tokenId)` transfers an open NFT from that owner to
 `StakedUSDat.recoveryAddress()`; `seize(tokenId)` pays a processed request's `usdatOwed`
 there, marks it claimed, and burns the NFT. Neither accepts a destination. Both are
-single-token `ENFORCER_ROLE` operations (§2.8). USDat may enforce independent transfer
-restrictions, but they are not a second queue blacklist.
+single-token `ENFORCER_ROLE` operations (§2.8).
 
 Invariants:
 - A request is settled completely or not at all; v2 never partially burns its shares.
@@ -690,10 +729,14 @@ shares the `OPERATOR_ROLE` address; either may later be reassigned independently
   redemption fee.
 - **Elevated:** deposits and mints use `elevatedDepositFeeBps`; queue processing uses the
   elevated redemption fee.
-- **Restricted:** deposits, mints, `processRequests`, `redeemQueuedShares`, `buy`, and `sell`
-  revert. New redemption requests, request updates, cancellations, funded claims, and
-  sUSDat and request-NFT transfers remain available.
-- **Hard pause:** independent `Pausable` overrides every mode (§2.3, §2.6). Views,
+- **Restricted:** deposits, mints, `redeemQueuedShares`, `buy`, and `sell` revert. Non-empty
+  `processRequests` calls therefore revert through `redeemQueuedShares`; an empty batch is a
+  no-op. New redemption requests, request updates, cancellations, funded claims, and sUSDat
+  and request-NFT transfers remain available.
+- **Vault hard pause:** independent `Pausable` overrides every mode for vault and sUSDat
+  mutations (§2.3, §2.6). It also makes queue request creation, processing, and
+  cancellation revert through their vault or sUSDat calls. Funded claims, limit updates,
+  and request-NFT transfers remain available unless the queue is separately paused. Views,
   market-mode changes, governance, oracle recovery, upgrade, unpause, and enforcement
   remain available.
 
@@ -795,8 +838,8 @@ the mirror and recognizes STRCon, subject to `migrateTolBps`.
    `minSharePrice` per `1e18` shares. Leave requests unchanged and allow owners sufficient
    time after the upgrade to update or cancel before queue processing resumes.
 4. Schedule the two `upgradeToAndCall` operations through the five-day timelock. The sUSDat
-   reinitializer installs both modules, approved parameters and roles, then maps the legacy
-   vault slots into the renamed `STRCMirror` state:
+   reinitializer installs both modules, the approved nonzero `recoveryAddress`, parameters,
+   and roles, then maps the legacy vault slots into the renamed `STRCMirror` state:
 
    ```solidity
    strcMirror.seed({
@@ -814,8 +857,9 @@ the mirror and recognizes STRCon, subject to `migrateTolBps`.
    reverts the batch. From this point, the vault cannot buy or sell mirrored STRC, and
    reward and vesting calls target `STRCMirror`.
 6. Confirm that pre/post `totalAssets()`, share conversion, and unvested rewards match; all
-   five seeded values, module bindings, roles, and initial parameters are correct; and
-   `STRConModule.balance() == 0`. Any mismatch blocks the validation gate and Step 2.
+   five seeded values, module bindings, recovery address, roles, and initial parameters are
+   correct; and `STRConModule.balance() == 0`. Any mismatch blocks the validation gate and
+   Step 2.
 
 ### 3.2 Validation gate (before Step 2)
 
@@ -997,16 +1041,17 @@ without an execution race. The owner receives all escrowed shares and the NFT bu
 Pause and blacklist block cancellation, matching queue controls.
 
 **One claim function.** The batch/`claimAll`/`*For` family multiplied every lifecycle change
-across five functions. Whole-request settlement needs only `claim(tokenId)`, blocked with
-the rest of the queue lifecycle on pause.
+across five functions. Whole-request settlement needs only `claim(tokenId)`, blocked by
+queue-local pause but available during vault pause once USDat is already funded.
 
 **Market mode separate from hard pause.** Regular, Elevated, and Restricted are reversible
 operating choices, not incidents. Restricted blocks deposits, settlement, and rotations
-while requests, funded claims, and transfers stay live; hard pause is protocol-wide
-containment. Separate `MARKET_MODE_MANAGER_ROLE` allows later separation from execution
-despite shared initial holders. Both fees stay in the vault to offset dilution, not create
-revenue. Elevated is the required off-hours mode; Restricted is reserved for identified
-executable arbitrage rather than raw oracle divergence.
+while requests, funded claims, and transfers stay live. Vault hard pause contains vault and
+sUSDat mutations; queue-local pause separately contains funded claims and queue-only state.
+Separate `MARKET_MODE_MANAGER_ROLE` allows later separation from execution despite shared
+initial holders. Both fees stay in the vault to offset dilution, not create revenue.
+Elevated is the required off-hours mode; Restricted is reserved for identified executable
+arbitrage rather than raw oracle divergence.
 
 **Flat redemption fee, two tiers.** Exact per-request cost attribution is a policy choice
 rather than a measurement (which module funded what buffer refill?) and requires fused
@@ -1230,23 +1275,26 @@ it creates no reserve or guarantee.
 
 ## Appendix F — Market-mode permissions
 
-Hard pause is not a `MarketMode`; it overrides the selected mode.
+Vault hard pause is not a `MarketMode`; it overrides the selected mode for vault and sUSDat
+mutations without automatically pausing queue-only actions.
 
-| Operation | Regular | Elevated | Restricted | Hard paused |
+| Operation | Regular | Elevated | Restricted | Vault hard paused |
 |---|---|---|---|---|
 | Deposit/mint | Yes — no deposit fee | Yes — elevated deposit fee | No | No |
 | Create redemption request | Yes | Yes | Yes | No |
 | Process redemption | Yes — base redemption fee | Yes — elevated redemption fee | No | No |
-| Claim already-funded USDat | Yes | Yes | Yes | No |
+| Claim already-funded USDat | Yes | Yes | Yes | Yes |
 | Cancel request | Yes | Yes | Yes | No |
-| Transfer sUSDat/request NFT | Yes | Yes | Yes | No |
+| Update request limit | Yes | Yes | Yes | Yes |
+| Transfer sUSDat | Yes | Yes | Yes | No |
+| Transfer request NFT | Yes | Yes | Yes | Yes |
 | Buy/sell STRCon | Yes | Yes | No | No |
 | Set market mode | Yes | Yes | Yes | Yes |
 | Governance/oracle recovery | Yes | Yes | Yes | Yes |
 
 Read-only views remain available while hard paused as well as in every market mode, subject
 to the existing fail-closed oracle checks. A local queue pause independently blocks queue
-actions even when the vault is not hard paused.
+lifecycle actions and request-NFT movement, whether or not the vault is hard paused.
 
 ---
 
@@ -1261,11 +1309,11 @@ and expected recovery intact is not impairment by itself.
 
 The incident owner determines impairment under the runbook; `PAUSER_ROLE`, not
 `OPERATOR_ROLE`, immediately pauses the vault. Vault pause blocks deposits, mints, sUSDat
-transfers, new requests, rotations, migration, `redeemQueuedShares`, and every queue
-lifecycle action, including funded claims and request-NFT transfers. The queue applies
-vault pause in addition to its local pause. Governance, oracle recovery, upgrades, unpause,
-and enforcement remain available. Use local queue pause when only the queue, its USDat, or
-a compliance incident needs containment (§2.6).
+transfers, new requests, rotations, migration, `redeemQueuedShares`, queue processing, and
+cancellation. Already-funded claims, request-limit updates, and request-NFT transfers
+remain available. Governance, oracle recovery, upgrades, unpause, and enforcement remain
+available. Pause the queue separately when funded claims, request-NFT movement, the queue's
+USDat, or a compliance incident also needs containment (§2.6).
 
 While paused, the incident owner records custody reconciliation, issuer/custodian and
 exact-address eligibility evidence, approved recoverable value and method, and

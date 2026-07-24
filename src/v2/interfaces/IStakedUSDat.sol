@@ -13,6 +13,17 @@ import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
  * totalAssets() is idle USDat plus each module's recognizedValue().
  */
 interface IStakedUSDat is IERC4626 {
+    // ============ Enums ============
+
+    /**
+     * @notice Outcome of attempting to settle a queued withdrawal request.
+     */
+    enum RedemptionResult {
+        Settled,
+        BelowLimit,
+        InsufficientLiquidity
+    }
+
     // ============ Structs ============
 
     /**
@@ -159,6 +170,13 @@ interface IStakedUSDat is IERC4626 {
      * @param amount The amount of shares transferred.
      */
     event Seized(address indexed from, address indexed to, uint256 amount);
+
+    /**
+     * @dev Emitted when the canonical seizure destination is updated.
+     * @param oldAddress The previous recovery address.
+     * @param newAddress The new recovery address.
+     */
+    event RecoveryAddressUpdated(address indexed oldAddress, address indexed newAddress);
 
     /**
      * @dev Emitted when the fee recipient is updated.
@@ -415,15 +433,18 @@ interface IStakedUSDat is IERC4626 {
     function requestRedeem(uint256 shares, uint256 minSharePrice) external returns (uint256 requestId);
 
     /**
-     * @notice Redeems escrowed shares against the cash buffer, clamped to what the
-     * buffer covers.
+     * @notice Attempts to redeem a complete queued request against the cash buffer.
      * @dev Only callable by the withdrawal queue (immutable address check). Prices,
-     * burns, and transfers in one call; the held-back redemption fee stays in the vault.
-     * @param sharesRequested The number of escrowed shares to redeem.
-     * @return sharesRedeemed min(sharesRequested, what usdatBalance covers net of fee).
-     * @return usdat The net USDat transferred to the queue for this fill.
+     * checks the gross limit and liquidity, then burns and transfers atomically. A
+     * skipped request does not mutate vault state beyond sweeping vested surplus.
+     * @param shares The complete number of escrowed shares to redeem.
+     * @param minSharePrice The minimum gross USDat per 1e18 shares.
+     * @return result Whether the request settled or why it was skipped.
+     * @return usdat The net USDat transferred to the queue when settled.
      */
-    function redeemQueuedShares(uint256 sharesRequested) external returns (uint256 sharesRedeemed, uint256 usdat);
+    function redeemQueuedShares(uint256 shares, uint256 minSharePrice)
+        external
+        returns (RedemptionResult result, uint256 usdat);
 
     // ============ Module Management ============
 
@@ -564,6 +585,12 @@ interface IStakedUSDat is IERC4626 {
     function feeRecipient() external view returns (address);
 
     /**
+     * @notice Returns the canonical destination for seized assets.
+     * @return The recovery address.
+     */
+    function recoveryAddress() external view returns (address);
+
+    /**
      * @notice Returns the internally tracked USDat balance.
      * @return The USDat balance.
      */
@@ -660,6 +687,14 @@ interface IStakedUSDat is IERC4626 {
      * @param newRecipient The new fee recipient address.
      */
     function setFeeRecipient(address newRecipient) external;
+
+    /**
+     * @notice Updates the canonical destination for seized assets.
+     * @dev Only callable by addresses with the PARAMETER_MANAGER_ROLE. The destination
+     * cannot be zero, blacklisted in StakedUSDat, or frozen in USDat.
+     * @param newRecoveryAddress The new recovery address.
+     */
+    function setRecoveryAddress(address newRecoveryAddress) external;
 
     /**
      * @notice Pauses the contract.

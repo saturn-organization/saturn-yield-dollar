@@ -22,6 +22,7 @@ import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC2
 import {IWithdrawalQueueERC721} from "./interfaces/IWithdrawalQueueERC721.sol";
 import {IAccountingModule} from "./interfaces/IAccountingModule.sol";
 import {IStakedUSDat} from "./interfaces/IStakedUSDat.sol";
+import {IUSDat} from "./interfaces/IUSDat.sol";
 import {IERC20PermitExtended} from "./interfaces/IERC20PermitExtended.sol";
 import {MirrorSTRC} from "./modules/MirrorSTRC/MirrorSTRC.sol";
 
@@ -157,6 +158,9 @@ contract StakedUSDat is
     /// @notice Timestamp of the last management fee collection
     uint256 public lastFeeCollection;
 
+    /// @notice Canonical destination for seized shares and withdrawal requests
+    address public recoveryAddress;
+
     modifier notZero(uint256 amount) {
         _notZero(amount);
         _;
@@ -236,11 +240,14 @@ contract StakedUSDat is
     /// @param baseBps The base redemption fee tier in basis points.
     /// @param elevatedBps The elevated redemption fee tier in basis points.
     /// @param roles The §2.8 role-holder addresses.
-    function initializeV2(MirrorSTRC mirror, uint16 baseBps, uint16 elevatedBps, RoleHolders calldata roles)
-        external
-        onlyRole(DEFAULT_ADMIN_ROLE)
-        reinitializer(2)
-    {
+    /// @param recoveryAddress_ The canonical destination for seized assets.
+    function initializeV2(
+        MirrorSTRC mirror,
+        uint16 baseBps,
+        uint16 elevatedBps,
+        RoleHolders calldata roles,
+        address recoveryAddress_
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) reinitializer(2) {
         require(address(mirror) != address(0), InvalidZeroAddress());
         require(baseBps <= elevatedBps && elevatedBps <= MAX_REDEMPTION_FEE_BPS, InvalidFee());
         require(
@@ -278,6 +285,8 @@ contract StakedUSDat is
         maxSurplusBps = 250; // 2.5% of totalAssets per tranche
         managementFeeBps = 50; // 0.5% per year
         lastFeeCollection = block.timestamp;
+
+        _setRecoveryAddress(recoveryAddress_);
 
         _grantRole(OPERATOR_ROLE, roles.operator);
         _grantRole(MODULE_MANAGER_ROLE, roles.moduleManager);
@@ -786,50 +795,41 @@ contract StakedUSDat is
     }
 
     /// @inheritdoc IStakedUSDat
-    /// @dev The queue's single settlement primitive: clamp to the buffer, price, burn,
-    /// transfer — in one call. Burns only shares the queue holds, at a vault-computed
-    /// price, up to the buffer it has. The held-back fee stays in the vault, raising
-    /// NAV/share for remaining holders.
-    function redeemQueuedShares(uint256 sharesRequested)
+    /// @dev The queue's single settlement primitive: price, validate, burn, and
+    /// transfer a complete request in one call. The held-back fee stays in the vault,
+    /// raising NAV/share for remaining holders.
+    function redeemQueuedShares(uint256 shares, uint256 minSharePrice)
         external
         nonReentrant
         onlyWithdrawalQueue
-        notZero(sharesRequested)
-        returns (uint256 sharesRedeemed, uint256 usdat)
+        whenNotPaused
+        notZero(shares)
+        returns (RedemptionResult result, uint256 usdat)
     {
         _sweep();
 
-        // One tier per fill: the quote and the clamp must agree.
-        uint16 feeBps = redemptionFeeBps();
+        uint256 gross = convertToAssets(shares);
+        uint256 maximumSharePrice = Math.mulDiv(gross, 1e18, shares);
+        if (minSharePrice > maximumSharePrice) {
+            return (RedemptionResult.BelowLimit, 0);
+        }
 
-        sharesRedeemed = sharesRequested;
-        usdat = _net(convertToAssets(sharesRequested), feeBps);
-
-        if (usdat > usdatBalance) {
-            // Clamp: the largest share count whose net payout the buffer covers.
-            // Floor-rounding at every step keeps the payout <= usdatBalance.
-            uint256 grossBudget = Math.mulDiv(usdatBalance, BPS_DENOMINATOR, BPS_DENOMINATOR - feeBps);
-            sharesRedeemed = Math.min(convertToShares(grossBudget), sharesRequested);
-            if (sharesRedeemed == 0) {
-                return (0, 0);
-            }
-            usdat = _net(convertToAssets(sharesRedeemed), feeBps);
+        uint256 fee = Math.mulDiv(gross, redemptionFeeBps(), BPS_DENOMINATOR, Math.Rounding.Ceil);
+        usdat = gross - fee;
+        if (usdatBalance < usdat) {
+            return (RedemptionResult.InsufficientLiquidity, 0);
         }
 
         usdatBalance -= usdat;
-        _burn(address(WITHDRAWAL_QUEUE), sharesRedeemed);
+        _burn(address(WITHDRAWAL_QUEUE), shares);
 
         IERC20(asset()).safeTransfer(address(WITHDRAWAL_QUEUE), usdat);
+        return (RedemptionResult.Settled, usdat);
     }
 
     /// @inheritdoc IStakedUSDat
     function redemptionFeeBps() public view returns (uint16) {
         return elevatedFeeActive ? elevatedRedemptionFeeBps : baseRedemptionFeeBps;
-    }
-
-    /// @dev Gross value less `feeBps`, floor-rounded in the vault's favor.
-    function _net(uint256 grossAssets, uint256 feeBps) internal pure returns (uint256) {
-        return Math.mulDiv(grossAssets, BPS_DENOMINATOR - feeBps, BPS_DENOMINATOR);
     }
 
     // ============ View Functions ============
@@ -900,6 +900,23 @@ contract StakedUSDat is
         feeRecipient = newRecipient;
 
         emit FeeRecipientUpdated(newRecipient);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function setRecoveryAddress(address newRecoveryAddress) external onlyRole(PARAMETER_MANAGER_ROLE) {
+        _setRecoveryAddress(newRecoveryAddress);
+    }
+
+    /// @dev Validates and updates the canonical seizure destination.
+    function _setRecoveryAddress(address newRecoveryAddress) internal {
+        require(newRecoveryAddress != address(0), InvalidZeroAddress());
+        _requireNotBlacklisted(newRecoveryAddress);
+        require(!IUSDat(asset()).isFrozen(newRecoveryAddress), AddressBlacklisted());
+
+        address oldRecoveryAddress = recoveryAddress;
+        recoveryAddress = newRecoveryAddress;
+
+        emit RecoveryAddressUpdated(oldRecoveryAddress, newRecoveryAddress);
     }
 
     /// @inheritdoc IStakedUSDat

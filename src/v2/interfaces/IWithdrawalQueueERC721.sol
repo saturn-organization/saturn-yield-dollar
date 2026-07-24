@@ -8,40 +8,40 @@ pragma solidity ^0.8.20;
  * @dev A UUPS upgradeable NFT-based withdrawal queue where each withdrawal request
  * is represented as an ERC721 token. Users request redemptions from StakedUSDat,
  * their shares are escrowed, and they receive an NFT representing their claim.
- * The queue is a limit-order book against NAV: the operator processes requests
- * against the vault's cash buffer, each fill priced by the vault at its live mark.
- * The queue never prices; its only vault couplings are convertToAssets and
- * redeemQueuedShares.
+ * The queue is a limit-order book against NAV: the operator processes complete
+ * requests against the vault's cash buffer, each priced by the vault at its live
+ * mark. The queue never prices; its settlement coupling is redeemQueuedShares.
  */
 interface IWithdrawalQueueERC721 {
     // ============ Enums ============
 
     /**
-     * @notice Legacy v1 request lifecycle status. v2 logic neither reads nor writes it;
-     * the variants are kept so stored values keep their meaning.
+     * @notice Persistent request lifecycle status.
+     * @dev Existing v1 values retain their numeric meaning. InProgress remains only
+     * for storage compatibility; v2 never creates it. Cancelled is appended.
      */
     enum RequestStatus {
         NULL,
         Requested,
         InProgress,
         Processed,
-        Claimed
+        Claimed,
+        Cancelled
     }
 
     // ============ Structs ============
 
     /**
      * @notice Withdrawal request data structure.
-     * @dev Two derived states drive all logic — open (shares > 0) and claimable
-     * (usdatOwed > 0) — and both can hold at once (a partially filled request).
-     * A token exists iff shares > 0 || usdatOwed > 0. The original request size lives
-     * in the WithdrawalRequested event.
-     * @param shares Shares STILL QUEUED — decremented per fill.
-     * @param usdatOwed Accrued, unclaimed payout.
+     * @dev Field order is unchanged from v1. minSharePrice reinterprets the
+     * minUsdatReceived slot without converting legacy values. Lifecycle
+     * authorization uses status rather than deriving state from numeric fields.
+     * @param shares The complete escrowed share amount, retained unchanged.
+     * @param usdatOwed Zero until processing assigns the complete fixed payout.
      * @param timestamp The timestamp when the request was created.
      * @param minSharePrice Limit: minimum execution price per 1e18 shares (v1 slot,
-     * was minUsdatReceived — pending entries converted in place at upgrade).
-     * @param status Legacy v1 slot; v2 logic neither reads nor writes it.
+     * was minUsdatReceived — legacy values are reinterpreted unchanged).
+     * @param status Authoritative request lifecycle state.
      */
     struct Request {
         uint256 shares;
@@ -64,14 +64,14 @@ interface IWithdrawalQueueERC721 {
     error OperationNotAllowed();
 
     /**
-     * @dev Thrown when a request has no shares still queued (dead or fully filled token).
+     * @dev Thrown when an operation requires a Requested request.
      */
     error RequestNotOpen();
 
     /**
-     * @dev Thrown when a request has no accrued payout to claim or seize.
+     * @dev Thrown when an operation requires a Processed request.
      */
-    error NothingToClaim();
+    error RequestNotProcessed();
 
     /**
      * @dev Thrown when the caller is not the owner of the token.
@@ -91,8 +91,7 @@ interface IWithdrawalQueueERC721 {
     // ============ Events ============
 
     /**
-     * @dev Emitted when a new withdrawal request is created. `shares` here is the
-     * original request size; the struct's shares field decrements per fill.
+     * @dev Emitted when a new withdrawal request is created.
      * @param tokenId The NFT token ID representing the request.
      * @param user The user who created the request.
      * @param shares The number of shares escrowed.
@@ -101,13 +100,12 @@ interface IWithdrawalQueueERC721 {
     event WithdrawalRequested(uint256 indexed tokenId, address indexed user, uint256 shares, uint256 timestamp);
 
     /**
-     * @dev Emitted per fill during processing. A request filled in slices emits once
-     * per slice.
-     * @param tokenId The NFT token ID of the filled request.
-     * @param sharesFilled The number of shares redeemed in this fill.
-     * @param usdatAmount The net USDat accrued to the request in this fill.
+     * @dev Emitted once when a complete request settles.
+     * @param tokenId The NFT token ID of the settled request.
+     * @param shares The complete number of shares redeemed.
+     * @param usdatAmount The request's complete net USDat payout.
      */
-    event WithdrawalProcessed(uint256 indexed tokenId, uint256 sharesFilled, uint256 usdatAmount);
+    event WithdrawalProcessed(uint256 indexed tokenId, uint256 shares, uint256 usdatAmount);
 
     /**
      * @dev Emitted when a holder updates a request's limit price.
@@ -117,8 +115,7 @@ interface IWithdrawalQueueERC721 {
     event MinSharePriceUpdated(uint256 indexed tokenId, uint256 newMinSharePrice);
 
     /**
-     * @dev Emitted when a user claims accrued USDat. Can fire multiple times per token
-     * (partial fills); a claim does not imply a burn.
+     * @dev Emitted when a holder claims a processed request's complete fixed payout.
      * @param tokenId The NFT token ID that was claimed.
      * @param user The user who claimed.
      * @param usdatAmount The amount of USDat claimed.
@@ -126,9 +123,17 @@ interface IWithdrawalQueueERC721 {
     event Claimed(uint256 indexed tokenId, address indexed user, uint256 usdatAmount);
 
     /**
-     * @dev Emitted when accrued funds are seized from a blacklisted user.
+     * @dev Emitted when a holder cancels an open request.
+     * @param tokenId The NFT token ID that was cancelled.
+     * @param user The holder who received the returned shares.
+     * @param shares The complete escrowed sUSDat amount returned.
+     */
+    event RequestCancelled(uint256 indexed tokenId, address indexed user, uint256 shares);
+
+    /**
+     * @dev Emitted when a processed request's complete payout is seized.
      * @param tokenId The NFT token ID of the seized request.
-     * @param user The blacklisted user whose funds were seized.
+     * @param user The restricted user whose funds were seized.
      * @param usdatAmount The amount of USDat seized.
      * @param to The address that received the seized funds.
      */
@@ -137,7 +142,7 @@ interface IWithdrawalQueueERC721 {
     /**
      * @dev Emitted when a live request is seized from a blacklisted user.
      * @param tokenId The NFT token ID of the seized request.
-     * @param user The blacklisted user whose request was seized.
+     * @param user The restricted user whose request was seized.
      * @param to The address that received the NFT.
      */
     event RequestSeized(uint256 indexed tokenId, address indexed user, address indexed to);
@@ -163,6 +168,7 @@ interface IWithdrawalQueueERC721 {
      * @dev Called by StakedUSDat when a user requests redemption.
      * Mints an NFT to the user representing their withdrawal request.
      * Only callable by the StakedUSDat contract (immutable address check).
+     * Reverts if the user is restricted by either sUSDat or USDat.
      * @param user The user requesting withdrawal.
      * @param shares The amount of sUSDat shares escrowed.
      * @param minSharePrice The minimum execution price per 1e18 shares.
@@ -172,21 +178,33 @@ interface IWithdrawalQueueERC721 {
 
     /**
      * @notice Updates a request's limit price. Freely updatable while open, in either
-     * direction; applies to future fills only.
+     * direction; applies to the request's future settlement attempt.
      * @dev Only callable by the NFT owner.
      * @param tokenId The token ID of the request to update.
      * @param newMinSharePrice The new minimum execution price per 1e18 shares.
      */
     function updateMinSharePrice(uint256 tokenId, uint256 newMinSharePrice) external;
 
+    /**
+     * @notice Cancels an open request and returns all escrowed shares without a fee.
+     * @dev Only the current NFT owner may cancel. The request record is retained with
+     * status Cancelled after the NFT is burned. Queue pause and either owner
+     * restriction block cancellation; vault pause makes the sUSDat return transfer
+     * revert.
+     * @param tokenId The NFT token ID to cancel.
+     */
+    function cancelRequest(uint256 tokenId) external;
+
     // ============ Processing Functions ============
 
     /**
-     * @notice Processes withdrawal requests against the vault's cash buffer.
-     * @dev The operator passes ordered tokenIds and no amounts; the buffer decides fill
-     * sizes via the vault's redeemQueuedShares clamp. Per request: reverts on a dead
-     * token, skips when the live share price is below the request's limit, breaks when
-     * the buffer is dry. Only callable by addresses with the OPERATOR_ROLE.
+     * @notice Attempts to settle complete withdrawal requests against the vault's cash buffer.
+     * @dev Processing follows caller order. Every encountered request must still be
+     * Requested; otherwise the complete transaction reverts. Duplicate IDs are safe:
+     * skipped requests may be retried, while a duplicate after settlement triggers the
+     * status check and atomically rolls back the batch. Below-limit and
+     * insufficient-liquidity requests remain unchanged and are skipped so later
+     * requests may settle. Only callable by addresses with the OPERATOR_ROLE.
      * @param tokenIds Ordered token IDs to process.
      */
     function processRequests(uint256[] calldata tokenIds) external;
@@ -194,33 +212,44 @@ interface IWithdrawalQueueERC721 {
     // ============ Claiming Functions ============
 
     /**
-     * @notice Claims the accrued payout of a request.
-     * @dev Pays usdatOwed and zeroes it; burns the NFT only when the request is fully
-     * filled and drained. A partially filled holder can claim accrued payout anytime.
+     * @notice Claims the complete fixed payout of a processed request.
+     * @dev Only the current NFT owner may claim. The request record is retained with
+     * status Claimed after the NFT is burned. Queue pause and either owner restriction
+     * block claiming; vault pause alone does not block an already-funded payout.
      * @param tokenId The NFT token ID to claim.
      * @return amount The amount of USDat claimed.
      */
     function claim(uint256 tokenId) external returns (uint256 amount);
 
+    // ============ View Functions ============
+
+    /**
+     * @notice Returns every live withdrawal request token currently owned by a user.
+     * @dev Includes requests regardless of lifecycle status. Burned terminal requests
+     * are excluded, and ERC721Enumerable does not guarantee a stable ordering. Runtime
+     * and return size grow linearly with the user's live request balance.
+     * @param user The current request owner to query.
+     * @return tokenIds The token IDs currently owned by the user.
+     */
+    function getUserRequests(address user) external view returns (uint256[] memory tokenIds);
+
     // ============ Compliance Functions ============
 
     /**
-     * @notice Seizes a live request NFT from a blacklisted holder.
-     * @dev Transfers the NFT to the specified address; accrued usdatOwed and the open
-     * remainder travel with the token.
-     * Only callable by addresses with the ENFORCER_ROLE.
+     * @notice Seizes a live request NFT from a restricted holder.
+     * @dev Transfers the NFT and its unchanged request record to the current recovery
+     * address configured by StakedUSDat. Only callable by addresses with the
+     * ENFORCER_ROLE.
      * @param tokenId The token ID to seize.
-     * @param to The address to transfer the NFT to.
      */
-    function seizeRequest(uint256 tokenId, address to) external;
+    function seizeRequest(uint256 tokenId) external;
 
     /**
-     * @notice Seizes a request's accrued payout from a blacklisted holder.
-     * @dev Transfers the request's usdatOwed to the specified address, burning the
-     * token only if fully filled — an open remainder keeps accruing fills and stays
-     * seizable. Only callable by addresses with the ENFORCER_ROLE.
+     * @notice Seizes a processed request's complete payout from a restricted holder.
+     * @dev Marks the request Claimed, burns the NFT, and transfers the complete fixed
+     * usdatOwed amount to the current recovery address configured by StakedUSDat. The
+     * request record is retained. Only callable by addresses with the ENFORCER_ROLE.
      * @param tokenId The token ID to seize.
-     * @param to The address to transfer the USDat to.
      */
-    function seize(uint256 tokenId, address to) external;
+    function seize(uint256 tokenId) external;
 }
