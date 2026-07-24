@@ -613,6 +613,13 @@ Expected no-settlement outcomes return a result without reverting the batch; inv
 states revert as operator errors. An insufficient request is skipped so a later smaller one
 may settle. The operator selects and orders IDs; there is no FIFO guarantee.
 
+Each successful settlement reprices the next request at the then-current NAV. When the
+redemption fee is nonzero, only the net payout leaves the vault, so the retained fee accrues
+to the remaining shares: a later request may receive a slightly higher gross share price or
+cross its `minSharePrice` after an earlier request settles. This fee-accreted sequential
+pricing and its ordering consequences are explicit and accepted; processing does not
+snapshot one batch-wide price.
+
 Even for a buggy queue, `redeemQueuedShares` burns only queue-held shares at current vault
 NAV and fee, and settles only a complete, buffer-covered request while processing is
 enabled. Backing-asset and liquidity-path changes do not touch the queue.
@@ -647,8 +654,10 @@ Invariants:
 - A request is settled completely or not at all; v2 never partially burns its shares.
 - Every processed request is priced at current gross NAV, satisfies its `minSharePrice`, and
   pays that gross value net of the active redemption fee.
-- Escrowed shares equal the sum of `shares` across open requests; queue USDat equals the sum
-  of `usdatOwed` across processed requests.
+- Queue sUSDat custody is at least the sum of `shares` across open requests; queue USDat
+  custody is at least the sum of `usdatOwed` across processed requests.
+- Unsolicited sUSDat or USDat transfers are untracked excess: they do not change request
+  accounting or NAV. V2 has no queue rescue path, so such excess remains in the queue.
 - The queue never receives backing-asset or venue-execution data.
 - Escrowed shares remain NAV-exposed until processed or cancelled — a request is a place in
   the settlement set, not a price commitment or FIFO guarantee.
@@ -668,13 +677,14 @@ modifier whenNotRestricted() {
 }
 
 function setMarketMode(MarketMode newMode)
-    external onlyRole(MARKET_MODE_MANAGER_ROLE) whenNotPaused;
+    external onlyRole(MARKET_MODE_MANAGER_ROLE);
 ```
 
 `setMarketMode` sets an explicit target and emits
 `MarketModeChanged(MarketMode oldMode, MarketMode newMode)`. It cannot price assets, move
-funds, change NAV, or clear a hard pause. `MARKET_MODE_MANAGER_ROLE` initially shares the
-`OPERATOR_ROLE` address; either may later be reassigned independently.
+funds, change NAV, or clear a hard pause. It remains callable while hard paused so the
+time-appropriate mode can be installed before unpause. `MARKET_MODE_MANAGER_ROLE` initially
+shares the `OPERATOR_ROLE` address; either may later be reassigned independently.
 
 - **Regular:** deposits and mints have no deposit fee; queue processing uses the base
   redemption fee.
@@ -684,7 +694,8 @@ funds, change NAV, or clear a hard pause. `MARKET_MODE_MANAGER_ROLE` initially s
   revert. New redemption requests, request updates, cancellations, funded claims, and
   sUSDat and request-NFT transfers remain available.
 - **Hard pause:** independent `Pausable` overrides every mode (§2.3, §2.6). Views,
-  governance, oracle recovery, upgrade, unpause, and enforcement remain available.
+  market-mode changes, governance, oracle recovery, upgrade, unpause, and enforcement
+  remain available.
 
 Mode transitions are an operational requirement; the vault has no market-hours calendar.
 At each U.S. regular-session close—normally 4:00 p.m. ET, or the scheduled early
@@ -715,6 +726,9 @@ For storage compatibility, the v1 `depositFeeBps` slot stores
 |---|---|---|
 | elevated deposit fee (`elevatedDepositFeeBps`) | stays in the vault | anti-dilution against higher-risk entry windows; `setElevatedDepositFee` (`PARAMETER_MANAGER_ROLE`), capped at 500 bps |
 | redemption fee (`baseRedemptionFeeBps` / `elevatedRedemptionFeeBps`) | stays in the vault | exits process at cost on average; `setRedemptionFees` (`PARAMETER_MANAGER_ROLE`), `base ≤ elevated ≤ 500`; the gross limit check remains pre-fee |
+
+The intended launch range for the redemption-fee tiers is approximately 5–10 bps; the exact
+base and elevated values remain approved launch parameters.
 
 `previewDeposit`/`previewMint` include `depositFeeBps()`. `previewRedeem` remains gross
 (`convertToAssets`); `redeem()` is disabled and frontends use §2.6 for net queue proceeds.
@@ -949,8 +963,13 @@ Option 2); without it, the flat fee applies.
 
 **Per-request settlement, not batch-and-sum.** v1's batch totals existed because one
 external USDat pot was distributed pro rata. Vault-priced requests have exact amounts, no
-pro-rata math, dust, or cross-request coupling, and can skip unmet limits. Sequential fills
-share one price because each removes assets and shares proportionally.
+pro-rata math or settlement-generated dust, and can skip unmet limits. Each request uses
+current NAV. With a zero redemption fee, sequential fills share one price apart from
+rounding because each removes assets and shares proportionally. With a nonzero fee, only
+the net payout leaves, so the retained fee accrues to remaining shares and later requests
+receive a slightly higher gross price. This order-dependence—including its interaction with
+operator-selected ordering and `minSharePrice`—is accepted. The intended 5–10 bps launch
+range keeps the effect small but does not eliminate it.
 
 **Queue-side entry with a narrow vault primitive.** The alternative—vault-side processing
 that loops queue state—must enforce queue invariants across contracts or delegate back.
@@ -1222,6 +1241,7 @@ Hard pause is not a `MarketMode`; it overrides the selected mode.
 | Cancel request | Yes | Yes | Yes | No |
 | Transfer sUSDat/request NFT | Yes | Yes | Yes | No |
 | Buy/sell STRCon | Yes | Yes | No | No |
+| Set market mode | Yes | Yes | Yes | Yes |
 | Governance/oracle recovery | Yes | Yes | Yes | Yes |
 
 Read-only views remain available while hard paused as well as in every market mode, subject
@@ -1250,10 +1270,12 @@ a compliance incident needs containment (§2.6).
 While paused, the incident owner records custody reconciliation, issuer/custodian and
 exact-address eligibility evidence, approved recoverable value and method, and
 oracle/settlement validation. For a temporary condition without write-down,
-`UNPAUSER_ROLE` may resume the vault only after risk approval and a successful exact-address
-transfer or redemption test. Permanent impairment requires NAV to reflect the approved
-recovery value before resumption: `PARAMETER_MANAGER_ROLE` may install a reviewed
-recovery-value wrapper through `STRConModule.setOracle` when the loss is expressible as a
-per-STRCon price; otherwise governance executes a timelocked forward upgrade for the
-recovery instrument. V2 has no generic haircut setter. The incident record references the
-`Paused`, applicable `OracleUpdated`, governance, and `Unpaused` transactions.
+`MARKET_MODE_MANAGER_ROLE` first installs the time-appropriate mode while the vault remains
+paused; `UNPAUSER_ROLE` may then resume the vault only after risk approval and a successful
+exact-address transfer or redemption test. Permanent impairment requires NAV to reflect
+the approved recovery value before resumption: `PARAMETER_MANAGER_ROLE` may install a
+reviewed recovery-value wrapper through `STRConModule.setOracle` when the loss is
+expressible as a per-STRCon price; otherwise governance executes a timelocked forward
+upgrade for the recovery instrument. V2 has no generic haircut setter. The incident record
+references the `Paused`, applicable `MarketModeChanged`, `OracleUpdated`, governance, and
+`Unpaused` transactions.
