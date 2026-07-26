@@ -55,6 +55,8 @@ contract MockUSDat {
 // Mock Chainlink Oracle
 contract MockOracle {
     int256 public constant PRICE = 100e8;
+    // Lowercase preserves the Chainlink decimals() ABI.
+    // forge-lint: disable-next-line(screaming-snake-case-const)
     uint8 public constant decimals = 8;
 
     function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80) {
