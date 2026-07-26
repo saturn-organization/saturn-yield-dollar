@@ -2,15 +2,16 @@
 pragma solidity ^0.8.20;
 
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
+import {ISTRCMirrorModule} from "./ISTRCMirrorModule.sol";
+import {ISTRConModule} from "./ISTRConModule.sol";
 
 /**
  * @title IStakedUSDat
  * @author Saturn
  * @notice Interface for the StakedUSDat (sUSDat) ERC4626 vault contract.
  * @dev StakedUSDat is a UUPS upgradeable ERC4626 vault for staking USDat.
- * Users deposit USDat and receive sUSDat shares representing their stake.
- * Backing assets are recognized through registered accounting modules;
- * totalAssets() is idle USDat plus each module's recognizedValue().
+ * Users deposit USDat and receive sUSDat shares representing their stake, with
+ * asynchronous redemptions, compliance controls, and explicit market modes.
  */
 interface IStakedUSDat is IERC4626 {
     // ============ Enums ============
@@ -24,14 +25,36 @@ interface IStakedUSDat is IERC4626 {
         InsufficientLiquidity
     }
 
-    // ============ Structs ============
-
     /**
-     * @notice Per-module configuration.
-     * @param maxWeightBps Hard cap on the module's share of totalAssets, in basis points.
+     * @notice Vault operating mode selected for current market conditions.
      */
-    struct ModuleConfig {
-        uint16 maxWeightBps;
+    enum MarketMode {
+        REGULAR,
+        ELEVATED,
+        RESTRICTED
+    }
+
+    // ============ V2 Initialization ============
+
+    struct V2Config {
+        ISTRCMirrorModule strcMirrorModule;
+        ISTRConModule strconModule;
+        address recoveryAddress;
+        address executionVehicle;
+        uint16 baseRedemptionFeeBps;
+        uint16 elevatedRedemptionFeeBps;
+        uint16 elevatedDepositFeeBps;
+        uint16 executionToleranceBps;
+    }
+
+    struct V2Roles {
+        address parameterManager;
+        address marketModeManager;
+        address operator;
+        address blacklister;
+        address enforcer;
+        address pauser;
+        address unpauser;
     }
 
     // ============ Errors ============
@@ -53,6 +76,11 @@ interface IStakedUSDat is IERC4626 {
     error OperationNotAllowed();
 
     /**
+     * @dev Thrown when an operation is disabled in Restricted mode.
+     */
+    error MarketRestricted();
+
+    /**
      * @dev Thrown when attempting to un-blacklist an address that is not blacklisted.
      */
     error AddressNotBlacklisted();
@@ -63,19 +91,9 @@ interface IStakedUSDat is IERC4626 {
     error AddressBlacklisted();
 
     /**
-     * @dev Thrown when attempting to redistribute locked amounts with no valid recipients.
-     */
-    error NoRecipientsForRedistribution();
-
-    /**
      * @dev Thrown when attempting to blacklist an admin address.
      */
     error CannotBlacklistAdmin();
-
-    /**
-     * @dev Thrown when an operation requires more balance than available.
-     */
-    error InsufficientBalance();
 
     /**
      * @dev Thrown when a redemption request is below MIN_REQUEST_SHARES.
@@ -83,64 +101,84 @@ interface IStakedUSDat is IERC4626 {
     error WithdrawalTooSmall();
 
     /**
-     * @dev Thrown when a fee exceeds its maximum.
-     */
-    error InvalidFee();
-
-    /**
-     * @dev Thrown when a new surplus tranche arrives while the prior one is still vesting.
-     */
-    error StillVesting();
-
-    /**
-     * @dev Thrown when a surplus tranche exceeds maxSurplusBps of totalAssets.
-     */
-    error SurplusExceedsMax();
-
-    /**
-     * @dev Thrown when an invalid surplus vesting period is provided.
-     */
-    error InvalidVestingPeriod();
-
-    /**
      * @dev Thrown when slippage protection is triggered (received less than minimum).
      */
     error SlippageExceeded();
 
     /**
-     * @dev Thrown when a basis-points weight exceeds the denominator.
+     * @dev Thrown when an operation requires more recognized balance than is available.
      */
-    error InvalidWeight();
+    error InsufficientBalance();
 
     /**
-     * @dev Thrown when registering a module would exceed MAX_MODULES.
+     * @dev Thrown when a realized execution price exceeds the configured adverse tolerance.
      */
-    error MaxModulesReached();
+    error ExecutionPriceMismatch();
 
     /**
-     * @dev Thrown when registering a module that is already registered.
+     * @dev Thrown when redemption fee tiers are invalid.
      */
-    error ModuleAlreadyRegistered();
+    error InvalidFee();
 
     /**
-     * @dev Thrown when the target module is not registered.
+     * @dev Thrown when a fixed module address does not contain deployed code.
      */
-    error ModuleNotRegistered();
+    error InvalidModule();
 
     /**
-     * @dev Thrown when deregistering a module whose balance is not zero.
+     * @dev Thrown when the execution tolerance exceeds the protocol maximum.
      */
-    error ModuleBalanceNotZero();
+    error InvalidExecutionTolerance();
 
     /**
-     * @dev Thrown when a buy would push a module above its maxWeightBps.
+     * @dev Thrown when the migration tolerance exceeds the protocol maximum.
      */
-    error MaxWeightExceeded();
+    error InvalidMigrationTolerance();
 
     /**
-     * @dev Thrown when a buy would push cash below minCashBufferBps.
+     * @dev Thrown when migration cannot establish a non-zero pre-migration NAV.
      */
-    error CashBufferBreached();
+    error ZeroNAV();
+
+    /**
+     * @dev Thrown when migration changes whole-vault NAV beyond the approved tolerance.
+     */
+    error MigrationNAVMismatch();
+
+    /**
+     * @dev Thrown when a trade deadline has passed.
+     */
+    error DeadlineExpired();
+
+    /**
+     * @dev Thrown when a new surplus tranche is attempted while the prior tranche is vesting.
+     */
+    error StillVesting();
+
+    /**
+     * @dev Thrown when the surplus vesting period is zero or exceeds the protocol maximum.
+     */
+    error InvalidVestingPeriod();
+
+    /**
+     * @dev Thrown when a surplus transfer exceeds the configured percentage of pre-transfer NAV.
+     */
+    error SurplusExceedsMax();
+
+    /**
+     * @dev Thrown when a measured token or module balance delta is not exact.
+     */
+    error InvalidAssetDelta();
+
+    /**
+     * @dev Thrown when physical token custody is below its recognized balance.
+     */
+    error CustodyShortfall();
+
+    /**
+     * @dev Thrown when a rescue exceeds untracked custody or tracked custody is short.
+     */
+    error ExceedsRescuable();
 
     // ============ Events ============
 
@@ -157,16 +195,9 @@ interface IStakedUSDat is IERC4626 {
     event UnBlacklisted(address indexed target);
 
     /**
-     * @dev Emitted when locked amounts are redistributed from a blacklisted address.
-     * @param from The blacklisted address whose funds were redistributed.
-     * @param amount The amount of shares that were burned.
-     */
-    event LockedAmountRedistributed(address indexed from, uint256 amount);
-
-    /**
-     * @dev Emitted when a blacklisted holder's shares are seized to a recovery address.
+     * @dev Emitted when a blacklisted holder's shares are seized to a destination.
      * @param from The blacklisted address seized from.
-     * @param to The recovery address the shares were transferred to.
+     * @param to The address the shares were transferred to.
      * @param amount The amount of shares transferred.
      */
     event Seized(address indexed from, address indexed to, uint256 amount);
@@ -179,10 +210,60 @@ interface IStakedUSDat is IERC4626 {
     event RecoveryAddressUpdated(address indexed oldAddress, address indexed newAddress);
 
     /**
-     * @dev Emitted when the fee recipient is updated.
-     * @param newRecipient The new fee recipient address.
+     * @dev Emitted when the execution vehicle changes.
+     * @param oldVehicle The previous execution vehicle.
+     * @param newVehicle The new execution vehicle.
      */
-    event FeeRecipientUpdated(address indexed newRecipient);
+    event ExecutionVehicleUpdated(address indexed oldVehicle, address indexed newVehicle);
+
+    /**
+     * @dev Emitted when the execution tolerance changes.
+     * @param oldBps The previous tolerance in basis points.
+     * @param newBps The new tolerance in basis points.
+     */
+    event ExecutionToleranceUpdated(uint16 oldBps, uint16 newBps);
+
+    /**
+     * @dev Emitted when the migration NAV tolerance changes.
+     * @param oldBps The previous tolerance in basis points.
+     * @param newBps The new tolerance in basis points.
+     */
+    event MigrationToleranceUpdated(uint16 oldBps, uint16 newBps);
+
+    /**
+     * @dev Emitted after an exact STRCon purchase settles.
+     * @param module The fixed STRCon module.
+     * @param vehicle The configured execution counterparty.
+     * @param usdatPaid The exact USDat paid, in 6-decimal units.
+     * @param assetReceived The exact STRCon received, in 18-decimal units.
+     * @param oraclePrice The validated STRCon price, in 8-decimal units.
+     */
+    event AssetBought(
+        address indexed module, address indexed vehicle, uint256 usdatPaid, uint256 assetReceived, uint256 oraclePrice
+    );
+
+    /**
+     * @dev Emitted after an exact STRCon sale settles.
+     * @param module The fixed STRCon module.
+     * @param vehicle The configured execution counterparty.
+     * @param assetDelivered The exact STRCon delivered to the execution vehicle, in 18-decimal units.
+     * @param usdatReceived The exact USDat received, in 6-decimal units.
+     * @param oraclePrice The validated STRCon price, in 8-decimal units.
+     */
+    event AssetSold(
+        address indexed module,
+        address indexed vehicle,
+        uint256 assetDelivered,
+        uint256 usdatReceived,
+        uint256 oraclePrice
+    );
+
+    /**
+     * @dev Emitted when the vault operating mode changes.
+     * @param oldMode The previous market mode.
+     * @param newMode The new market mode.
+     */
+    event MarketModeChanged(MarketMode oldMode, MarketMode newMode);
 
     /**
      * @dev Emitted when the redemption fee tiers are updated.
@@ -192,76 +273,36 @@ interface IStakedUSDat is IERC4626 {
     event RedemptionFeesUpdated(uint16 baseBps, uint16 elevatedBps);
 
     /**
-     * @dev Emitted when the active redemption fee tier changes.
-     * @param active True if the elevated tier now applies.
+     * @dev Emitted when the elevated deposit fee is updated.
+     * @param newFee The new elevated deposit fee in basis points.
      */
-    event ElevatedFeeActiveUpdated(bool active);
+    event DepositFeeUpdated(uint256 newFee);
 
     /**
-     * @dev Emitted when a surplus tranche enters vesting.
-     * @param amount The USDat amount of the tranche.
+     * @dev Emitted when a new USDat surplus tranche begins vesting.
+     * @param amount The USDat amount received.
      */
     event SurplusReceived(uint256 amount);
 
     /**
-     * @dev Emitted when a fully vested surplus tranche folds into usdatBalance.
-     * @param amount The USDat amount swept.
+     * @dev Emitted when a fully vested surplus tranche is folded into the cash balance.
+     * @param amount The USDat amount moved into usdatBalance.
      */
     event SurplusSwept(uint256 amount);
 
     /**
-     * @dev Emitted when the surplus vesting period is updated.
-     * @param oldPeriod The previous vesting period in seconds.
-     * @param newPeriod The new vesting period in seconds.
+     * @dev Emitted when the surplus vesting period changes.
+     * @param oldPeriod The previous period in seconds.
+     * @param newPeriod The new period in seconds.
      */
     event SurplusVestingPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
 
-    /**
-     * @dev Emitted when the per-tranche surplus cap is updated.
-     * @param newMaxBps The new cap in basis points.
-     */
-    event MaxSurplusBpsUpdated(uint16 newMaxBps);
-
-    /**
-     * @dev Emitted when accrued management fees are collected.
-     * @param recipient The fee recipient the shares were minted to.
-     * @param shares The number of shares minted.
-     */
-    event ManagementFeeCollected(address indexed recipient, uint256 shares);
-
-    /**
-     * @dev Emitted when the management fee rate is updated.
-     * @param newFeeBps The new fee in basis points per year.
-     */
-    event ManagementFeeUpdated(uint16 newFeeBps);
-
-    /**
-     * @dev Emitted when a module is registered.
-     * @param module The module address.
-     * @param maxWeightBps The module's weight cap in basis points.
-     */
-    event ModuleRegistered(address indexed module, uint16 maxWeightBps);
-
-    /**
-     * @dev Emitted when a module's weight cap is updated.
-     * @param module The module address.
-     * @param maxWeightBps The new weight cap in basis points.
-     */
-    event ModuleMaxWeightUpdated(address indexed module, uint16 maxWeightBps);
-
-    /**
-     * @dev Emitted when a module is deregistered.
-     * @param module The module address.
-     */
-    event ModuleDeregistered(address indexed module);
-
-    /**
-     * @dev Emitted when the global cash floor is updated.
-     * @param newMinCashBufferBps The new cash floor in basis points.
-     */
-    event MinCashBufferUpdated(uint16 newMinCashBufferBps);
-
     // ============ Blacklist Functions ============
+
+    /**
+     * @notice Performs the one-shot v1 to v2 vault-state migration.
+     */
+    function initializeV2(V2Config calldata config, V2Roles calldata roles) external;
 
     /**
      * @notice Adds an address to the blacklist.
@@ -286,33 +327,12 @@ interface IStakedUSDat is IERC4626 {
     function isBlacklisted(address account) external view returns (bool);
 
     /**
-     * @notice Burns shares from a blacklisted address, redistributing value to other holders.
-     * @dev Only callable by addresses with the ENFORCER_ROLE.
-     * The target address must be blacklisted and have a positive balance.
-     * @param from The blacklisted address to redistribute from.
-     */
-    function redistributeLockedAmount(address from) external;
-
-    /**
      * @notice Transfers a blacklisted holder's full sUSDat balance to a recovery address.
      * @dev Only callable by addresses with the ENFORCER_ROLE. Moves shares, no burn,
-     * no liquidity needed. The recovery address must not be blacklisted.
+     * no liquidity needed. Resolves the current valid recoveryAddress internally.
      * @param from The blacklisted address to seize from.
-     * @param to The recovery address to receive the shares.
      */
-    function seize(address from, address to) external;
-
-    // ============ Asset Management Functions ============
-
-    /**
-     * @notice Rescues tokens accidentally sent to the contract.
-     * @dev Only callable by addresses with the DEFAULT_ADMIN_ROLE.
-     * For USDat, only allows rescuing amounts above the internally tracked balance.
-     * @param token The address of the token to rescue.
-     * @param amount The amount of tokens to rescue.
-     * @param to The address to send the rescued tokens to.
-     */
-    function rescueTokens(address token, uint256 amount, address to) external;
+    function seize(address from) external;
 
     // ============ Deposit Functions ============
 
@@ -418,13 +438,67 @@ interface IStakedUSDat is IERC4626 {
         bytes memory signature
     ) external returns (uint256 assets);
 
+    // ============ Surplus Functions ============
+
+    /**
+     * @notice Transfers a USDat surplus tranche into the vault for linear vesting.
+     * @dev Only callable by OPERATOR_ROLE while unpaused. The function pulls only the
+     * configured ERC4626 asset and requires the exact requested custody increase.
+     * @param amount The USDat amount to transfer, in 6-decimal asset units.
+     */
+    function transferInSurplus(uint256 amount) external;
+
+    /**
+     * @notice Returns the portion of the current surplus tranche that remains unvested.
+     * @return The unvested USDat amount, rounded up.
+     */
+    function getUnvestedSurplus() external view returns (uint256);
+
+    /**
+     * @notice Folds a fully vested surplus tranche into the spendable USDat balance.
+     * @dev Permissionless and a no-op when no tranche exists or vesting is incomplete.
+     */
+    function sweep() external;
+
+    // ============ Rotation Functions ============
+
+    /**
+     * @notice Buys an exact amount of STRCon from the configured execution vehicle.
+     * @dev Only callable by OPERATOR_ROLE while unpaused and outside Restricted mode.
+     * The vehicle must approve the vault to pull assetReceived of the fixed module asset.
+     * @param usdatPaid The exact USDat paid, in 6-decimal units.
+     * @param assetReceived The exact module asset received, in its native decimals.
+     * @param deadline The inclusive execution deadline.
+     */
+    function buy(uint256 usdatPaid, uint256 assetReceived, uint256 deadline) external;
+
+    /**
+     * @notice Sells an exact amount of STRCon to the configured execution vehicle.
+     * @dev Only callable by OPERATOR_ROLE while unpaused and outside Restricted mode.
+     * The vehicle must approve the vault to pull usdatReceived USDat.
+     * @param assetDelivered The exact module asset delivered to the vehicle, in its native decimals.
+     * @param usdatReceived The exact USDat received, in 6-decimal units.
+     * @param deadline The inclusive execution deadline.
+     */
+    function sell(uint256 assetDelivered, uint256 usdatReceived, uint256 deadline) external;
+
+    // ============ Migration Functions ============
+
+    /**
+     * @notice Replaces the legacy STRC mirror position with an exact STRCon delivery.
+     * @dev Only callable once by DEFAULT_ADMIN_ROLE while unpaused.
+     * @param expectedStrcon The exact STRCon amount pulled from the execution vehicle.
+     * @param deadline The inclusive migration deadline.
+     */
+    function migrate(uint256 expectedStrcon, uint256 deadline) external;
+
     // ============ Withdrawal Functions ============
 
     /**
      * @notice Requests a redemption by escrowing shares in the withdrawal queue.
      * @dev Standard ERC4626 withdraw/redeem are disabled. Use this function instead.
      * Transfers shares to the withdrawal queue and mints an NFT representing the request.
-     * Never prices — stays live while any module oracle is down.
+     * Never prices.
      * @param shares The number of shares to redeem (>= MIN_REQUEST_SHARES).
      * @param minSharePrice Limit: minimum execution price per 1e18 shares. The request
      * fills at this price or better; below it, it is skipped and stays queued.
@@ -435,8 +509,7 @@ interface IStakedUSDat is IERC4626 {
     /**
      * @notice Attempts to redeem a complete queued request against the cash buffer.
      * @dev Only callable by the withdrawal queue (immutable address check). Prices,
-     * checks the gross limit and liquidity, then burns and transfers atomically. A
-     * skipped request does not mutate vault state beyond sweeping vested surplus.
+     * checks the gross limit and liquidity, then burns and transfers atomically.
      * @param shares The complete number of escrowed shares to redeem.
      * @param minSharePrice The minimum gross USDat per 1e18 shares.
      * @return result Whether the request settled or why it was skipped.
@@ -445,130 +518,6 @@ interface IStakedUSDat is IERC4626 {
     function redeemQueuedShares(uint256 shares, uint256 minSharePrice)
         external
         returns (RedemptionResult result, uint256 usdat);
-
-    // ============ Module Management ============
-
-    /**
-     * @notice Registers an accounting module.
-     * @dev Only callable by addresses with the MODULE_MANAGER_ROLE.
-     * Reverts if MAX_MODULES modules are already registered.
-     * @param module The module address.
-     * @param maxWeightBps Hard cap on the module's share of totalAssets, in basis points.
-     */
-    function registerModule(address module, uint16 maxWeightBps) external;
-
-    /**
-     * @notice Updates a module's weight cap.
-     * @dev Only callable by addresses with the MODULE_MANAGER_ROLE.
-     * @param module The module address.
-     * @param maxWeightBps The new weight cap in basis points.
-     */
-    function setMaxWeight(address module, uint16 maxWeightBps) external;
-
-    /**
-     * @notice Deregisters a module. Real removal; config cleared.
-     * @dev Only callable by addresses with the MODULE_MANAGER_ROLE.
-     * Requires the module's balance() to be zero (checked without pricing).
-     * @param module The module address.
-     */
-    function deregisterModule(address module) external;
-
-    /**
-     * @notice Updates the global cash floor.
-     * @dev Only callable by addresses with the PARAMETER_MANAGER_ROLE.
-     * @param newMinCashBufferBps The new cash floor in basis points.
-     */
-    function setMinCashBuffer(uint16 newMinCashBufferBps) external;
-
-    /**
-     * @notice Returns the registered module addresses.
-     * @return The module addresses.
-     */
-    function getModules() external view returns (address[] memory);
-
-    /**
-     * @notice Returns a module's configuration.
-     * @param module The module address.
-     * @return The module configuration.
-     */
-    function moduleConfig(address module) external view returns (ModuleConfig memory);
-
-    /**
-     * @notice Returns the global cash floor in basis points of totalAssets.
-     * @return The cash floor in basis points.
-     */
-    function minCashBufferBps() external view returns (uint16);
-
-    // ============ Rotations ============
-
-    /**
-     * @notice Acquires a backing asset with idle USDat via a registered module.
-     * @dev Only callable by addresses with the OPERATOR_ROLE. May not push the module
-     * above its maxWeightBps or cash below minCashBufferBps.
-     * @param module The registered module to buy through.
-     * @param usdatIn The amount of USDat to spend (6 decimals).
-     * @param minAssetOut The minimum acceptable amount of asset acquired.
-     * @param venueData Venue-specific execution data, forwarded to the module.
-     * @return assetOut The amount of asset recognized.
-     */
-    function buyVia(address module, uint256 usdatIn, uint256 minAssetOut, bytes calldata venueData)
-        external
-        returns (uint256 assetOut);
-
-    /**
-     * @notice Closes part of a backing position back to USDat via a registered module.
-     * @dev Only callable by addresses with the OPERATOR_ROLE. Never blocked by weight
-     * or cash-floor checks.
-     * @param module The registered module to sell through.
-     * @param assetIn The amount of asset to sell.
-     * @param minUsdatOut The minimum acceptable amount of USDat received.
-     * @param venueData Venue-specific execution data, forwarded to the module.
-     * @return usdatOut The amount of USDat returned to the buffer (6 decimals).
-     */
-    function sellVia(address module, uint256 assetIn, uint256 minUsdatOut, bytes calldata venueData)
-        external
-        returns (uint256 usdatOut);
-
-    // ============ Surplus Inlet ============
-
-    /**
-     * @notice Transfers surplus USDat from Saturn's float into the vault.
-     * @dev Only callable by addresses with the OPERATOR_ROLE. Enters a segregated leg
-     * outside usdatBalance and vests linearly over surplusVestingPeriod; capped per
-     * tranche at maxSurplusBps of totalAssets. One tranche at a time.
-     * @param amount The USDat amount to transfer in (6 decimals).
-     */
-    function transferInSurplus(uint256 amount) external;
-
-    /**
-     * @notice Returns the unvested slice of the current surplus tranche.
-     * @return The unvested USDat amount.
-     */
-    function getUnvestedSurplus() external view returns (uint256);
-
-    /**
-     * @notice Folds a fully vested surplus tranche into the cash buffer.
-     * @dev Permissionless, NAV-neutral; also runs atop value-sensitive entrypoints.
-     */
-    function sweep() external;
-
-    /**
-     * @notice Returns the current surplus tranche amount.
-     * @return The tranche USDat amount (6 decimals).
-     */
-    function surplusVestingAmount() external view returns (uint256);
-
-    /**
-     * @notice Returns the surplus vesting period.
-     * @return The vesting period in seconds.
-     */
-    function surplusVestingPeriod() external view returns (uint256);
-
-    /**
-     * @notice Returns the per-tranche surplus cap.
-     * @return The cap in basis points of totalAssets.
-     */
-    function maxSurplusBps() external view returns (uint16);
 
     // ============ View Functions ============
 
@@ -579,16 +528,66 @@ interface IStakedUSDat is IERC4626 {
     function getWithdrawalQueue() external view returns (address);
 
     /**
-     * @notice Returns the current fee recipient address.
-     * @return The fee recipient address.
-     */
-    function feeRecipient() external view returns (address);
-
-    /**
      * @notice Returns the canonical destination for seized assets.
      * @return The recovery address.
      */
     function recoveryAddress() external view returns (address);
+
+    /**
+     * @notice Returns the current vault operating mode.
+     * @return The current market mode.
+     */
+    function marketMode() external view returns (MarketMode);
+
+    /**
+     * @notice Returns the base redemption fee in basis points.
+     */
+    function baseRedemptionFeeBps() external view returns (uint16);
+
+    /**
+     * @notice Returns the elevated redemption fee in basis points.
+     */
+    function elevatedRedemptionFeeBps() external view returns (uint16);
+
+    /**
+     * @notice Returns the configured elevated deposit fee in basis points.
+     */
+    function elevatedDepositFeeBps() external view returns (uint256);
+
+    /**
+     * @notice Returns the deposit fee selected by the current market mode.
+     */
+    function depositFeeBps() external view returns (uint256);
+
+    /**
+     * @notice Returns the fixed tokenless STRC mirror accounting module.
+     */
+    function strcMirrorModule() external view returns (ISTRCMirrorModule);
+
+    /**
+     * @notice Returns the fixed STRCon accounting and trading module.
+     */
+    function strconModule() external view returns (ISTRConModule);
+
+    /**
+     * @notice Returns the counterparty used for STRCon settlement.
+     */
+    function executionVehicle() external view returns (address);
+
+    /**
+     * @notice Returns the maximum adverse STRCon execution deviation in basis points.
+     */
+    function executionToleranceBps() external view returns (uint16);
+
+    /**
+     * @notice Returns the maximum permitted whole-vault NAV change during migration.
+     */
+    function migrationToleranceBps() external view returns (uint16);
+
+    /**
+     * @notice Returns the redemption fee selected by the current market mode.
+     */
+    function redemptionFeeBps() external view returns (uint16);
 
     /**
      * @notice Returns the internally tracked USDat balance.
@@ -597,96 +596,33 @@ interface IStakedUSDat is IERC4626 {
     function usdatBalance() external view returns (uint256);
 
     /**
-     * @notice Returns the base redemption fee in basis points.
-     * @return The base redemption fee in basis points.
+     * @notice Returns the full amount of the current segregated surplus tranche.
      */
-    function baseRedemptionFeeBps() external view returns (uint16);
+    function surplusVestingAmount() external view returns (uint256);
 
     /**
-     * @notice Returns the elevated redemption fee in basis points.
-     * @return The elevated redemption fee in basis points.
+     * @notice Returns the timestamp at which the current surplus tranche began vesting.
      */
-    function elevatedRedemptionFeeBps() external view returns (uint16);
+    function surplusVestingStartTimestamp() external view returns (uint256);
 
     /**
-     * @notice Returns whether the elevated redemption fee tier currently applies.
-     * @return True if the elevated tier is active.
+     * @notice Returns the configured surplus vesting period.
      */
-    function elevatedFeeActive() external view returns (bool);
+    function surplusVestingPeriod() external view returns (uint256);
+
+    // ============ Enforcer Functions ============
 
     /**
-     * @notice Returns the redemption fee currently in effect (the active tier).
-     * @return The applicable fee in basis points.
+     * @notice Rescues untracked ERC20 tokens held by the vault.
+     * @dev Only callable by ENFORCER_ROLE. USDat cash and surplus custody,
+     * plus the STRCon module's tracked token balance, cannot be rescued. The current
+     * valid recoveryAddress is the only destination.
+     * @param token The ERC20 token to rescue.
+     * @param amount The amount to transfer.
      */
-    function redemptionFeeBps() external view returns (uint16);
-
-    /**
-     * @notice Returns the management fee in basis points per year.
-     * @return The management fee in basis points per year.
-     */
-    function managementFeeBps() external view returns (uint16);
-
-    /**
-     * @notice Returns the timestamp of the last management fee collection.
-     * @return The Unix timestamp.
-     */
-    function lastFeeCollection() external view returns (uint256);
-
-    /**
-     * @notice Collects the accrued management fee as newly minted shares to feeRecipient.
-     * @dev Permissionless; pure supply dilution, oracle-independent. Time-determined —
-     * collection timing and frequency don't change the total.
-     */
-    function collectManagementFee() external;
+    function rescueTokens(address token, uint256 amount) external;
 
     // ============ Admin Functions ============
-
-    /**
-     * @notice Updates the surplus vesting period.
-     * @dev Only callable by addresses with the PARAMETER_MANAGER_ROLE.
-     * Cannot be changed while a tranche is still vesting.
-     * @param newPeriod The new period in seconds (must be <= MAX_SURPLUS_VESTING_PERIOD).
-     */
-    function setSurplusVestingPeriod(uint256 newPeriod) external;
-
-    /**
-     * @notice Updates the per-tranche surplus cap.
-     * @dev Only callable by addresses with the PARAMETER_MANAGER_ROLE.
-     * @param newMaxBps The new cap in basis points of totalAssets.
-     */
-    function setMaxSurplusBps(uint16 newMaxBps) external;
-
-    /**
-     * @notice Updates both redemption fee tiers.
-     * @dev Only callable by addresses with the PARAMETER_MANAGER_ROLE.
-     * Requires base <= elevated <= MAX_REDEMPTION_FEE_BPS.
-     * @param baseBps The base fee in basis points.
-     * @param elevatedBps The elevated fee in basis points.
-     */
-    function setRedemptionFees(uint16 baseBps, uint16 elevatedBps) external;
-
-    /**
-     * @notice Selects which redemption fee tier applies.
-     * @dev Only callable by addresses with the OPERATOR_ROLE, e.g. flipped with the
-     * settlement risk environment (off-hours, stress). Explicit state, not a toggle.
-     * @param active True to apply the elevated tier.
-     */
-    function setElevatedFeeActive(bool active) external;
-
-    /**
-     * @notice Updates the management fee rate.
-     * @dev Only callable by addresses with the PARAMETER_MANAGER_ROLE. Collects at the
-     * old rate first so the change never applies retroactively.
-     * @param newFeeBps The new fee in basis points per year (<= MAX_MANAGEMENT_FEE_BPS).
-     */
-    function setManagementFee(uint16 newFeeBps) external;
-
-    /**
-     * @notice Updates the fee recipient address.
-     * @dev Only callable by addresses with the PARAMETER_MANAGER_ROLE.
-     * @param newRecipient The new fee recipient address.
-     */
-    function setFeeRecipient(address newRecipient) external;
 
     /**
      * @notice Updates the canonical destination for seized assets.
@@ -695,6 +631,58 @@ interface IStakedUSDat is IERC4626 {
      * @param newRecoveryAddress The new recovery address.
      */
     function setRecoveryAddress(address newRecoveryAddress) external;
+
+    /**
+     * @notice Updates the counterparty used for STRCon settlement.
+     * @dev Only callable by PARAMETER_MANAGER_ROLE. The vehicle cannot be zero.
+     * @param newVehicle The new execution vehicle.
+     */
+    function setExecutionVehicle(address newVehicle) external;
+
+    /**
+     * @notice Updates the maximum adverse STRCon execution deviation.
+     * @dev Only callable by PARAMETER_MANAGER_ROLE. The value cannot exceed
+     * MAX_EXECUTION_TOLERANCE_BPS.
+     * @param newBps The new tolerance in basis points.
+     */
+    function setExecutionTolerance(uint16 newBps) external;
+
+    /**
+     * @notice Updates the whole-vault NAV tolerance for migration.
+     * @dev Only callable by PARAMETER_MANAGER_ROLE and capped at
+     * MAX_MIGRATION_TOLERANCE_BPS.
+     * @param newBps The new tolerance in basis points.
+     */
+    function setMigrationTolerance(uint16 newBps) external;
+
+    /**
+     * @notice Sets the vault operating mode.
+     * @dev Only callable by addresses with the MARKET_MODE_MANAGER_ROLE. This remains
+     * callable while the vault is paused.
+     * @param newMode The explicit target market mode.
+     */
+    function setMarketMode(MarketMode newMode) external;
+
+    /**
+     * @notice Updates both redemption fee tiers.
+     * @dev Only callable by addresses with the PARAMETER_MANAGER_ROLE.
+     * Requires baseBps <= elevatedBps <= MAX_REDEMPTION_FEE_BPS.
+     */
+    function setRedemptionFees(uint16 baseBps, uint16 elevatedBps) external;
+
+    /**
+     * @notice Updates the elevated deposit fee.
+     * @dev Only callable by addresses with the PARAMETER_MANAGER_ROLE.
+     * Requires newFeeBps <= MAX_DEPOSIT_FEE_BPS.
+     */
+    function setElevatedDepositFee(uint256 newFeeBps) external;
+
+    /**
+     * @notice Updates the surplus vesting period.
+     * @dev Only callable by PARAMETER_MANAGER_ROLE when no tranche remains unvested.
+     * @param newPeriod The new period in seconds.
+     */
+    function setSurplusVestingPeriod(uint256 newPeriod) external;
 
     /**
      * @notice Pauses the contract.

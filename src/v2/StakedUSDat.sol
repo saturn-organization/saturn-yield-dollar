@@ -6,7 +6,6 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
@@ -20,11 +19,11 @@ import {
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 
 import {IWithdrawalQueueERC721} from "./interfaces/IWithdrawalQueueERC721.sol";
-import {IAccountingModule} from "./interfaces/IAccountingModule.sol";
 import {IStakedUSDat} from "./interfaces/IStakedUSDat.sol";
 import {IUSDat} from "./interfaces/IUSDat.sol";
 import {IERC20PermitExtended} from "./interfaces/IERC20PermitExtended.sol";
-import {MirrorSTRC} from "./modules/MirrorSTRC/MirrorSTRC.sol";
+import {ISTRCMirrorModule} from "./interfaces/ISTRCMirrorModule.sol";
+import {ISTRConModule} from "./interfaces/ISTRConModule.sol";
 
 /**
  * @title StakedUSDat
@@ -43,16 +42,15 @@ contract StakedUSDat is
     IStakedUSDat
 {
     using SafeERC20 for IERC20;
-    using EnumerableSet for EnumerableSet.AddressSet;
 
-    /// @notice Role identifier for the operator (rotations, yield/reward inlets)
+    /// @notice Role identifier for parameter tuning
+    bytes32 public constant PARAMETER_MANAGER_ROLE = keccak256("PARAMETER_MANAGER_ROLE");
+
+    /// @notice Role identifier for vault operations that move assets.
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
 
-    /// @notice Role identifier for module registry management
-    bytes32 public constant MODULE_MANAGER_ROLE = keccak256("MODULE_MANAGER_ROLE");
-
-    /// @notice Role identifier for parameter tuning (fees, caps, cash floor)
-    bytes32 public constant PARAMETER_MANAGER_ROLE = keccak256("PARAMETER_MANAGER_ROLE");
+    /// @notice Role identifier for selecting the current market mode
+    bytes32 public constant MARKET_MODE_MANAGER_ROLE = keccak256("MARKET_MODE_MANAGER_ROLE");
 
     /// @notice Role identifier for blacklist add/remove (freeze only, never moves funds)
     bytes32 public constant BLACKLISTER_ROLE = keccak256("BLACKLISTER_ROLE");
@@ -66,24 +64,21 @@ contract StakedUSDat is
     /// @notice Role identifier for unpausing (cannot pause)
     bytes32 public constant UNPAUSER_ROLE = keccak256("UNPAUSER_ROLE");
 
-    /// @notice Maximum number of registered modules (keeps totalAssets gas-bounded)
-    uint256 public constant MAX_MODULES = 5;
-
     /// @dev The WithdrawalQueue contract (immutable, stored in implementation bytecode)
     IWithdrawalQueueERC721 private immutable WITHDRAWAL_QUEUE;
 
     /// @dev Mapping of blacklisted addresses
     mapping(address account => bool isBlacklisted) private _blacklisted;
 
-    /// @dev Retired v1 slot (was vestingAmount); read once by initializeV2 to seed MirrorSTRC
+    /// @dev Retired v1 slot (was vestingAmount); do not reuse
     // forge-lint: disable-next-line(mixed-case-variable)
     uint256 private __deprecatedVestingAmount;
 
-    /// @dev Retired v1 slot (was lastDistributionTimestamp); read once by initializeV2 to seed MirrorSTRC
+    /// @dev Retired v1 slot (was lastDistributionTimestamp); do not reuse
     // forge-lint: disable-next-line(mixed-case-variable)
     uint256 private __deprecatedLastDistributionTimestamp;
 
-    /// @dev Retired v1 slot (was vestingPeriod); read once by initializeV2 to seed MirrorSTRC
+    /// @dev Retired v1 slot (was vestingPeriod); do not reuse
     // forge-lint: disable-next-line(mixed-case-variable)
     uint256 private __deprecatedVestingPeriod;
 
@@ -91,33 +86,43 @@ contract StakedUSDat is
     /// Share-denominated so requestRedeem never prices.
     uint256 public constant MIN_REQUEST_SHARES = 10e18;
 
-    /// @notice Maximum redemption fee (5%)
-    uint256 public constant MAX_REDEMPTION_FEE_BPS = 500;
+    /// @notice Basis points denominator.
+    uint256 public constant BPS_DENOMINATOR = 10_000;
 
-    /// @notice Maximum surplus vesting period (7 days)
+    /// @notice Maximum redemption fee (5%).
+    uint16 public constant MAX_REDEMPTION_FEE_BPS = 500;
+
+    /// @notice Maximum elevated deposit fee (5%).
+    uint256 public constant MAX_DEPOSIT_FEE_BPS = 500;
+
+    /// @notice Maximum adverse STRCon execution deviation (5%).
+    uint16 public constant MAX_EXECUTION_TOLERANCE_BPS = 500;
+
+    /// @notice Maximum whole-vault NAV change permitted during migration (5%).
+    uint16 public constant MAX_MIGRATION_TOLERANCE_BPS = 500;
+
+    /// @notice Maximum surplus intake per tranche (5% of pre-transfer NAV).
+    uint256 public constant MAX_SURPLUS_BPS = 500;
+
+    /// @notice Maximum surplus vesting period.
     uint256 public constant MAX_SURPLUS_VESTING_PERIOD = 7 days;
-
-    /// @notice Maximum management fee (2% per year)
-    uint256 public constant MAX_MANAGEMENT_FEE_BPS = 200;
 
     /// @dev Retired v1 slot (was toleranceBps); do not reuse
     // forge-lint: disable-next-line(mixed-case-variable)
     uint256 private __deprecatedToleranceBps;
 
-    /// @notice Basis points denominator
-    uint256 public constant BPS_DENOMINATOR = 10000;
+    /// @inheritdoc IStakedUSDat
+    /// @custom:oz-renamed-from depositFeeBps
+    uint256 public override elevatedDepositFeeBps;
 
-    /// @dev Retired v1 slot (was depositFeeBps); do not reuse
+    /// @dev Retired v1 slot (was feeRecipient); reserved and unused
     // forge-lint: disable-next-line(mixed-case-variable)
-    uint256 private __deprecatedDepositFeeBps;
-
-    /// @notice Address that receives protocol fees
-    address public feeRecipient;
+    address private __deprecatedFeeRecipient;
 
     /// @notice Internally tracked USDat balance (6 decimals)
     uint256 public usdatBalance;
 
-    /// @dev Retired v1 slot (was strcBalance); read once by initializeV2 to seed MirrorSTRC
+    /// @dev Retired v1 slot (was strcBalance); do not reuse
     // forge-lint: disable-next-line(mixed-case-variable)
     uint256 private __deprecatedStrcBalance;
 
@@ -125,51 +130,49 @@ contract StakedUSDat is
     // forge-lint: disable-next-line(mixed-case-variable)
     uint256 private __deprecatedMaxRewardsBps;
 
-    /// @dev Registered accounting modules; totalAssets() iterates this set
-    EnumerableSet.AddressSet private _modules;
-
-    /// @dev Per-module configuration
-    mapping(address module => ModuleConfig) private _moduleConfigs;
-
-    /// @notice Global cash floor in basis points of totalAssets (governs rotations and
-    /// deposit deployment only; queue processing may draw the buffer to zero)
-    uint16 public minCashBufferBps;
-
-    /// @notice Redemption fee in basis points while elevatedFeeActive is false; held
-    /// back in the vault (anti-dilution, never revenue)
-    uint16 public baseRedemptionFeeBps;
-
-    /// @notice Redemption fee in basis points while elevatedFeeActive is true
-    /// (off-hours settlement, stress); >= baseRedemptionFeeBps
-    uint16 public elevatedRedemptionFeeBps;
-
-    /// @notice Which redemption fee tier applies; flipped by the operator
-    bool public elevatedFeeActive;
-
-    /// @notice Per-tranche surplus cap in basis points of totalAssets
-    uint16 public maxSurplusBps;
-
-    /// @notice Management fee in basis points per year, taken as supply dilution
-    uint16 public managementFeeBps;
-
-    /// @notice Current surplus tranche (USDat, 6 decimals) — in the vault but outside
-    /// usdatBalance until swept; only the vested slice counts toward totalAssets
-    uint256 public surplusVestingAmount;
-
-    /// @notice Timestamp when the current surplus tranche started vesting
-    uint256 public lastSurplusTimestamp;
-
-    /// @notice Surplus vesting period in seconds
-    uint256 public surplusVestingPeriod;
-
-    /// @notice Timestamp of the last management fee collection
-    uint256 public lastFeeCollection;
-
     /// @notice Canonical destination for seized shares and withdrawal requests
     address public recoveryAddress;
 
+    /// @inheritdoc IStakedUSDat
+    MarketMode public override marketMode;
+
+    /// @inheritdoc IStakedUSDat
+    uint16 public override baseRedemptionFeeBps;
+
+    /// @inheritdoc IStakedUSDat
+    uint16 public override elevatedRedemptionFeeBps;
+
+    /// @inheritdoc IStakedUSDat
+    ISTRCMirrorModule public override strcMirrorModule;
+
+    /// @inheritdoc IStakedUSDat
+    ISTRConModule public override strconModule;
+
+    /// @inheritdoc IStakedUSDat
+    uint256 public override surplusVestingAmount;
+
+    /// @inheritdoc IStakedUSDat
+    uint256 public override surplusVestingStartTimestamp;
+
+    /// @inheritdoc IStakedUSDat
+    uint256 public override surplusVestingPeriod;
+
+    /// @inheritdoc IStakedUSDat
+    address public override executionVehicle;
+
+    /// @inheritdoc IStakedUSDat
+    uint16 public override executionToleranceBps;
+
+    /// @inheritdoc IStakedUSDat
+    uint16 public migrationToleranceBps;
+
     modifier notZero(uint256 amount) {
         _notZero(amount);
+        _;
+    }
+
+    modifier whenNotRestricted() {
+        require(marketMode != MarketMode.RESTRICTED, MarketRestricted());
         _;
     }
 
@@ -199,6 +202,11 @@ contract StakedUSDat is
         require(msg.sender == address(WITHDRAWAL_QUEUE), OperationNotAllowed());
     }
 
+    /// @dev Reverts once the caller-supplied execution deadline has passed.
+    function _requireUnexpiredDeadline(uint256 deadline) internal view {
+        require(block.timestamp <= deadline, DeadlineExpired());
+    }
+
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor(IWithdrawalQueueERC721 withdrawalQueue) {
         require(address(withdrawalQueue) != address(0), InvalidZeroAddress());
@@ -210,9 +218,8 @@ contract StakedUSDat is
     /// @dev Grants only DEFAULT_ADMIN_ROLE; the admin grants the operational roles (§2.8)
     /// after deployment.
     /// @param defaultAdmin The default admin of the contract
-    /// @param protocolFeeRecipient The address that receives protocol fees
     /// @param usdat USDat contract address
-    function initialize(address defaultAdmin, address protocolFeeRecipient, IERC20 usdat) external initializer {
+    function initialize(address defaultAdmin, IERC20 usdat) external initializer {
         require(defaultAdmin != address(0) && address(usdat) != address(0), InvalidZeroAddress());
 
         __AccessControl_init();
@@ -222,91 +229,56 @@ contract StakedUSDat is
         __ERC4626_init(usdat);
 
         _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
-
-        feeRecipient = protocolFeeRecipient;
-        surplusVestingPeriod = 24 hours;
-        maxSurplusBps = 250; // 2.5% of totalAssets per tranche
-        managementFeeBps = 50; // 0.5% per year
-        lastFeeCollection = block.timestamp;
     }
 
-    /// @notice Role-holder addresses granted at the v2 upgrade (§2.8). The v2 role ids
-    /// are new (capability-renamed), so nothing carries over from v1's grants.
-    struct RoleHolders {
-        address operator;
-        address moduleManager;
-        address parameterManager;
-        address blacklister;
-        address enforcer;
-        address pauser;
-        address unpauser;
+    /// @inheritdoc IStakedUSDat
+    function initializeV2(V2Config calldata config, V2Roles calldata roles)
+        external
+        onlyRole(DEFAULT_ADMIN_ROLE)
+        reinitializer(2)
+    {
+        _validateV2Modules(config);
+
+        config.strcMirrorModule
+            .seed(
+                __deprecatedStrcBalance,
+                __deprecatedVestingAmount,
+                __deprecatedLastDistributionTimestamp,
+                __deprecatedVestingPeriod,
+                __deprecatedMaxRewardsBps
+            );
+
+        strcMirrorModule = config.strcMirrorModule;
+        strconModule = config.strconModule;
+        _setRecoveryAddress(config.recoveryAddress);
+        _setExecutionVehicle(config.executionVehicle);
+        _setRedemptionFees(config.baseRedemptionFeeBps, config.elevatedRedemptionFeeBps);
+        _setElevatedDepositFee(config.elevatedDepositFeeBps);
+        _setExecutionTolerance(config.executionToleranceBps);
+        surplusVestingPeriod = 3 days;
+        marketMode = MarketMode.REGULAR;
+
+        _grantV2Role(PARAMETER_MANAGER_ROLE, roles.parameterManager);
+        _grantV2Role(MARKET_MODE_MANAGER_ROLE, roles.marketModeManager);
+        _grantV2Role(OPERATOR_ROLE, roles.operator);
+        _grantV2Role(BLACKLISTER_ROLE, roles.blacklister);
+        _grantV2Role(ENFORCER_ROLE, roles.enforcer);
+        _grantV2Role(PAUSER_ROLE, roles.pauser);
+        _grantV2Role(UNPAUSER_ROLE, roles.unpauser);
     }
 
-    /// @notice v1 → v2 migration reinitializer (§3.1), executed atomically inside
-    /// upgradeToAndCall.
-    /// @dev Reads the v1 STRC slots once to seed MirrorSTRC, registers it uncapped
-    /// (it carries the whole position at upgrade), seeds the v2 parameters, stamps
-    /// lastFeeCollection (unstamped with a nonzero rate, the first collection would
-    /// mint decades of fees), and grants the §2.8 roles.
-    /// @param mirror The freshly deployed MirrorSTRC module.
-    /// @param baseBps The base redemption fee tier in basis points.
-    /// @param elevatedBps The elevated redemption fee tier in basis points.
-    /// @param roles The §2.8 role-holder addresses.
-    /// @param recoveryAddress_ The canonical destination for seized assets.
-    function initializeV2(
-        MirrorSTRC mirror,
-        uint16 baseBps,
-        uint16 elevatedBps,
-        RoleHolders calldata roles,
-        address recoveryAddress_
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) reinitializer(2) {
-        require(address(mirror) != address(0), InvalidZeroAddress());
-        require(baseBps <= elevatedBps && elevatedBps <= MAX_REDEMPTION_FEE_BPS, InvalidFee());
+    function _grantV2Role(bytes32 role, address holder) private {
+        require(holder != address(0), InvalidZeroAddress());
+        _grantRole(role, holder);
+    }
+
+    /// @dev Validates the fixed module bindings, which have no reusable setters.
+    function _validateV2Modules(V2Config calldata config) private view {
         require(
-            roles.operator != address(0) && roles.moduleManager != address(0) && roles.parameterManager != address(0)
-                && roles.blacklister != address(0) && roles.enforcer != address(0) && roles.pauser != address(0)
-                && roles.unpauser != address(0),
-            InvalidZeroAddress()
+            config.strcMirrorModule.VAULT() == address(this) && config.strconModule.VAULT() == address(this)
+                && config.strconModule.balance() == 0,
+            InvalidModule()
         );
-
-        // Move the v1 STRC leg into the mirror module and retire the v1 slots.
-        mirror.seed(
-            __deprecatedStrcBalance,
-            __deprecatedVestingAmount,
-            __deprecatedLastDistributionTimestamp,
-            __deprecatedVestingPeriod
-        );
-        __deprecatedStrcBalance = 0;
-        __deprecatedVestingAmount = 0;
-        __deprecatedLastDistributionTimestamp = 0;
-        __deprecatedVestingPeriod = 0;
-        __deprecatedToleranceBps = 0;
-        __deprecatedDepositFeeBps = 0;
-        __deprecatedMaxRewardsBps = 0;
-
-        // safe: BPS_DENOMINATOR == 10000 fits uint16
-        // forge-lint: disable-next-line(unsafe-typecast)
-        uint16 fullWeight = uint16(BPS_DENOMINATOR);
-        _modules.add(address(mirror));
-        _moduleConfigs[address(mirror)] = ModuleConfig({maxWeightBps: fullWeight});
-        emit ModuleRegistered(address(mirror), fullWeight);
-
-        baseRedemptionFeeBps = baseBps;
-        elevatedRedemptionFeeBps = elevatedBps;
-        surplusVestingPeriod = 24 hours;
-        maxSurplusBps = 250; // 2.5% of totalAssets per tranche
-        managementFeeBps = 50; // 0.5% per year
-        lastFeeCollection = block.timestamp;
-
-        _setRecoveryAddress(recoveryAddress_);
-
-        _grantRole(OPERATOR_ROLE, roles.operator);
-        _grantRole(MODULE_MANAGER_ROLE, roles.moduleManager);
-        _grantRole(PARAMETER_MANAGER_ROLE, roles.parameterManager);
-        _grantRole(BLACKLISTER_ROLE, roles.blacklister);
-        _grantRole(ENFORCER_ROLE, roles.enforcer);
-        _grantRole(PAUSER_ROLE, roles.pauser);
-        _grantRole(UNPAUSER_ROLE, roles.unpauser);
     }
 
     /// @dev Authorizes an upgrade to a new implementation. Only callable by DEFAULT_ADMIN_ROLE.
@@ -357,50 +329,26 @@ contract StakedUSDat is
         return super.transferFrom(from, to, amount);
     }
 
-    /// @inheritdoc IStakedUSDat
-    function redistributeLockedAmount(address from) external nonReentrant onlyRole(ENFORCER_ROLE) whileUnpaused {
-        require(_blacklisted[from], AddressNotBlacklisted());
-        uint256 amountToDistribute = balanceOf(from);
-
-        require(amountToDistribute > 0, ZeroAmount());
-        require(totalSupply() > amountToDistribute, NoRecipientsForRedistribution());
-
-        _burn(from, amountToDistribute);
-
-        emit LockedAmountRedistributed(from, amountToDistribute);
-    }
-
-    /// @inheritdoc IStakedUSDat
-    /// @dev Moves shares, no burn, no liquidity needed — value-preserving enforcement
-    /// (e.g. court-directed recovery). Third option beside freezing and
-    /// redistributeLockedAmount.
-    function seize(address from, address to) external nonReentrant onlyRole(ENFORCER_ROLE) whileUnpaused {
-        require(_blacklisted[from], AddressNotBlacklisted());
-        _requireNotBlacklisted(to);
-
-        uint256 amount = balanceOf(from);
-        require(amount > 0, ZeroAmount());
-
-        _transfer(from, to, amount);
-
-        emit Seized(from, to, amount);
-    }
-
     // ============ ERC4626 Overrides ============
 
     /// @inheritdoc IERC4626
-    /// @dev Idle USDat, plus the vested slice of the surplus leg, plus the recognized
-    /// value of every registered module. Reverts when any module cannot reliably
-    /// price — fail-closed for every value-sensitive path.
+    /// @dev Adds cash, vested surplus, and both fixed module values.
+    /// Module pricing failures deliberately propagate.
     function totalAssets() public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
-        uint256 total = usdatBalance + (surplusVestingAmount - getUnvestedSurplus());
+        uint256 vestedSurplus = surplusVestingAmount - getUnvestedSurplus();
+        return usdatBalance + vestedSurplus + strcMirrorModule.recognizedValue() + strconModule.recognizedValue();
+    }
 
-        uint256 count = _modules.length();
-        for (uint256 i = 0; i < count; i++) {
-            total += IAccountingModule(_modules.at(i)).recognizedValue();
-        }
+    /// @inheritdoc IStakedUSDat
+    function getUnvestedSurplus() public view returns (uint256) {
+        uint256 amount = surplusVestingAmount;
+        if (amount == 0) return 0;
 
-        return total;
+        uint256 period = surplusVestingPeriod;
+        uint256 elapsed = block.timestamp - surplusVestingStartTimestamp;
+        if (elapsed >= period) return 0;
+
+        return Math.mulDiv(period - elapsed, amount, period, Math.Rounding.Ceil);
     }
 
     /// @inheritdoc IERC20Metadata
@@ -414,27 +362,37 @@ contract StakedUSDat is
     }
 
     /// @inheritdoc IERC4626
-    /// @dev Returns 0 when paused or when any module cannot price (max* functions must
-    /// not revert per ERC4626).
-    function maxDeposit(address) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
-        if (paused()) return 0;
-        try this.totalAssets() returns (uint256) {
-            return type(uint256).max;
-        } catch {
-            return 0;
-        }
+    /// @dev Applies the mode-derived fee to gross assets, rounding the fee up.
+    function previewDeposit(uint256 assets) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
+        uint256 feeBps = depositFeeBps();
+        if (feeBps == 0) return super.previewDeposit(assets);
+
+        uint256 fee = Math.mulDiv(assets, feeBps, BPS_DENOMINATOR, Math.Rounding.Ceil);
+        return super.previewDeposit(assets - fee);
     }
 
     /// @inheritdoc IERC4626
-    /// @dev Returns 0 when paused or when any module cannot price (max* functions must
-    /// not revert per ERC4626).
+    /// @dev Grosses up the net assets required for the requested shares.
+    function previewMint(uint256 shares) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
+        uint256 netAssets = super.previewMint(shares);
+        uint256 feeBps = depositFeeBps();
+        if (feeBps == 0) return netAssets;
+
+        return Math.mulDiv(netAssets, BPS_DENOMINATOR, BPS_DENOMINATOR - feeBps, Math.Rounding.Ceil);
+    }
+
+    /// @inheritdoc IERC4626
+    /// @dev Returns 0 when paused, deposits are restricted, or NAV cannot be priced.
+    function maxDeposit(address) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
+        if (paused() || marketMode == MarketMode.RESTRICTED) return 0;
+        return _canPriceTotalAssets() ? type(uint256).max : 0;
+    }
+
+    /// @inheritdoc IERC4626
+    /// @dev Returns 0 when paused, mints are restricted, or NAV cannot be priced.
     function maxMint(address) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
-        if (paused()) return 0;
-        try this.totalAssets() returns (uint256) {
-            return type(uint256).max;
-        } catch {
-            return 0;
-        }
+        if (paused() || marketMode == MarketMode.RESTRICTED) return 0;
+        return _canPriceTotalAssets() ? type(uint256).max : 0;
     }
 
     /// @inheritdoc IERC4626
@@ -449,184 +407,37 @@ contract StakedUSDat is
         return paused() ? 0 : balanceOf(owner);
     }
 
-    // ============ Asset Management Functions ============
+    // ============ Surplus Functions ============
 
     /// @inheritdoc IStakedUSDat
-    /// @dev Sweeps only untracked excess: vault balance minus the cash leg (when token
-    /// is USDat) minus balance() of every module whose asset() == token.
-    function rescueTokens(address token, uint256 amount, address to)
-        external
-        nonReentrant
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
-        uint256 tracked = token == asset() ? usdatBalance + surplusVestingAmount : 0;
-
-        uint256 count = _modules.length();
-        for (uint256 i = 0; i < count; i++) {
-            IAccountingModule module = IAccountingModule(_modules.at(i));
-            if (module.asset() == token) {
-                tracked += module.balance();
-            }
-        }
-
-        require(amount <= IERC20(token).balanceOf(address(this)) - tracked, InsufficientBalance());
-
-        IERC20(token).safeTransfer(to, amount);
-    }
-
-    // ============ Module Management ============
-
-    /// @inheritdoc IStakedUSDat
-    function registerModule(address module, uint16 maxWeightBps) external onlyRole(MODULE_MANAGER_ROLE) {
-        require(module != address(0), InvalidZeroAddress());
-        require(maxWeightBps <= BPS_DENOMINATOR, InvalidWeight());
-        require(_modules.length() < MAX_MODULES, MaxModulesReached());
-        require(_modules.add(module), ModuleAlreadyRegistered());
-
-        _moduleConfigs[module] = ModuleConfig({maxWeightBps: maxWeightBps});
-
-        emit ModuleRegistered(module, maxWeightBps);
-    }
-
-    /// @inheritdoc IStakedUSDat
-    function setMaxWeight(address module, uint16 maxWeightBps) external onlyRole(MODULE_MANAGER_ROLE) {
-        require(_modules.contains(module), ModuleNotRegistered());
-        require(maxWeightBps <= BPS_DENOMINATOR, InvalidWeight());
-
-        _moduleConfigs[module].maxWeightBps = maxWeightBps;
-
-        emit ModuleMaxWeightUpdated(module, maxWeightBps);
-    }
-
-    /// @inheritdoc IStakedUSDat
-    /// @dev Only when balance() == 0 — checked without pricing, so an empty module with
-    /// a dead oracle stays removable. Real removal; config cleared.
-    function deregisterModule(address module) external onlyRole(MODULE_MANAGER_ROLE) {
-        require(_modules.contains(module), ModuleNotRegistered());
-        require(IAccountingModule(module).balance() == 0, ModuleBalanceNotZero());
-
-        _modules.remove(module);
-        delete _moduleConfigs[module];
-
-        emit ModuleDeregistered(module);
-    }
-
-    /// @inheritdoc IStakedUSDat
-    function setMinCashBuffer(uint16 newMinCashBufferBps) external onlyRole(PARAMETER_MANAGER_ROLE) {
-        require(newMinCashBufferBps <= BPS_DENOMINATOR, InvalidWeight());
-
-        minCashBufferBps = newMinCashBufferBps;
-
-        emit MinCashBufferUpdated(newMinCashBufferBps);
-    }
-
-    /// @inheritdoc IStakedUSDat
-    function getModules() external view returns (address[] memory) {
-        return _modules.values();
-    }
-
-    /// @inheritdoc IStakedUSDat
-    function moduleConfig(address module) external view returns (ModuleConfig memory) {
-        return _moduleConfigs[module];
-    }
-
-    // ============ Rotations ============
-
-    /// @inheritdoc IStakedUSDat
-    /// @dev Per-call exact-amount approval; the buy may not push the module above its
-    /// maxWeightBps or cash below minCashBufferBps.
-    function buyVia(address module, uint256 usdatIn, uint256 minAssetOut, bytes calldata venueData)
+    function transferInSurplus(uint256 amount)
         external
         nonReentrant
         whenNotPaused
         onlyRole(OPERATOR_ROLE)
-        notZero(usdatIn)
-        returns (uint256 assetOut)
+        notZero(amount)
     {
-        require(_modules.contains(module), ModuleNotRegistered());
-
-        _sweep();
-        require(usdatBalance >= usdatIn, InsufficientBalance());
-
-        usdatBalance -= usdatIn;
-
-        IERC20(asset()).forceApprove(module, usdatIn);
-        assetOut = IAccountingModule(module).buy(usdatIn, minAssetOut, venueData);
-        IERC20(asset()).forceApprove(module, 0);
-
-        uint256 total = totalAssets();
-        uint256 maxModuleValue = Math.mulDiv(total, _moduleConfigs[module].maxWeightBps, BPS_DENOMINATOR);
-        require(IAccountingModule(module).recognizedValue() <= maxModuleValue, MaxWeightExceeded());
-        require(usdatBalance >= Math.mulDiv(total, minCashBufferBps, BPS_DENOMINATOR), CashBufferBreached());
-    }
-
-    /// @inheritdoc IStakedUSDat
-    /// @dev Sells are never blocked: no weight or cash-floor checks.
-    function sellVia(address module, uint256 assetIn, uint256 minUsdatOut, bytes calldata venueData)
-        external
-        nonReentrant
-        whenNotPaused
-        onlyRole(OPERATOR_ROLE)
-        notZero(assetIn)
-        returns (uint256 usdatOut)
-    {
-        require(_modules.contains(module), ModuleNotRegistered());
-
-        _sweep();
-
-        address moduleAsset = IAccountingModule(module).asset();
-
-        if (moduleAsset != address(0)) {
-            IERC20(moduleAsset).forceApprove(module, assetIn);
-        }
-        usdatOut = IAccountingModule(module).sell(assetIn, minUsdatOut, venueData);
-        if (moduleAsset != address(0)) {
-            IERC20(moduleAsset).forceApprove(module, 0);
-        }
-
-        usdatBalance += usdatOut;
-    }
-
-    // ============ Surplus Inlet ============
-
-    /// @inheritdoc IStakedUSDat
-    /// @dev One tranche at a time; capped at maxSurplusBps of totalAssets. The amount
-    /// enters the segregated surplus leg and vests linearly into NAV.
-    function transferInSurplus(uint256 amount) external nonReentrant onlyRole(OPERATOR_ROLE) notZero(amount) {
         _sweep();
         require(surplusVestingAmount == 0, StillVesting());
-        require(amount <= Math.mulDiv(totalAssets(), maxSurplusBps, BPS_DENOMINATOR), SurplusExceedsMax());
 
-        surplusVestingAmount = amount;
-        lastSurplusTimestamp = block.timestamp;
+        uint256 maximumSurplus = Math.mulDiv(totalAssets(), MAX_SURPLUS_BPS, BPS_DENOMINATOR);
+        require(amount <= maximumSurplus, SurplusExceedsMax());
 
         IERC20(asset()).safeTransferFrom(msg.sender, address(this), amount);
+
+        surplusVestingAmount = amount;
+        surplusVestingStartTimestamp = block.timestamp;
 
         emit SurplusReceived(amount);
     }
 
     /// @inheritdoc IStakedUSDat
-    /// @dev Rounds up to be conservative (slightly favors protocol over users).
-    function getUnvestedSurplus() public view returns (uint256) {
-        uint256 elapsed = block.timestamp - lastSurplusTimestamp;
-
-        if (elapsed >= surplusVestingPeriod) {
-            return 0;
-        }
-
-        return
-            Math.mulDiv(surplusVestingPeriod - elapsed, surplusVestingAmount, surplusVestingPeriod, Math.Rounding.Ceil);
-    }
-
-    /// @inheritdoc IStakedUSDat
-    function sweep() external {
+    function sweep() external nonReentrant {
         _sweep();
     }
 
-    /// @dev Folds a fully vested surplus tranche into usdatBalance. NAV-neutral (the
-    /// vested slice already counts toward totalAssets); runs atop value-sensitive
-    /// entrypoints and as a permissionless poke.
-    function _sweep() internal {
+    /// @dev Moves a fully vested surplus tranche into the spendable USDat balance.
+    function _sweep() private {
         uint256 amount = surplusVestingAmount;
         if (amount == 0 || getUnvestedSurplus() != 0) return;
 
@@ -636,29 +447,150 @@ contract StakedUSDat is
         emit SurplusSwept(amount);
     }
 
-    // ============ Management Fee ============
+    // ============ Migration Functions ============
 
     /// @inheritdoc IStakedUSDat
-    /// @dev Permissionless. Mints shares to feeRecipient equal to the accrued fraction
-    /// of post-mint supply — pure supply dilution, no price read, no cash movement.
-    /// Time-determined: collection timing and frequency don't change the total. Always
-    /// stamps lastFeeCollection, even when nothing mints.
-    function collectManagementFee() public {
-        uint256 elapsed = block.timestamp - lastFeeCollection;
-        if (elapsed == 0) return;
-        lastFeeCollection = block.timestamp;
+    function migrate(uint256 expectedStrcon, uint256 deadline)
+        external
+        nonReentrant
+        whenNotPaused
+        onlyRole(DEFAULT_ADMIN_ROLE)
+        notZero(expectedStrcon)
+    {
+        _requireUnexpiredDeadline(deadline);
+        require(strconModule.balance() == 0, InvalidModule());
 
-        address recipient = feeRecipient;
-        if (managementFeeBps == 0 || recipient == address(0)) return;
+        uint256 navBefore = totalAssets();
+        require(navBefore != 0, ZeroNAV());
 
-        // minted/(supply+minted) = feeBps·elapsed/(1e4·365d), solved for minted
-        uint256 accrual = uint256(managementFeeBps) * elapsed;
-        uint256 minted = Math.mulDiv(totalSupply(), accrual, BPS_DENOMINATOR * 365 days - accrual);
-        if (minted == 0) return;
+        IERC20 strcon = IERC20(strconModule.asset());
+        uint256 strconCustody = _pullExact(strcon, executionVehicle, expectedStrcon);
 
-        _mint(recipient, minted);
+        strcMirrorModule.retire();
+        strconModule.buy(expectedStrcon);
 
-        emit ManagementFeeCollected(recipient, minted);
+        uint256 navAfter = totalAssets();
+        uint256 delta = navAfter >= navBefore ? navAfter - navBefore : navBefore - navAfter;
+        require(delta <= Math.mulDiv(navBefore, migrationToleranceBps, BPS_DENOMINATOR), MigrationNAVMismatch());
+
+        require(strconCustody >= strconModule.balance(), CustodyShortfall());
+    }
+
+    // ============ Rotation Functions ============
+
+    /// @inheritdoc IStakedUSDat
+    function buy(uint256 usdatPaid, uint256 assetReceived, uint256 deadline)
+        external
+        nonReentrant
+        whenNotPaused
+        whenNotRestricted
+        onlyRole(OPERATOR_ROLE)
+        notZero(usdatPaid)
+        notZero(assetReceived)
+    {
+        _requireUnexpiredDeadline(deadline);
+        _sweep();
+        require(usdatBalance >= usdatPaid, InsufficientBalance());
+
+        // Rotations fail closed when either fixed module cannot price (§2.2).
+        totalAssets();
+
+        address vehicle = executionVehicle;
+        IERC20 strcon = IERC20(strconModule.asset());
+        IERC20 usdat = IERC20(asset());
+
+        _pullExact(strcon, vehicle, assetReceived);
+
+        uint256 oraclePrice = _validateBuyPrice(usdatPaid, assetReceived);
+
+        usdatBalance -= usdatPaid;
+        strconModule.buy(assetReceived);
+
+        uint256 usdatCustody = _transferExact(usdat, vehicle, usdatPaid);
+        _requireCustodyFloors(usdatCustody, strcon.balanceOf(address(this)));
+
+        emit AssetBought(address(strconModule), vehicle, usdatPaid, assetReceived, oraclePrice);
+    }
+
+    /// @dev Applies the adverse-only buy bound and returns the validated oracle price.
+    function _validateBuyPrice(uint256 usdatPaid, uint256 assetReceived) private view returns (uint256 oraclePrice) {
+        oraclePrice = strconModule.getPrice();
+        uint256 buyPrice = Math.mulDiv(usdatPaid, 1e20, assetReceived, Math.Rounding.Ceil);
+        uint256 maxBuyPrice = Math.mulDiv(
+            oraclePrice, BPS_DENOMINATOR + uint256(executionToleranceBps), BPS_DENOMINATOR, Math.Rounding.Floor
+        );
+        require(buyPrice <= maxBuyPrice, ExecutionPriceMismatch());
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function sell(uint256 assetDelivered, uint256 usdatReceived, uint256 deadline)
+        external
+        nonReentrant
+        whenNotPaused
+        whenNotRestricted
+        onlyRole(OPERATOR_ROLE)
+        notZero(assetDelivered)
+        notZero(usdatReceived)
+    {
+        _requireUnexpiredDeadline(deadline);
+        _sweep();
+
+        // Rotations fail closed when either fixed module cannot price (§2.2).
+        totalAssets();
+
+        address vehicle = executionVehicle;
+        IERC20 usdat = IERC20(asset());
+        IERC20 strcon = IERC20(strconModule.asset());
+
+        _pullExact(usdat, vehicle, usdatReceived);
+
+        uint256 oraclePrice = _validateSellPrice(assetDelivered, usdatReceived);
+
+        strconModule.sell(assetDelivered);
+        usdatBalance += usdatReceived;
+
+        uint256 strconCustody = _transferExact(strcon, vehicle, assetDelivered);
+        _requireCustodyFloors(usdat.balanceOf(address(this)), strconCustody);
+
+        emit AssetSold(address(strconModule), vehicle, assetDelivered, usdatReceived, oraclePrice);
+    }
+
+    /// @dev Applies the adverse-only sell bound and returns the validated oracle price.
+    function _validateSellPrice(uint256 assetDelivered, uint256 usdatReceived)
+        private
+        view
+        returns (uint256 oraclePrice)
+    {
+        oraclePrice = strconModule.getPrice();
+        uint256 sellPrice = Math.mulDiv(usdatReceived, 1e20, assetDelivered, Math.Rounding.Floor);
+        uint256 minSellPrice = Math.mulDiv(
+            oraclePrice, BPS_DENOMINATOR - uint256(executionToleranceBps), BPS_DENOMINATOR, Math.Rounding.Ceil
+        );
+        require(sellPrice >= minSellPrice, ExecutionPriceMismatch());
+    }
+
+    /// @dev Pulls an exact token amount into the vault.
+    function _pullExact(IERC20 token, address from, uint256 amount) private returns (uint256 custodyAfter) {
+        uint256 custodyBefore = token.balanceOf(address(this));
+        token.safeTransferFrom(from, address(this), amount);
+        custodyAfter = token.balanceOf(address(this));
+
+        require(custodyAfter >= custodyBefore && custodyAfter - custodyBefore == amount, InvalidAssetDelta());
+    }
+
+    /// @dev Transfers an exact token amount out of the vault and returns the remaining custody.
+    function _transferExact(IERC20 token, address to, uint256 amount) private returns (uint256 custodyAfter) {
+        uint256 custodyBefore = token.balanceOf(address(this));
+        token.safeTransfer(to, amount);
+        custodyAfter = token.balanceOf(address(this));
+
+        require(custodyBefore >= custodyAfter && custodyBefore - custodyAfter == amount, InvalidAssetDelta());
+    }
+
+    /// @dev Enforces the tracked USDat/surplus and STRCon custody floors.
+    function _requireCustodyFloors(uint256 usdatCustody, uint256 strconCustody) private view {
+        require(usdatCustody >= usdatBalance && usdatCustody - usdatBalance >= surplusVestingAmount, CustodyShortfall());
+        require(strconCustody >= strconModule.balance(), CustodyShortfall());
     }
 
     // ============ Deposit Functions ============
@@ -668,6 +600,7 @@ contract StakedUSDat is
         internal
         override
         nonReentrant
+        whenNotRestricted
         notZero(assets)
         notZero(shares)
     {
@@ -781,7 +714,7 @@ contract StakedUSDat is
     }
 
     /// @inheritdoc IStakedUSDat
-    /// @dev Never prices — stays live while any module oracle is down (§2.2).
+    /// @dev Never prices.
     function requestRedeem(uint256 shares, uint256 minSharePrice) external returns (uint256 requestId) {
         uint256 maxShares = maxRedeem(msg.sender);
         if (shares > maxShares) {
@@ -808,13 +741,14 @@ contract StakedUSDat is
 
     /// @inheritdoc IStakedUSDat
     /// @dev The queue's single settlement primitive: price, validate, burn, and
-    /// transfer a complete request in one call. The held-back fee stays in the vault,
-    /// raising NAV/share for remaining holders.
+    /// transfer a complete request in one call. The fee stays in the vault and
+    /// accrues to remaining shares.
     function redeemQueuedShares(uint256 shares, uint256 minSharePrice)
         external
         nonReentrant
         onlyWithdrawalQueue
         whenNotPaused
+        whenNotRestricted
         notZero(shares)
         returns (RedemptionResult result, uint256 usdat)
     {
@@ -841,7 +775,21 @@ contract StakedUSDat is
 
     /// @inheritdoc IStakedUSDat
     function redemptionFeeBps() public view returns (uint16) {
-        return elevatedFeeActive ? elevatedRedemptionFeeBps : baseRedemptionFeeBps;
+        return marketMode == MarketMode.REGULAR ? baseRedemptionFeeBps : elevatedRedemptionFeeBps;
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function depositFeeBps() public view returns (uint256) {
+        return marketMode == MarketMode.REGULAR ? 0 : elevatedDepositFeeBps;
+    }
+
+    /// @dev Returns whether every fixed NAV leg can currently be priced.
+    function _canPriceTotalAssets() private view returns (bool) {
+        try this.totalAssets() returns (uint256) {
+            return true;
+        } catch {
+            return false;
+        }
     }
 
     // ============ View Functions ============
@@ -851,11 +799,112 @@ contract StakedUSDat is
         return address(WITHDRAWAL_QUEUE);
     }
 
+    // ========== Enforcer Functions ==========
+
+    /// @inheritdoc IStakedUSDat
+    /// @dev Moves shares, no burn, no liquidity needed — value-preserving enforcement
+    /// (e.g. court-directed recovery).
+    function seize(address from) external nonReentrant onlyRole(ENFORCER_ROLE) whileUnpaused {
+        require(_blacklisted[from], AddressNotBlacklisted());
+
+        uint256 amount = balanceOf(from);
+        require(amount > 0, ZeroAmount());
+
+        address to = recoveryAddress;
+        _requireValidRecoveryAddress(to);
+
+        _transfer(from, to, amount);
+
+        emit Seized(from, to, amount);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function rescueTokens(address token, uint256 amount) external nonReentrant onlyRole(ENFORCER_ROLE) {
+        address to = recoveryAddress;
+        _requireValidRecoveryAddress(to);
+
+        uint256 protectedBalance;
+        if (token == asset()) {
+            protectedBalance = usdatBalance + surplusVestingAmount;
+        }
+
+        ISTRConModule module = strconModule;
+        if (token == module.asset()) {
+            protectedBalance += module.balance();
+        }
+
+        uint256 actualBalance = IERC20(token).balanceOf(address(this));
+        require(actualBalance >= protectedBalance, ExceedsRescuable());
+        require(amount <= actualBalance - protectedBalance, ExceedsRescuable());
+
+        IERC20(token).safeTransfer(to, amount);
+    }
+
     // ============ Admin Functions ============
 
     /// @inheritdoc IStakedUSDat
+    function setRecoveryAddress(address newRecoveryAddress) external onlyRole(PARAMETER_MANAGER_ROLE) {
+        _setRecoveryAddress(newRecoveryAddress);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function setExecutionVehicle(address newVehicle) external onlyRole(PARAMETER_MANAGER_ROLE) {
+        _setExecutionVehicle(newVehicle);
+    }
+
+    /// @dev Validates and updates the execution counterparty.
+    function _setExecutionVehicle(address newVehicle) internal {
+        require(newVehicle != address(0), InvalidZeroAddress());
+        address oldVehicle = executionVehicle;
+        executionVehicle = newVehicle;
+
+        emit ExecutionVehicleUpdated(oldVehicle, newVehicle);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function setExecutionTolerance(uint16 newBps) external onlyRole(PARAMETER_MANAGER_ROLE) {
+        _setExecutionTolerance(newBps);
+    }
+
+    /// @dev Validates and updates the maximum adverse execution deviation.
+    function _setExecutionTolerance(uint16 newBps) internal {
+        require(newBps <= MAX_EXECUTION_TOLERANCE_BPS, InvalidExecutionTolerance());
+        uint16 oldBps = executionToleranceBps;
+        executionToleranceBps = newBps;
+
+        emit ExecutionToleranceUpdated(oldBps, newBps);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function setMigrationTolerance(uint16 newBps) external onlyRole(PARAMETER_MANAGER_ROLE) {
+        require(newBps <= MAX_MIGRATION_TOLERANCE_BPS, InvalidMigrationTolerance());
+        uint16 oldBps = migrationToleranceBps;
+        migrationToleranceBps = newBps;
+
+        emit MigrationToleranceUpdated(oldBps, newBps);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function setMarketMode(MarketMode newMode) external onlyRole(MARKET_MODE_MANAGER_ROLE) {
+        MarketMode oldMode = marketMode;
+        marketMode = newMode;
+
+        emit MarketModeChanged(oldMode, newMode);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function setRedemptionFees(uint16 baseBps, uint16 elevatedBps) external onlyRole(PARAMETER_MANAGER_ROLE) {
+        _setRedemptionFees(baseBps, elevatedBps);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function setElevatedDepositFee(uint256 newFeeBps) external onlyRole(PARAMETER_MANAGER_ROLE) {
+        _setElevatedDepositFee(newFeeBps);
+    }
+
+    /// @inheritdoc IStakedUSDat
     function setSurplusVestingPeriod(uint256 newPeriod) external onlyRole(PARAMETER_MANAGER_ROLE) {
-        require(newPeriod > 0 && newPeriod <= MAX_SURPLUS_VESTING_PERIOD, InvalidVestingPeriod());
+        require(newPeriod != 0 && newPeriod <= MAX_SURPLUS_VESTING_PERIOD, InvalidVestingPeriod());
 
         _sweep();
         require(surplusVestingAmount == 0, StillVesting());
@@ -866,69 +915,37 @@ contract StakedUSDat is
         emit SurplusVestingPeriodUpdated(oldPeriod, newPeriod);
     }
 
-    /// @inheritdoc IStakedUSDat
-    function setMaxSurplusBps(uint16 newMaxBps) external onlyRole(PARAMETER_MANAGER_ROLE) {
-        require(newMaxBps <= BPS_DENOMINATOR, InvalidWeight());
-
-        maxSurplusBps = newMaxBps;
-
-        emit MaxSurplusBpsUpdated(newMaxBps);
-    }
-
-    /// @inheritdoc IStakedUSDat
-    function setRedemptionFees(uint16 baseBps, uint16 elevatedBps) external onlyRole(PARAMETER_MANAGER_ROLE) {
+    /// @dev Validates and updates both redemption fee tiers.
+    function _setRedemptionFees(uint16 baseBps, uint16 elevatedBps) internal {
         require(baseBps <= elevatedBps && elevatedBps <= MAX_REDEMPTION_FEE_BPS, InvalidFee());
-
         baseRedemptionFeeBps = baseBps;
         elevatedRedemptionFeeBps = elevatedBps;
 
         emit RedemptionFeesUpdated(baseBps, elevatedBps);
     }
 
-    /// @inheritdoc IStakedUSDat
-    /// @dev The operator chooses between the two governance-set tiers, never the numbers.
-    /// Explicit state, not a toggle — idempotent under tx retries.
-    function setElevatedFeeActive(bool active) external onlyRole(OPERATOR_ROLE) {
-        elevatedFeeActive = active;
+    /// @dev Validates and updates the elevated deposit fee.
+    function _setElevatedDepositFee(uint256 newFeeBps) internal {
+        require(newFeeBps <= MAX_DEPOSIT_FEE_BPS, InvalidFee());
+        elevatedDepositFeeBps = newFeeBps;
 
-        emit ElevatedFeeActiveUpdated(active);
-    }
-
-    /// @inheritdoc IStakedUSDat
-    /// @dev Collects at the old rate first so a rate change never applies retroactively.
-    function setManagementFee(uint16 newFeeBps) external onlyRole(PARAMETER_MANAGER_ROLE) {
-        require(newFeeBps <= MAX_MANAGEMENT_FEE_BPS, InvalidFee());
-
-        collectManagementFee();
-        managementFeeBps = newFeeBps;
-
-        emit ManagementFeeUpdated(newFeeBps);
-    }
-
-    /// @inheritdoc IStakedUSDat
-    /// @dev Collects first so accrued fees mint to the recipient they accrued under.
-    function setFeeRecipient(address newRecipient) external onlyRole(PARAMETER_MANAGER_ROLE) {
-        collectManagementFee();
-        feeRecipient = newRecipient;
-
-        emit FeeRecipientUpdated(newRecipient);
-    }
-
-    /// @inheritdoc IStakedUSDat
-    function setRecoveryAddress(address newRecoveryAddress) external onlyRole(PARAMETER_MANAGER_ROLE) {
-        _setRecoveryAddress(newRecoveryAddress);
+        emit DepositFeeUpdated(newFeeBps);
     }
 
     /// @dev Validates and updates the canonical seizure destination.
     function _setRecoveryAddress(address newRecoveryAddress) internal {
-        require(newRecoveryAddress != address(0), InvalidZeroAddress());
-        _requireNotBlacklisted(newRecoveryAddress);
-        require(!IUSDat(asset()).isFrozen(newRecoveryAddress), AddressBlacklisted());
-
+        _requireValidRecoveryAddress(newRecoveryAddress);
         address oldRecoveryAddress = recoveryAddress;
         recoveryAddress = newRecoveryAddress;
 
         emit RecoveryAddressUpdated(oldRecoveryAddress, newRecoveryAddress);
+    }
+
+    /// @dev Reverts unless an address is a valid seizure destination now.
+    function _requireValidRecoveryAddress(address account) internal view {
+        require(account != address(0), InvalidZeroAddress());
+        _requireNotBlacklisted(account);
+        require(!IUSDat(asset()).isFrozen(account), AddressBlacklisted());
     }
 
     /// @inheritdoc IStakedUSDat
@@ -941,7 +958,7 @@ contract StakedUSDat is
         _unpause();
     }
 
-    /// @dev Blocks all token movements when paused, except burns from blacklisted addresses by DEFAULT_ADMIN_ROLE.
+    /// @dev Blocks all token movements when paused, except enforcement actions executed through whileUnpaused.
     function _update(address from, address to, uint256 value) internal override(ERC20Upgradeable) whenNotPaused {
         super._update(from, to, value);
     }

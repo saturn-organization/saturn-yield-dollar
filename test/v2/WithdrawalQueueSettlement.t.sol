@@ -10,6 +10,8 @@ import {StakedUSDat} from "../../src/v2/StakedUSDat.sol";
 import {WithdrawalQueueERC721} from "../../src/v2/WithdrawalQueueERC721.sol";
 import {IStakedUSDat} from "../../src/v2/interfaces/IStakedUSDat.sol";
 import {IWithdrawalQueueERC721} from "../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
+import {ZeroAccountingModuleMock, ZeroTradableModuleMock} from "./FixedModuleMocks.sol";
+import {V2InitializationHelper} from "./V2InitializationHelper.sol";
 
 contract SettlementUSDatMock {
     // Lowercase public constants preserve the ERC20 metadata ABI.
@@ -114,14 +116,6 @@ contract VaultQueueHarness {
         returns (IStakedUSDat.RedemptionResult result, uint256 usdat)
     {
         return vault.redeemQueuedShares(shares, minSharePrice);
-    }
-}
-
-contract RecognizedValueModuleMock {
-    uint256 public recognizedValue;
-
-    function setRecognizedValue(uint256 newValue) external {
-        recognizedValue = newValue;
     }
 }
 
@@ -324,14 +318,13 @@ contract StakedUSDatQueuedRedemptionTest is Test {
 
         StakedUSDat implementation = new StakedUSDat(IWithdrawalQueueERC721(address(queueHarness)));
         ERC1967Proxy proxy = new ERC1967Proxy(
-            address(implementation),
-            abi.encodeCall(StakedUSDat.initialize, (address(this), address(this), IERC20(address(usdat))))
+            address(implementation), abi.encodeCall(StakedUSDat.initialize, (address(this), IERC20(address(usdat))))
         );
         vault = StakedUSDat(address(proxy));
+        ZeroAccountingModuleMock mirror = new ZeroAccountingModuleMock(address(vault));
+        ZeroTradableModuleMock strcon = new ZeroTradableModuleMock(address(vault));
+        V2InitializationHelper.initialize(vault, address(mirror), address(strcon), 0, 0, 0);
 
-        vault.grantRole(vault.PARAMETER_MANAGER_ROLE(), address(this));
-        vault.grantRole(vault.MODULE_MANAGER_ROLE(), address(this));
-        vault.grantRole(vault.OPERATOR_ROLE(), address(this));
         vault.grantRole(vault.PAUSER_ROLE(), address(this));
 
         usdat.mint(address(this), DEPOSIT);
@@ -340,28 +333,22 @@ contract StakedUSDatQueuedRedemptionTest is Test {
         assertEq(shares, 100e18);
     }
 
-    function testFuzz_redeemQueuedShares_SettlesEveryShareWithCeilingRoundedFee(uint96 rawShares, uint16 rawFeeBps)
-        public
-    {
+    function testFuzz_redeemQueuedShares_SettlesEveryShare(uint96 rawShares) public {
         uint256 shares = bound(uint256(rawShares), 10e18, 100e18);
-        uint16 feeBps = uint16(bound(uint256(rawFeeBps), 0, 500));
-        vault.setRedemptionFees(feeBps, feeBps);
 
         uint256 gross = vault.convertToAssets(shares);
         uint256 exactLimit = Math.mulDiv(gross, 1e18, shares);
-        uint256 expectedFee = Math.mulDiv(gross, feeBps, vault.BPS_DENOMINATOR(), Math.Rounding.Ceil);
-        uint256 expectedPayout = gross - expectedFee;
 
         (IStakedUSDat.RedemptionResult result, uint256 payout) =
             queueHarness.redeemQueuedShares(vault, shares, exactLimit);
 
         assertEq(uint256(result), uint256(IStakedUSDat.RedemptionResult.Settled));
-        assertEq(payout, expectedPayout);
+        assertEq(payout, gross);
         assertEq(vault.balanceOf(address(queueHarness)), 100e18 - shares);
         assertEq(vault.totalSupply(), 100e18 - shares);
-        assertEq(vault.usdatBalance(), DEPOSIT - expectedPayout);
-        assertEq(usdat.balanceOf(address(queueHarness)), expectedPayout);
-        assertEq(usdat.balanceOf(address(vault)), DEPOSIT - expectedPayout);
+        assertEq(vault.usdatBalance(), DEPOSIT - gross);
+        assertEq(usdat.balanceOf(address(queueHarness)), gross);
+        assertEq(usdat.balanceOf(address(vault)), DEPOSIT - gross);
     }
 
     function test_redeemQueuedShares_BelowLimitDoesNotBurnOrTransfer() public {
@@ -385,21 +372,6 @@ contract StakedUSDatQueuedRedemptionTest is Test {
         _assertVaultUnchanged();
     }
 
-    function test_redeemQueuedShares_InsufficientLiquidityDoesNotBurnOrTransfer() public {
-        RecognizedValueModuleMock module = new RecognizedValueModuleMock();
-        module.setRecognizedValue(100e6);
-        vault.registerModule(address(module), 10_000);
-
-        uint256 shares = 60e18;
-        assertGt(vault.convertToAssets(shares), vault.usdatBalance());
-
-        (IStakedUSDat.RedemptionResult result, uint256 payout) = queueHarness.redeemQueuedShares(vault, shares, 0);
-
-        assertEq(uint256(result), uint256(IStakedUSDat.RedemptionResult.InsufficientLiquidity));
-        assertEq(payout, 0);
-        _assertVaultUnchanged();
-    }
-
     function test_redeemQueuedShares_PauseBlocksBelowLimitEarlyReturn() public {
         vault.pause();
 
@@ -415,46 +387,6 @@ contract StakedUSDatQueuedRedemptionTest is Test {
 
         vm.expectRevert(IStakedUSDat.ZeroAmount.selector);
         queueHarness.redeemQueuedShares(vault, 0, 0);
-    }
-
-    function test_redeemQueuedShares_SequentialFeeAccretionRaisesExecutionPrice() public {
-        vault.setRedemptionFees(500, 500);
-
-        uint256 firstGross = vault.convertToAssets(40e18);
-        (IStakedUSDat.RedemptionResult firstResult,) = queueHarness.redeemQueuedShares(vault, 40e18, 0);
-        uint256 secondGross = vault.convertToAssets(40e18);
-
-        assertEq(uint256(firstResult), uint256(IStakedUSDat.RedemptionResult.Settled));
-        assertGt(secondGross, firstGross);
-
-        uint256 crossedLimit = Math.mulDiv(firstGross, 1e18, 40e18) + 1;
-        (IStakedUSDat.RedemptionResult secondResult,) = queueHarness.redeemQueuedShares(vault, 40e18, crossedLimit);
-
-        assertEq(uint256(secondResult), uint256(IStakedUSDat.RedemptionResult.Settled));
-        assertEq(vault.balanceOf(address(queueHarness)), 20e18);
-    }
-
-    function test_redeemQueuedShares_UsesActiveRedemptionFeeTier() public {
-        vault.setRedemptionFees(100, 500);
-
-        uint256 shares = 20e18;
-        uint256 baseGross = vault.convertToAssets(shares);
-        uint256 expectedBaseFee = Math.mulDiv(baseGross, 100, 10_000, Math.Rounding.Ceil);
-        (IStakedUSDat.RedemptionResult baseResult, uint256 basePayout) =
-            queueHarness.redeemQueuedShares(vault, shares, 0);
-
-        vault.setElevatedFeeActive(true);
-        uint256 elevatedGross = vault.convertToAssets(shares);
-        uint256 expectedElevatedFee = Math.mulDiv(elevatedGross, 500, 10_000, Math.Rounding.Ceil);
-        (IStakedUSDat.RedemptionResult elevatedResult, uint256 elevatedPayout) =
-            queueHarness.redeemQueuedShares(vault, shares, 0);
-
-        assertEq(uint256(baseResult), uint256(IStakedUSDat.RedemptionResult.Settled));
-        assertEq(basePayout, baseGross - expectedBaseFee);
-        assertEq(uint256(elevatedResult), uint256(IStakedUSDat.RedemptionResult.Settled));
-        assertEq(elevatedPayout, elevatedGross - expectedElevatedFee);
-        assertEq(usdat.balanceOf(address(queueHarness)), basePayout + elevatedPayout);
-        assertEq(vault.usdatBalance(), DEPOSIT - basePayout - elevatedPayout);
     }
 
     function _assertVaultUnchanged() private view {
@@ -492,20 +424,52 @@ contract WithdrawalQueueRealSettlementIntegrationTest is Test {
         StakedUSDat vaultImplementation = new StakedUSDat(IWithdrawalQueueERC721(address(queue)));
         ERC1967Proxy vaultProxy = new ERC1967Proxy(
             address(vaultImplementation),
-            abi.encodeCall(StakedUSDat.initialize, (address(this), address(this), IERC20(address(usdat))))
+            abi.encodeCall(StakedUSDat.initialize, (address(this), IERC20(address(usdat))))
         );
         vault = StakedUSDat(address(vaultProxy));
         assertEq(address(vault), predictedVaultProxy);
+        ZeroAccountingModuleMock strcMirrorModule = new ZeroAccountingModuleMock(address(vault));
+        ZeroTradableModuleMock strconModule = new ZeroTradableModuleMock(address(vault));
 
         queue.initializeV2(address(this), address(this), address(this), address(this));
-        vault.grantRole(vault.MODULE_MANAGER_ROLE(), address(this));
-        vault.grantRole(vault.PARAMETER_MANAGER_ROLE(), address(this));
+        V2InitializationHelper.initialize(vault, address(strcMirrorModule), address(strconModule), 0, 0, 0);
+        vault.grantRole(vault.MARKET_MODE_MANAGER_ROLE(), address(this));
 
         usdat.mint(alice, 100e6);
         vm.startPrank(alice);
         usdat.approve(address(vault), 100e6);
         vault.depositWithMinShares(100e6, alice, 0);
         vm.stopPrank();
+    }
+
+    function test_processRequests_RegularModeRemainsAvailable() public {
+        _assertModeSettles(IStakedUSDat.MarketMode.REGULAR);
+    }
+
+    function test_processRequests_ElevatedModeRemainsAvailable() public {
+        _assertModeSettles(IStakedUSDat.MarketMode.ELEVATED);
+    }
+
+    function test_processRequests_RestrictedModeRevertsWithoutMutation() public {
+        vault.setMarketMode(IStakedUSDat.MarketMode.RESTRICTED);
+
+        vm.prank(alice);
+        uint256 tokenId = vault.requestRedeem(20e18, 0);
+
+        vm.expectRevert(IStakedUSDat.MarketRestricted.selector);
+        queue.processRequests(_single(tokenId));
+
+        (uint256 shares, uint256 owed,,, IWithdrawalQueueERC721.RequestStatus status) = queue.requests(tokenId);
+        assertEq(shares, 20e18);
+        assertEq(owed, 0);
+        assertEq(uint256(status), uint256(IWithdrawalQueueERC721.RequestStatus.Requested));
+        assertEq(queue.ownerOf(tokenId), alice);
+        assertEq(vault.balanceOf(alice), 80e18);
+        assertEq(vault.balanceOf(address(queue)), 20e18);
+        assertEq(vault.totalSupply(), 100e18);
+        assertEq(vault.usdatBalance(), 100e6);
+        assertEq(usdat.balanceOf(address(queue)), 0);
+        assertEq(usdat.balanceOf(address(vault)), 100e6);
     }
 
     function test_vaultPauseBlocksRequestCreationAndProcessing() public {
@@ -538,47 +502,6 @@ contract WithdrawalQueueRealSettlementIntegrationTest is Test {
         assertEq(usdat.balanceOf(address(vault)), 100e6);
     }
 
-    function test_processRequests_RealVaultRetriesInsufficientDuplicateWithoutDoubleSpend() public {
-        RecognizedValueModuleMock module = new RecognizedValueModuleMock();
-        module.setRecognizedValue(100e6);
-        vault.registerModule(address(module), 10_000);
-
-        vm.startPrank(alice);
-        uint256 largeId = vault.requestRedeem(60e18, 0);
-        uint256 smallId = vault.requestRedeem(40e18, 0);
-        vm.stopPrank();
-
-        uint256 expectedSmallPayout = vault.convertToAssets(40e18);
-        assertGt(vault.convertToAssets(60e18), vault.usdatBalance());
-        assertLe(expectedSmallPayout, vault.usdatBalance());
-
-        uint256[] memory tokenIds = new uint256[](3);
-        tokenIds[0] = largeId;
-        tokenIds[1] = smallId;
-        tokenIds[2] = largeId;
-        queue.processRequests(tokenIds);
-
-        (uint256 largeShares, uint256 largeOwed,,, IWithdrawalQueueERC721.RequestStatus largeStatus) =
-            queue.requests(largeId);
-        (uint256 smallShares, uint256 smallOwed,,, IWithdrawalQueueERC721.RequestStatus smallStatus) =
-            queue.requests(smallId);
-
-        assertEq(largeShares, 60e18);
-        assertEq(largeOwed, 0);
-        assertEq(uint256(largeStatus), uint256(IWithdrawalQueueERC721.RequestStatus.Requested));
-        assertEq(smallShares, 40e18);
-        assertEq(smallOwed, expectedSmallPayout);
-        assertEq(uint256(smallStatus), uint256(IWithdrawalQueueERC721.RequestStatus.Processed));
-
-        assertEq(queue.ownerOf(largeId), alice);
-        assertEq(queue.ownerOf(smallId), alice);
-        assertEq(vault.balanceOf(address(queue)), 60e18);
-        assertEq(vault.totalSupply(), 60e18);
-        assertEq(usdat.balanceOf(address(queue)), expectedSmallPayout);
-        assertEq(vault.usdatBalance(), 100e6 - expectedSmallPayout);
-        assertEq(usdat.balanceOf(address(vault)), 100e6 - expectedSmallPayout);
-    }
-
     function test_processRequests_RealVaultSettledDuplicateRollsBackAcrossBothContracts() public {
         vm.prank(alice);
         uint256 tokenId = vault.requestRedeem(20e18, 0);
@@ -604,8 +527,7 @@ contract WithdrawalQueueRealSettlementIntegrationTest is Test {
         assertEq(usdat.balanceOf(address(vault)), 100e6);
     }
 
-    function test_processRequests_RealVaultRetriesBelowLimitThenSettlesOnceAfterFeeAccrual() public {
-        vault.setRedemptionFees(500, 500);
+    function test_processRequests_RealVaultKeepsBelowLimitOpenWhileSettlingEligibleRequest() public {
         uint256 repricedRequestShares = 40e18;
         uint256 fundingRequestShares = 20e18;
         uint256 initialPrice = Math.mulDiv(vault.convertToAssets(repricedRequestShares), 1e18, repricedRequestShares);
@@ -628,17 +550,42 @@ contract WithdrawalQueueRealSettlementIntegrationTest is Test {
 
         assertEq(repricedShares, repricedRequestShares);
         assertEq(fundingShares, fundingRequestShares);
-        assertEq(uint256(repricedStatus), uint256(IWithdrawalQueueERC721.RequestStatus.Processed));
+        assertEq(repricedOwed, 0);
+        assertEq(uint256(repricedStatus), uint256(IWithdrawalQueueERC721.RequestStatus.Requested));
         assertEq(uint256(fundingStatus), uint256(IWithdrawalQueueERC721.RequestStatus.Processed));
-        assertGt(repricedOwed, fundingOwed);
+        assertEq(fundingOwed, 20e6);
 
-        uint256 totalOwed = repricedOwed + fundingOwed;
-        assertEq(vault.balanceOf(address(queue)), 0);
+        assertEq(vault.balanceOf(address(queue)), repricedRequestShares);
         assertEq(vault.balanceOf(alice), 40e18);
-        assertEq(vault.totalSupply(), 40e18);
-        assertEq(usdat.balanceOf(address(queue)), totalOwed);
-        assertEq(vault.usdatBalance(), 100e6 - totalOwed);
-        assertEq(usdat.balanceOf(address(vault)), 100e6 - totalOwed);
+        assertEq(vault.totalSupply(), 80e18);
+        assertEq(usdat.balanceOf(address(queue)), fundingOwed);
+        assertEq(vault.usdatBalance(), 100e6 - fundingOwed);
+        assertEq(usdat.balanceOf(address(vault)), 100e6 - fundingOwed);
         assertEq(usdat.balanceOf(address(vault)) + usdat.balanceOf(address(queue)), 100e6);
+    }
+
+    function _assertModeSettles(IStakedUSDat.MarketMode mode) private {
+        vault.setMarketMode(mode);
+
+        vm.prank(alice);
+        uint256 tokenId = vault.requestRedeem(20e18, 0);
+        queue.processRequests(_single(tokenId));
+
+        (uint256 shares, uint256 owed,,, IWithdrawalQueueERC721.RequestStatus status) = queue.requests(tokenId);
+        assertEq(shares, 20e18);
+        assertEq(owed, 20e6);
+        assertEq(uint256(status), uint256(IWithdrawalQueueERC721.RequestStatus.Processed));
+        assertEq(queue.ownerOf(tokenId), alice);
+        assertEq(vault.balanceOf(alice), 80e18);
+        assertEq(vault.balanceOf(address(queue)), 0);
+        assertEq(vault.totalSupply(), 80e18);
+        assertEq(vault.usdatBalance(), 80e6);
+        assertEq(usdat.balanceOf(address(queue)), 20e6);
+        assertEq(usdat.balanceOf(address(vault)), 80e6);
+    }
+
+    function _single(uint256 tokenId) private pure returns (uint256[] memory tokenIds) {
+        tokenIds = new uint256[](1);
+        tokenIds[0] = tokenId;
     }
 }

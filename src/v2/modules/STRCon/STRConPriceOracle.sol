@@ -5,224 +5,137 @@ import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol"
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {IPriceOracle} from "../../interfaces/IPriceOracle.sol";
+import {ISTRConPriceOracle} from "../../interfaces/ISTRConPriceOracle.sol";
 import {ISyntheticSharesOracle} from "../../interfaces/ISyntheticSharesOracle.sol";
 
 /**
  * @title STRConPriceOracle
  * @author Saturn
- * @notice Validated STRCon/USD price: a wrapper over two Chainlink feeds (§2.3).
- * Primary — STRCon/USD (Ondo API), the recognized mark. Cross-check — STRCon/USD
- * (Calculated), exchange prints, regular market hours only.
- * @dev Fail-closed: getPrice() reverts when the price cannot be trusted — stale or
- * non-positive primary answer, sValue-adjusted price out of bounds, or contemporaneous
- * cross-feed disagreement. Access control resolves against the vault's role registry;
- * the oracle defines no roles of its own.
+ * @notice Fail-closed STRCon/USD price wrapper over immutable primary and reference feeds.
+ * @dev The Calculated feed is the primary value-securing mark. The API feed is only a
+ * fresh circuit-breaker reference and is never returned.
  */
-contract STRConPriceOracle {
+contract STRConPriceOracle is ISTRConPriceOracle {
+    // ============ Errors ============
+
     error InvalidZeroAddress();
-    error FeedDecimalsMismatch();
+    error InvalidFeedDecimals();
     error Unauthorized();
-    error InvalidOraclePrice();
+    error InvalidOracleRound();
+    error StaleReferencePrice();
+    error AssetPaused();
+    error InvalidSValue();
+    error UnderlyingPriceOutOfBounds();
     error FeedDeviation();
     error InvalidPriceBounds();
     error InvalidStaleness();
-    error InvalidSyncWindow();
     error InvalidDeviation();
-    error AssetPaused();
 
-    /// @dev Emitted when the primary feed is re-pointed.
-    event PrimaryFeedUpdated(address oldFeed, address newFeed);
-    /// @dev Emitted when the secondary feed is re-pointed.
-    event SecondaryFeedUpdated(address oldFeed, address newFeed);
+    // ============ Events ============
+
     event PriceBoundsUpdated(uint256 newMinPrice, uint256 newMaxPrice);
-    event MaxPriceStalenessUpdated(uint256 newStaleness);
-    event SyncWindowUpdated(uint256 newSyncWindow);
+    event MaxApiStalenessUpdated(uint256 newStaleness);
     event DeviationBpsUpdated(uint256 newDeviationBps);
 
-    /// @notice Vault admin role id (AccessControl DEFAULT_ADMIN_ROLE)
-    bytes32 public constant DEFAULT_ADMIN_ROLE = 0x00;
+    // ============ Constants ============
 
-    /// @notice Role id on the vault authorized to tune oracle parameters
     bytes32 public constant PARAMETER_MANAGER_ROLE = keccak256("PARAMETER_MANAGER_ROLE");
+    uint256 public constant BPS_DENOMINATOR = 10_000;
+    uint256 public constant MAX_API_STALENESS = 36 hours;
+    uint8 private constant FEED_DECIMALS = 8;
 
-    /// @notice Basis points denominator
-    uint256 public constant BPS_DENOMINATOR = 10000;
+    // ============ Immutables ============
 
-    /// @notice Maximum allowed staleness setting (36 hours)
-    uint256 public constant MAX_STALENESS = 36 hours;
-
-    /// @notice Maximum allowed sync window setting (24 hours)
-    uint256 public constant MAX_SYNC_WINDOW = 24 hours;
-
-    /// @notice The StakedUSDat vault whose role registry gates setters
     address public immutable VAULT;
-
-    /// @notice Ondo's SyntheticSharesOracle (sValue multiplier + per-asset pause flag)
-    ISyntheticSharesOracle public immutable SVALUE_ORACLE;
-
-    /// @notice The STRCon token (key into SVALUE_ORACLE)
     address public immutable STRCON;
+    // forge-lint: disable-next-line(screaming-snake-case-immutable)
+    ISyntheticSharesOracle public immutable syntheticSharesOracle;
+    // forge-lint: disable-next-line(screaming-snake-case-immutable)
+    IPriceOracle public immutable primaryFeed;
+    // forge-lint: disable-next-line(screaming-snake-case-immutable)
+    IPriceOracle public immutable referenceFeed;
+    uint256 public immutable MAX_DEVIATION_BPS;
 
-    /// @notice Primary feed — STRCon/USD (Ondo API), the recognized mark, ~24h heartbeat
-    IPriceOracle public primaryFeed;
+    // ============ Storage ============
 
-    /// @notice Secondary feed — STRCon/USD (Calculated), cross-check only, prints
-    /// regular market hours
-    IPriceOracle public secondaryFeed;
-
-    /// @notice The current maximum primary feed staleness setting. The primary
-    /// heartbeats ~24h through market closures, so beyond this it is an outage.
-    uint256 public maxPriceStaleness;
-
-    /// @notice Maximum primary-vs-secondary deviation, in bps of the secondary print
+    uint256 public maxApiStaleness;
     uint256 public deviationBps;
-
-    /// @notice Maximum timestamp gap for two prints to count as contemporaneous.
-    /// The deviation check only arms on contemporaneous prints; sized to price
-    /// velocity (legit movement over the window ≪ deviationBps), never to the
-    /// secondary's closure gaps.
-    uint256 public syncWindow;
-
-    /// @notice Minimum acceptable sValue-adjusted price (underlying STRC-equivalent,
-    /// primary feed decimals)
     uint256 public minPrice;
-
-    /// @notice Maximum acceptable sValue-adjusted price (underlying STRC-equivalent,
-    /// primary feed decimals)
     uint256 public maxPrice;
 
-    modifier onlyVaultRole(bytes32 role) {
-        _requireVaultRole(role);
-        _;
-    }
+    // ============ Modifiers ============
 
-    function _requireVaultRole(bytes32 role) internal view {
-        require(IAccessControl(VAULT).hasRole(role, msg.sender), Unauthorized());
+    modifier onlyVaultRole(bytes32 role) {
+        if (!IAccessControl(VAULT).hasRole(role, msg.sender)) revert Unauthorized();
+        _;
     }
 
     constructor(
         address vault,
+        address strcon,
+        ISyntheticSharesOracle syntheticSharesOracle_,
         IPriceOracle primaryFeed_,
-        IPriceOracle secondaryFeed_,
-        ISyntheticSharesOracle sValueOracle,
-        address strcon
+        IPriceOracle referenceFeed_,
+        uint256 initialDeviationBps,
+        uint256 maxDeviationBps
     ) {
-        require(
-            vault != address(0) && address(sValueOracle) != address(0) && strcon != address(0), InvalidZeroAddress()
-        );
-        VAULT = vault;
-        SVALUE_ORACLE = sValueOracle;
-        STRCON = strcon;
-
-        _setPrimaryFeed(primaryFeed_);
-        _setSecondaryFeed(secondaryFeed_);
-
-        maxPriceStaleness = 26 hours; // spans the primary's 24h weekend heartbeat
-        deviationBps = 200; // 2% — both-fresh agreement measured ~0.15% (Appendix B)
-        syncWindow = 1 hours;
-        minPrice = 20e8; // $20 underlying, 8 decimals (v1 StrcPriceOracle bounds)
-        maxPrice = 150e8; // $150 underlying, 8 decimals
-    }
-
-    /// @notice Re-points the primary feed (the recognized mark).
-    /// @dev Caller must hold DEFAULT_ADMIN_ROLE on the vault — swapping the price
-    /// source moves NAV.
-    function setPrimaryFeed(IPriceOracle newFeed) external onlyVaultRole(DEFAULT_ADMIN_ROLE) {
-        _setPrimaryFeed(newFeed);
-    }
-
-    /// @notice Re-points the secondary feed (the cross-check).
-    /// @dev Caller must hold DEFAULT_ADMIN_ROLE on the vault.
-    function setSecondaryFeed(IPriceOracle newFeed) external onlyVaultRole(DEFAULT_ADMIN_ROLE) {
-        _setSecondaryFeed(newFeed);
-    }
-
-    function _setPrimaryFeed(IPriceOracle newFeed) internal {
-        require(address(newFeed) != address(0), InvalidZeroAddress());
-        // The tripwire compares the two answers raw — they must share decimals.
-        if (address(secondaryFeed) != address(0)) {
-            require(newFeed.decimals() == secondaryFeed.decimals(), FeedDecimalsMismatch());
+        if (
+            vault == address(0) || strcon == address(0) || address(syntheticSharesOracle_) == address(0)
+                || address(primaryFeed_) == address(0) || address(referenceFeed_) == address(0)
+        ) {
+            revert InvalidZeroAddress();
         }
+        if (primaryFeed_.decimals() != FEED_DECIMALS || referenceFeed_.decimals() != FEED_DECIMALS) {
+            revert InvalidFeedDecimals();
+        }
+        if (initialDeviationBps > maxDeviationBps) revert InvalidDeviation();
 
-        address oldFeed = address(primaryFeed);
-        primaryFeed = newFeed;
+        VAULT = vault;
+        STRCON = strcon;
+        syntheticSharesOracle = syntheticSharesOracle_;
+        primaryFeed = primaryFeed_;
+        referenceFeed = referenceFeed_;
+        MAX_DEVIATION_BPS = maxDeviationBps;
 
-        emit PrimaryFeedUpdated(oldFeed, address(newFeed));
+        maxApiStaleness = 26 hours;
+        deviationBps = initialDeviationBps;
+        minPrice = 20e8;
+        maxPrice = 150e8;
     }
 
-    function _setSecondaryFeed(IPriceOracle newFeed) internal {
-        require(address(newFeed) != address(0), InvalidZeroAddress());
-        require(newFeed.decimals() == primaryFeed.decimals(), FeedDecimalsMismatch());
+    // ============ Price ============
 
-        address oldFeed = address(secondaryFeed);
-        secondaryFeed = newFeed;
-
-        emit SecondaryFeedUpdated(oldFeed, address(newFeed));
+    /// @inheritdoc ISTRConPriceOracle
+    function decimals() external pure returns (uint8) {
+        return FEED_DECIMALS;
     }
 
-    /// @notice Returns the validated STRCon/USD price (price, decimals).
-    /// @dev Reverts when the price cannot be trusted: stale or non-positive primary
-    /// answer, Ondo pause flag set, sValue-adjusted price out of bounds, or
-    /// contemporaneous cross-feed disagreement.
-    function getPrice() external view returns (uint256 price, uint8 oracleDecimals) {
-        (, int256 answer,, uint256 updatedAt,) = primaryFeed.latestRoundData();
+    /// @inheritdoc ISTRConPriceOracle
+    function getPrice() external view returns (uint256) {
+        (uint256 primaryPrice,) = _readValidRound(primaryFeed);
+        (uint256 referencePrice, uint256 referenceUpdatedAt) = _readValidRound(referenceFeed);
 
-        require(block.timestamp - updatedAt <= maxPriceStaleness, InvalidOraclePrice());
-        require(answer > 0, InvalidOraclePrice());
+        if (block.timestamp - referenceUpdatedAt > maxApiStaleness) revert StaleReferencePrice();
 
-        // forge-lint: disable-next-line(unsafe-typecast)
-        price = uint256(answer);
+        (uint256 sValue, bool paused) = syntheticSharesOracle.getSValue(STRCON);
+        if (paused) revert AssetPaused();
+        if (sValue == 0) revert InvalidSValue();
 
-        _checkPriceBounds(price);
-        _checkDeviation(price, updatedAt);
+        uint256 underlyingPrice = Math.mulDiv(primaryPrice, 1e18, sValue, Math.Rounding.Floor);
+        if (underlyingPrice < minPrice || underlyingPrice > maxPrice) revert UnderlyingPriceOutOfBounds();
 
-        oracleDecimals = primaryFeed.decimals();
+        uint256 difference =
+            primaryPrice > referencePrice ? primaryPrice - referencePrice : referencePrice - primaryPrice;
+        uint256 deviation = Math.mulDiv(difference, BPS_DENOMINATOR, primaryPrice, Math.Rounding.Ceil);
+        if (deviation > deviationBps) revert FeedDeviation();
+
+        return primaryPrice;
     }
 
-    /// @dev Requires the sValue-adjusted primary price — the underlying
-    /// STRC-equivalent, price / sValue — to be within [minPrice, maxPrice].
-    /// Dividing out the shares multiplier keeps the bounds meaningful as dividends
-    /// compound into the mark (~1%/mo): they bound the underlying, not the drift.
-    /// Also reverts while Ondo's per-asset pause flag is set (scheduled corporate
-    /// actions — the mark is not trustworthy through them).
-    function _checkPriceBounds(uint256 primaryPrice) internal view {
-        (uint256 sValue, bool paused) = SVALUE_ORACLE.getSValue(STRCON);
-        require(!paused, AssetPaused());
-        require(sValue > 0, InvalidOraclePrice());
+    // ============ Configuration ============
 
-        // price (feed decimals) × 1e18 / sValue (18 decimals) → feed decimals
-        uint256 underlyingPrice = Math.mulDiv(primaryPrice, 1e18, sValue);
-        require(underlyingPrice >= minPrice && underlyingPrice <= maxPrice, InvalidOraclePrice());
-    }
-
-    /// @dev Requires contemporaneous prints (timestamps within syncWindow) to agree
-    /// within deviationBps — two live prints disagreeing is a pricing fault. A silent
-    /// secondary (nights/weekends/holidays — it prints market hours only) has no
-    /// current opinion: the check disarms and the primary-only checks carry the
-    /// weekend, the accepted risk (§5).
-    function _checkDeviation(uint256 primaryPrice, uint256 primaryUpdatedAt) internal view {
-        (, int256 answer,, uint256 updatedAt,) = secondaryFeed.latestRoundData();
-
-        uint256 gap = primaryUpdatedAt > updatedAt ? primaryUpdatedAt - updatedAt : updatedAt - primaryUpdatedAt;
-        if (gap > syncWindow) return;
-
-        // A contemporaneous garbage print is a pricing fault, not clock skew.
-        require(answer > 0, InvalidOraclePrice());
-
-        // forge-lint: disable-next-line(unsafe-typecast)
-        uint256 secondaryPrice = uint256(answer);
-
-        uint256 deviation =
-            primaryPrice > secondaryPrice ? primaryPrice - secondaryPrice : secondaryPrice - primaryPrice;
-        require(deviation <= Math.mulDiv(secondaryPrice, deviationBps, BPS_DENOMINATOR), FeedDeviation());
-    }
-
-    /// @notice Updates the acceptable underlying price bounds.
-    /// @dev Caller must hold PARAMETER_MANAGER_ROLE on the vault. Bounds are
-    /// sValue-adjusted (underlying STRC-equivalent), so routine dividend compounding
-    /// never requires touching them.
     function setPriceBounds(uint256 newMinPrice, uint256 newMaxPrice) external onlyVaultRole(PARAMETER_MANAGER_ROLE) {
-        require(newMinPrice > 0 && newMinPrice < newMaxPrice, InvalidPriceBounds());
+        if (newMinPrice == 0 || newMinPrice >= newMaxPrice) revert InvalidPriceBounds();
 
         minPrice = newMinPrice;
         maxPrice = newMaxPrice;
@@ -230,37 +143,36 @@ contract STRConPriceOracle {
         emit PriceBoundsUpdated(newMinPrice, newMaxPrice);
     }
 
-    /// @notice Updates the maximum primary feed staleness.
-    /// @dev Caller must hold PARAMETER_MANAGER_ROLE on the vault. Capped at
-    /// MAX_STALENESS; must stay above the primary's 24h heartbeat or every quiet
-    /// weekend reverts pricing.
-    function setMaxPriceStaleness(uint256 newStaleness) external onlyVaultRole(PARAMETER_MANAGER_ROLE) {
-        require(newStaleness > 0 && newStaleness <= MAX_STALENESS, InvalidStaleness());
+    function setMaxApiStaleness(uint256 newStaleness) external onlyVaultRole(PARAMETER_MANAGER_ROLE) {
+        if (newStaleness > MAX_API_STALENESS) revert InvalidStaleness();
 
-        maxPriceStaleness = newStaleness;
+        maxApiStaleness = newStaleness;
 
-        emit MaxPriceStalenessUpdated(newStaleness);
+        emit MaxApiStalenessUpdated(newStaleness);
     }
 
-    /// @notice Updates the contemporaneity window for the deviation check.
-    /// @dev Caller must hold PARAMETER_MANAGER_ROLE on the vault. Sized to price
-    /// velocity: legitimate movement over the window must stay well below
-    /// deviationBps, or real drift reads as a fault.
-    function setSyncWindow(uint256 newSyncWindow) external onlyVaultRole(PARAMETER_MANAGER_ROLE) {
-        require(newSyncWindow > 0 && newSyncWindow <= MAX_SYNC_WINDOW, InvalidSyncWindow());
-
-        syncWindow = newSyncWindow;
-
-        emit SyncWindowUpdated(newSyncWindow);
-    }
-
-    /// @notice Updates the maximum cross-feed deviation (bps of the secondary print).
-    /// @dev Caller must hold PARAMETER_MANAGER_ROLE on the vault.
     function setDeviationBps(uint256 newDeviationBps) external onlyVaultRole(PARAMETER_MANAGER_ROLE) {
-        require(newDeviationBps > 0 && newDeviationBps <= BPS_DENOMINATOR, InvalidDeviation());
+        if (newDeviationBps > MAX_DEVIATION_BPS) revert InvalidDeviation();
 
         deviationBps = newDeviationBps;
 
         emit DeviationBpsUpdated(newDeviationBps);
+    }
+
+    // ============ Internal ============
+
+    function _readValidRound(IPriceOracle feed) private view returns (uint256 price, uint256 updatedAt) {
+        (uint80 roundId, int256 answer,, uint256 roundUpdatedAt, uint80 answeredInRound) = feed.latestRoundData();
+
+        if (
+            roundId == 0 || answer <= 0 || roundUpdatedAt == 0 || roundUpdatedAt > block.timestamp
+                || answeredInRound < roundId
+        ) {
+            revert InvalidOracleRound();
+        }
+
+        // forge-lint: disable-next-line(unsafe-typecast)
+        price = uint256(answer);
+        updatedAt = roundUpdatedAt;
     }
 }
