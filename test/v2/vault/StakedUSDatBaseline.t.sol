@@ -5,14 +5,14 @@ import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
-import {StakedUSDat as StakedUSDatV1} from "../../src/v1/StakedUSDat.sol";
-import {IStrcPriceOracle as IStrcPriceOracleV1} from "../../src/v1/interfaces/IStrcPriceOracle.sol";
-import {IWithdrawalQueueERC721 as IWithdrawalQueueV1} from "../../src/v1/interfaces/IWithdrawalQueueERC721.sol";
-import {StakedUSDat as StakedUSDatV2} from "../../src/v2/StakedUSDat.sol";
-import {IStakedUSDat} from "../../src/v2/interfaces/IStakedUSDat.sol";
-import {IWithdrawalQueueERC721 as IWithdrawalQueueV2} from "../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
-import {ZeroAccountingModuleMock, ZeroTradableModuleMock} from "./FixedModuleMocks.sol";
-import {V2InitializationHelper} from "./V2InitializationHelper.sol";
+import {StakedUSDat as StakedUSDatV1} from "../../../src/v1/StakedUSDat.sol";
+import {IStrcPriceOracle as IStrcPriceOracleV1} from "../../../src/v1/interfaces/IStrcPriceOracle.sol";
+import {IWithdrawalQueueERC721 as IWithdrawalQueueV1} from "../../../src/v1/interfaces/IWithdrawalQueueERC721.sol";
+import {StakedUSDat as StakedUSDatV2} from "../../../src/v2/StakedUSDat.sol";
+import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
+import {IWithdrawalQueueERC721 as IWithdrawalQueueV2} from "../../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
+import {ZeroAccountingModuleMock, ZeroTradableModuleMock} from "../helpers/FixedModuleMocks.sol";
+import {V2InitializationHelper} from "../helpers/V2InitializationHelper.sol";
 
 contract BaselineUSDatMock {
     // Lowercase public constant preserves the ERC20 metadata ABI.

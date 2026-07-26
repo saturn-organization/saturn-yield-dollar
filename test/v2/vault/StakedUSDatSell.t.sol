@@ -6,17 +6,18 @@ import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol"
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-import {StakedUSDat} from "../../src/v2/StakedUSDat.sol";
-import {IAccountingModule} from "../../src/v2/interfaces/IAccountingModule.sol";
-import {IStakedUSDat} from "../../src/v2/interfaces/IStakedUSDat.sol";
-import {ITradableModule} from "../../src/v2/interfaces/ITradableModule.sol";
-import {IWithdrawalQueueERC721} from "../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
-import {BoundMirrorModuleMock, V2InitializationHelper} from "./V2InitializationHelper.sol";
+import {StakedUSDat} from "../../../src/v2/StakedUSDat.sol";
+import {IAccountingModule} from "../../../src/v2/interfaces/modules/IAccountingModule.sol";
+import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
+import {ITradableModule} from "../../../src/v2/interfaces/modules/ITradableModule.sol";
+import {IWithdrawalQueueERC721} from "../../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
+import {BoundMirrorModuleMock, V2InitializationHelper} from "../helpers/V2InitializationHelper.sol";
 
-contract BuyTokenMock is ERC20 {
+contract SellTokenMock is ERC20 {
     enum TransferBehavior {
         STANDARD,
         RECIPIENT_SHORTFALL,
@@ -24,11 +25,21 @@ contract BuyTokenMock is ERC20 {
     }
 
     error ConfiguredTransferFailure();
+    error ConservativeOrderViolated();
 
     uint8 private immutable _tokenDecimals;
     TransferBehavior private _behavior;
     address private _affectedSender;
     uint256 private _shortfall;
+
+    bool private _checkOutboundOrder;
+    address private _orderVault;
+    IAccountingModule private _orderModule;
+    uint256 private _expectedTrackedUsdat;
+    uint256 private _expectedModuleBalance;
+
+    uint256 public trackedUsdatObservedAtTransfer;
+    uint256 public moduleBalanceObservedAtTransfer;
 
     constructor(string memory name_, string memory symbol_, uint8 decimals_) ERC20(name_, symbol_) {
         _tokenDecimals = decimals_;
@@ -56,7 +67,29 @@ contract BuyTokenMock is ERC20 {
         _shortfall = shortfall;
     }
 
+    function expectOutboundOrder(address vault, IAccountingModule module, uint256 trackedUsdat, uint256 moduleBalance)
+        external
+    {
+        _checkOutboundOrder = true;
+        _orderVault = vault;
+        _orderModule = module;
+        _expectedTrackedUsdat = trackedUsdat;
+        _expectedModuleBalance = moduleBalance;
+    }
+
     function _update(address from, address to, uint256 value) internal override {
+        if (_checkOutboundOrder && from == _orderVault) {
+            uint256 trackedUsdat = IStakedUSDat(_orderVault).usdatBalance();
+            uint256 moduleBalance = _orderModule.balance();
+
+            if (trackedUsdat != _expectedTrackedUsdat || moduleBalance != _expectedModuleBalance) {
+                revert ConservativeOrderViolated();
+            }
+
+            trackedUsdatObservedAtTransfer = trackedUsdat;
+            moduleBalanceObservedAtTransfer = moduleBalance;
+        }
+
         if (from == address(0) || to == address(0) || from != _affectedSender) {
             super._update(from, to, value);
             return;
@@ -75,7 +108,7 @@ contract BuyTokenMock is ERC20 {
     }
 }
 
-contract BuyMirrorModuleMock is IAccountingModule, BoundMirrorModuleMock {
+contract SellMirrorModuleMock is IAccountingModule, BoundMirrorModuleMock {
     error PricingFailed();
 
     uint256 private _balance;
@@ -99,10 +132,10 @@ contract BuyMirrorModuleMock is IAccountingModule, BoundMirrorModuleMock {
     }
 }
 
-contract BuyTradableModuleMock is ITradableModule {
+contract SellTradableModuleMock is ITradableModule {
     error NotVault();
     error OracleFailed();
-    error BuyFailed();
+    error InsufficientBalance();
     error ConservativeOrderViolated();
 
     address private immutable _VAULT;
@@ -112,17 +145,16 @@ contract BuyTradableModuleMock is ITradableModule {
     uint256 private _balance;
     uint256 private _price;
     bool private _priceFails;
-    bool private _buyFails;
 
     bool private _checkConservativeOrder;
-    uint256 private _expectedTrackedUsdatAtBuy;
-    uint256 private _expectedUsdatCustodyAtBuy;
-    uint256 private _expectedAssetCustodyAtBuy;
+    uint256 private _expectedTrackedUsdatAtSell;
+    uint256 private _expectedUsdatCustodyAtSell;
+    uint256 private _expectedAssetCustodyAtSell;
 
-    uint256 public lastBuyAmount;
-    uint256 public trackedUsdatObservedAtBuy;
-    uint256 public usdatCustodyObservedAtBuy;
-    uint256 public assetCustodyObservedAtBuy;
+    uint256 public lastSellAmount;
+    uint256 public trackedUsdatObservedAtSell;
+    uint256 public usdatCustodyObservedAtSell;
+    uint256 public assetCustodyObservedAtSell;
 
     constructor(address vault_, address asset_, address usdat_, uint256 initialPrice) {
         _VAULT = vault_;
@@ -139,21 +171,17 @@ contract BuyTradableModuleMock is ITradableModule {
         _priceFails = shouldFail;
     }
 
-    function setBuyFails(bool shouldFail) external {
-        _buyFails = shouldFail;
-    }
-
     function seedTrackedBalance(uint256 newBalance) external {
         _balance = newBalance;
     }
 
-    function expectConservativeOrder(uint256 trackedUsdatAtBuy, uint256 usdatCustodyAtBuy, uint256 assetCustodyAtBuy)
+    function expectConservativeOrder(uint256 trackedUsdatAtSell, uint256 usdatCustodyAtSell, uint256 assetCustodyAtSell)
         external
     {
         _checkConservativeOrder = true;
-        _expectedTrackedUsdatAtBuy = trackedUsdatAtBuy;
-        _expectedUsdatCustodyAtBuy = usdatCustodyAtBuy;
-        _expectedAssetCustodyAtBuy = assetCustodyAtBuy;
+        _expectedTrackedUsdatAtSell = trackedUsdatAtSell;
+        _expectedUsdatCustodyAtSell = usdatCustodyAtSell;
+        _expectedAssetCustodyAtSell = assetCustodyAtSell;
     }
 
     function recognizedValue() external view returns (uint256) {
@@ -186,7 +214,12 @@ contract BuyTradableModuleMock is ITradableModule {
 
     function buy(uint256 assetReceived) external {
         if (msg.sender != _VAULT) revert NotVault();
-        if (_buyFails) revert BuyFailed();
+        _balance += assetReceived;
+    }
+
+    function sell(uint256 assetDelivered) external {
+        if (msg.sender != _VAULT) revert NotVault();
+        if (assetDelivered > _balance) revert InsufficientBalance();
 
         uint256 trackedUsdat = IStakedUSDat(_VAULT).usdatBalance();
         uint256 usdatCustody = IERC20(_USDAT).balanceOf(_VAULT);
@@ -194,27 +227,22 @@ contract BuyTradableModuleMock is ITradableModule {
 
         if (
             _checkConservativeOrder
-                && (trackedUsdat != _expectedTrackedUsdatAtBuy
-                    || usdatCustody != _expectedUsdatCustodyAtBuy
-                    || assetCustody != _expectedAssetCustodyAtBuy)
+                && (trackedUsdat != _expectedTrackedUsdatAtSell
+                    || usdatCustody != _expectedUsdatCustodyAtSell
+                    || assetCustody != _expectedAssetCustodyAtSell)
         ) {
             revert ConservativeOrderViolated();
         }
 
-        lastBuyAmount = assetReceived;
-        trackedUsdatObservedAtBuy = trackedUsdat;
-        usdatCustodyObservedAtBuy = usdatCustody;
-        assetCustodyObservedAtBuy = assetCustody;
-        _balance += assetReceived;
-    }
-
-    function sell(uint256 assetDelivered) external {
-        if (msg.sender != _VAULT) revert NotVault();
+        lastSellAmount = assetDelivered;
+        trackedUsdatObservedAtSell = trackedUsdat;
+        usdatCustodyObservedAtSell = usdatCustody;
+        assetCustodyObservedAtSell = assetCustody;
         _balance -= assetDelivered;
     }
 }
 
-contract StakedUSDatBuyTest is Test {
+contract StakedUSDatSellTest is Test {
     struct Snapshot {
         uint256 vaultUsdat;
         uint256 trackedUsdat;
@@ -231,38 +259,43 @@ contract StakedUSDatBuyTest is Test {
 
     uint256 private constant ORACLE_PRICE = 100e8;
     uint256 private constant CASH = 100_000e6;
-    uint256 private constant VEHICLE_INVENTORY = 10_000e18;
-    uint256 private constant AMOUNT_OUT = 100e18;
-    uint256 private constant BOUNDARY_AMOUNT_IN = 10_500_000_000;
-    uint256 private constant FAVORABLE_AMOUNT_IN = 9_900_000_000;
+    uint256 private constant VEHICLE_CASH = 100_000e6;
+    uint256 private constant POSITION = 10_000e18;
+    uint256 private constant AMOUNT_IN = 100e18;
+    uint256 private constant BOUNDARY_AMOUNT_OUT = 9_500_000_000;
+    uint256 private constant FAVORABLE_AMOUNT_OUT = 10_100_000_000;
 
-    BuyTokenMock private usdat;
-    BuyTokenMock private strcon;
-    BuyMirrorModuleMock private mirror;
-    BuyTradableModuleMock private module;
+    SellTokenMock private usdat;
+    SellTokenMock private strcon;
+    SellMirrorModuleMock private mirror;
+    SellTradableModuleMock private module;
     StakedUSDat private vault;
 
     address private vehicle = makeAddr("executionVehicle");
     address private unauthorized = makeAddr("unauthorized");
 
-    event AssetBought(
-        address indexed module, address indexed vehicle, uint256 usdatPaid, uint256 assetReceived, uint256 oraclePrice
+    event AssetSold(
+        address indexed module,
+        address indexed vehicle,
+        uint256 assetDelivered,
+        uint256 usdatReceived,
+        uint256 oraclePrice
     );
 
     function setUp() public {
         vm.warp(1_000_000);
 
-        usdat = new BuyTokenMock("USDat", "USDat", 6);
-        strcon = new BuyTokenMock("STRCon", "STRCon", 18);
+        usdat = new SellTokenMock("USDat", "USDat", 6);
+        strcon = new SellTokenMock("STRCon", "STRCon", 18);
 
-        StakedUSDat implementation = new StakedUSDat(IWithdrawalQueueERC721(makeAddr("buyWithdrawalQueue")));
+        StakedUSDat implementation = new StakedUSDat(IWithdrawalQueueERC721(makeAddr("sellWithdrawalQueue")));
         ERC1967Proxy proxy = new ERC1967Proxy(
             address(implementation), abi.encodeCall(StakedUSDat.initialize, (address(this), IERC20(address(usdat))))
         );
         vault = StakedUSDat(address(proxy));
 
-        mirror = new BuyMirrorModuleMock(address(vault));
-        module = new BuyTradableModuleMock(address(vault), address(strcon), address(usdat), ORACLE_PRICE);
+        mirror = new SellMirrorModuleMock(address(vault));
+        module = new SellTradableModuleMock(address(vault), address(strcon), address(usdat), ORACLE_PRICE);
         V2InitializationHelper.initialize(vault, address(mirror), address(module), 5, 10, 25);
 
         vault.grantRole(vault.OPERATOR_ROLE(), address(this));
@@ -277,174 +310,195 @@ contract StakedUSDatBuyTest is Test {
         usdat.approve(address(vault), CASH);
         vault.deposit(CASH, address(this));
 
-        strcon.mint(vehicle, VEHICLE_INVENTORY);
+        module.seedTrackedBalance(POSITION);
+        strcon.mint(address(vault), POSITION);
+
+        usdat.mint(vehicle, VEHICLE_CASH);
         vm.prank(vehicle);
-        strcon.approve(address(vault), VEHICLE_INVENTORY);
+        usdat.approve(address(vault), VEHICLE_CASH);
     }
 
-    function test_buy_SettlesExactDeltasConservativelyAndEmitsAtInclusiveDeadline() public {
-        uint256 unrecognizedExcess = 7e18;
-        strcon.mint(address(vault), unrecognizedExcess);
-        Snapshot memory beforeState = _snapshot(vehicle);
-
-        module.expectConservativeOrder(
-            beforeState.trackedUsdat - BOUNDARY_AMOUNT_IN, beforeState.vaultUsdat, beforeState.vaultStrcon + AMOUNT_OUT
-        );
-
-        vm.expectEmit(true, true, false, true, address(vault));
-        emit AssetBought(address(module), vehicle, BOUNDARY_AMOUNT_IN, AMOUNT_OUT, ORACLE_PRICE);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
-
-        assertEq(usdat.balanceOf(address(vault)), beforeState.vaultUsdat - BOUNDARY_AMOUNT_IN);
-        assertEq(vault.usdatBalance(), beforeState.trackedUsdat - BOUNDARY_AMOUNT_IN);
-        assertEq(usdat.balanceOf(vehicle), beforeState.vehicleUsdat + BOUNDARY_AMOUNT_IN);
-
-        assertEq(strcon.balanceOf(address(vault)), beforeState.vaultStrcon + AMOUNT_OUT);
-        assertEq(module.balance(), beforeState.moduleBalance + AMOUNT_OUT);
-        assertEq(strcon.balanceOf(vehicle), beforeState.vehicleStrcon - AMOUNT_OUT);
-        assertEq(strcon.balanceOf(address(vault)) - module.balance(), unrecognizedExcess);
-        assertGe(usdat.balanceOf(address(vault)), vault.usdatBalance() + vault.surplusVestingAmount());
-        assertGe(strcon.balanceOf(address(vault)), module.balance());
-
-        assertEq(module.lastBuyAmount(), AMOUNT_OUT);
-        assertEq(module.trackedUsdatObservedAtBuy(), beforeState.trackedUsdat - BOUNDARY_AMOUNT_IN);
-        assertEq(module.usdatCustodyObservedAtBuy(), beforeState.vaultUsdat);
-        assertEq(module.assetCustodyObservedAtBuy(), beforeState.vaultStrcon + AMOUNT_OUT);
-
-        assertEq(vault.balanceOf(address(this)), beforeState.shareBalance);
-        assertEq(vault.totalSupply(), beforeState.shareSupply);
-    }
-
-    function testFuzz_buy_ValidAmountsPreserveAccountingAndCustodyInvariants(uint96 rawAmountOut) public {
-        uint256 amountOut = bound(uint256(rawAmountOut), 1e18, 500e18);
-        uint256 amountIn = Math.mulDiv(amountOut, ORACLE_PRICE, 1e20, Math.Rounding.Floor);
-        vault.setExecutionTolerance(0);
-
-        Snapshot memory beforeState = _snapshot(vehicle);
-        vault.buy(amountIn, amountOut, block.timestamp);
-
-        assertEq(usdat.balanceOf(address(vault)), beforeState.vaultUsdat - amountIn);
-        assertEq(vault.usdatBalance(), beforeState.trackedUsdat - amountIn);
-        assertEq(strcon.balanceOf(address(vault)), beforeState.vaultStrcon + amountOut);
-        assertEq(module.balance(), beforeState.moduleBalance + amountOut);
-        assertGe(usdat.balanceOf(address(vault)), vault.usdatBalance() + vault.surplusVestingAmount());
-        assertGe(strcon.balanceOf(address(vault)), module.balance());
-        assertEq(vault.balanceOf(address(this)), beforeState.shareBalance);
-        assertEq(vault.totalSupply(), beforeState.shareSupply);
-    }
-
-    function test_buy_AllowsFavorablePriceInElevatedMode() public {
-        vault.setExecutionTolerance(0);
-        vault.setMarketMode(IStakedUSDat.MarketMode.ELEVATED);
-
-        vault.buy(FAVORABLE_AMOUNT_IN, AMOUNT_OUT, block.timestamp + 1);
-
-        assertEq(vault.usdatBalance(), CASH - FAVORABLE_AMOUNT_IN);
-        assertEq(module.balance(), AMOUNT_OUT);
-    }
-
-    function test_buy_RejectsFirstPriceUnitAboveBoundaryAndRollsBack() public {
-        Snapshot memory beforeState = _snapshot(vehicle);
-
-        vm.expectRevert(IStakedUSDat.ExecutionPriceMismatch.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN + 1, AMOUNT_OUT, block.timestamp);
-
-        _assertUnchanged(beforeState, vehicle);
-    }
-
-    function test_buy_CeilRoundsRealizedPriceAgainstVault() public {
-        Snapshot memory beforeState = _snapshot(vehicle);
-
-        // The exact quotient is below 105e8 + 1 but above 105e8. Floor would
-        // accept it at the boundary; the required ceil must reject it.
-        vm.expectRevert(IStakedUSDat.ExecutionPriceMismatch.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN + 1, AMOUNT_OUT + 1, block.timestamp);
-
-        _assertUnchanged(beforeState, vehicle);
-    }
-
-    function test_buy_FloorRoundsMaximumPriceAgainstVault() public {
-        module.setPrice(ORACLE_PRICE + 1);
-        vault.setExecutionTolerance(1);
-
-        uint256 flooredMaximum = 10_001_000_001;
-        vault.buy(flooredMaximum, AMOUNT_OUT, block.timestamp);
-
-        Snapshot memory afterBoundary = _snapshot(vehicle);
-        vm.expectRevert(IStakedUSDat.ExecutionPriceMismatch.selector);
-        vault.buy(flooredMaximum + 1, AMOUNT_OUT, block.timestamp);
-        _assertUnchanged(afterBoundary, vehicle);
-    }
-
-    function test_buy_RejectsInsufficientTrackedCashDespitePhysicalExcess() public {
+    function test_sell_SettlesExactDeltasConservativelyAndEmitsAtInclusiveDeadline() public {
         uint256 activeSurplus = 10e6;
         usdat.mint(address(this), activeSurplus);
         usdat.approve(address(vault), activeSurplus);
         vault.transferInSurplus(activeSurplus);
         Snapshot memory beforeState = _snapshot(vehicle);
 
-        vm.expectRevert(IStakedUSDat.InsufficientBalance.selector);
-        vault.buy(CASH + 1, 2_000e18, block.timestamp);
+        module.expectConservativeOrder(
+            beforeState.trackedUsdat, beforeState.vaultUsdat + BOUNDARY_AMOUNT_OUT, beforeState.vaultStrcon
+        );
+        strcon.expectOutboundOrder(
+            address(vault),
+            module,
+            beforeState.trackedUsdat + BOUNDARY_AMOUNT_OUT,
+            beforeState.moduleBalance - AMOUNT_IN
+        );
+
+        vm.expectEmit(true, true, false, true, address(vault));
+        emit AssetSold(address(module), vehicle, AMOUNT_IN, BOUNDARY_AMOUNT_OUT, ORACLE_PRICE);
+        _sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT, block.timestamp);
+
+        assertEq(usdat.balanceOf(address(vault)), beforeState.vaultUsdat + BOUNDARY_AMOUNT_OUT);
+        assertEq(vault.usdatBalance(), beforeState.trackedUsdat + BOUNDARY_AMOUNT_OUT);
+        assertEq(usdat.balanceOf(vehicle), beforeState.vehicleUsdat - BOUNDARY_AMOUNT_OUT);
+        assertEq(usdat.allowance(vehicle, address(vault)), beforeState.vehicleAllowance - BOUNDARY_AMOUNT_OUT);
+
+        assertEq(strcon.balanceOf(address(vault)), beforeState.vaultStrcon - AMOUNT_IN);
+        assertEq(module.balance(), beforeState.moduleBalance - AMOUNT_IN);
+        assertEq(strcon.balanceOf(vehicle), beforeState.vehicleStrcon + AMOUNT_IN);
+        assertEq(strcon.allowance(address(vault), vehicle), 0);
+
+        assertGe(usdat.balanceOf(address(vault)), vault.usdatBalance() + vault.surplusVestingAmount());
+        assertGe(strcon.balanceOf(address(vault)), module.balance());
+        assertEq(usdat.balanceOf(address(vault)) - vault.usdatBalance(), activeSurplus);
+
+        assertEq(module.lastSellAmount(), AMOUNT_IN);
+        assertEq(module.trackedUsdatObservedAtSell(), beforeState.trackedUsdat);
+        assertEq(module.usdatCustodyObservedAtSell(), beforeState.vaultUsdat + BOUNDARY_AMOUNT_OUT);
+        assertEq(module.assetCustodyObservedAtSell(), beforeState.vaultStrcon);
+        assertEq(strcon.trackedUsdatObservedAtTransfer(), beforeState.trackedUsdat + BOUNDARY_AMOUNT_OUT);
+        assertEq(strcon.moduleBalanceObservedAtTransfer(), beforeState.moduleBalance - AMOUNT_IN);
+
+        assertEq(vault.balanceOf(address(this)), beforeState.shareBalance);
+        assertEq(vault.totalSupply(), beforeState.shareSupply);
+    }
+
+    function testFuzz_sell_ValidAmountsPreserveAccountingAndCustodyInvariants(uint96 rawAmountIn) public {
+        uint256 amountIn = bound(uint256(rawAmountIn), 1e18, 500e18);
+        uint256 amountOut = Math.mulDiv(amountIn, ORACLE_PRICE, 1e20, Math.Rounding.Ceil);
+        vault.setExecutionTolerance(0);
+
+        Snapshot memory beforeState = _snapshot(vehicle);
+        _sell(amountIn, amountOut, block.timestamp);
+
+        assertEq(usdat.balanceOf(address(vault)), beforeState.vaultUsdat + amountOut);
+        assertEq(vault.usdatBalance(), beforeState.trackedUsdat + amountOut);
+        assertEq(usdat.balanceOf(vehicle), beforeState.vehicleUsdat - amountOut);
+        assertEq(strcon.balanceOf(address(vault)), beforeState.vaultStrcon - amountIn);
+        assertEq(module.balance(), beforeState.moduleBalance - amountIn);
+        assertEq(strcon.balanceOf(vehicle), beforeState.vehicleStrcon + amountIn);
+        assertGe(usdat.balanceOf(address(vault)), vault.usdatBalance() + vault.surplusVestingAmount());
+        assertGe(strcon.balanceOf(address(vault)), module.balance());
+        assertEq(vault.balanceOf(address(this)), beforeState.shareBalance);
+        assertEq(vault.totalSupply(), beforeState.shareSupply);
+    }
+
+    function test_sell_AllowsFavorablePriceInElevatedMode() public {
+        vault.setExecutionTolerance(0);
+        vault.setMarketMode(IStakedUSDat.MarketMode.ELEVATED);
+
+        _sell(AMOUNT_IN, FAVORABLE_AMOUNT_OUT, block.timestamp + 1);
+
+        assertEq(vault.usdatBalance(), CASH + FAVORABLE_AMOUNT_OUT);
+        assertEq(module.balance(), POSITION - AMOUNT_IN);
+    }
+
+    function test_sell_RejectsFirstPriceUnitBelowBoundaryAndRollsBack() public {
+        Snapshot memory beforeState = _snapshot(vehicle);
+
+        vm.expectRevert(IStakedUSDat.ExecutionPriceMismatch.selector);
+        _sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT - 1, block.timestamp);
 
         _assertUnchanged(beforeState, vehicle);
     }
 
-    function test_buy_RejectsInexactInboundSTRConAndRollsBackAllowance() public {
-        strcon.configureTransferBehavior(BuyTokenMock.TransferBehavior.RECIPIENT_SHORTFALL, vehicle, 1);
+    function test_sell_FloorRoundsRealizedPriceAgainstVault() public {
+        Snapshot memory beforeState = _snapshot(vehicle);
+
+        // The exact quotient is below 95e8 but would round up to the boundary.
+        // The required floor must reject it.
+        vm.expectRevert(IStakedUSDat.ExecutionPriceMismatch.selector);
+        _sell(AMOUNT_IN + 1, BOUNDARY_AMOUNT_OUT, block.timestamp);
+
+        _assertUnchanged(beforeState, vehicle);
+    }
+
+    function test_sell_CeilRoundsMinimumPriceAgainstVault() public {
+        module.setPrice(ORACLE_PRICE + 1);
+        vault.setExecutionTolerance(1);
+
+        uint256 roundedUpMinimum = 9_999_000_001;
+        _sell(AMOUNT_IN, roundedUpMinimum, block.timestamp);
+
+        Snapshot memory afterBoundary = _snapshot(vehicle);
+        vm.expectRevert(IStakedUSDat.ExecutionPriceMismatch.selector);
+        _sell(AMOUNT_IN, roundedUpMinimum - 1, block.timestamp);
+        _assertUnchanged(afterBoundary, vehicle);
+    }
+
+    function test_sell_RejectsUnrecognizedExcessSTRCon() public {
+        module.seedTrackedBalance(AMOUNT_IN - 1);
+        Snapshot memory beforeState = _snapshot(vehicle);
+
+        vm.expectRevert(SellTradableModuleMock.InsufficientBalance.selector);
+        _sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT, block.timestamp);
+
+        _assertUnchanged(beforeState, vehicle);
+    }
+
+    function test_sell_RejectsVehicleThatDoesNotApproveFullUSDatDelivery() public {
+        vm.prank(vehicle);
+        usdat.approve(address(vault), BOUNDARY_AMOUNT_OUT - 1);
+        Snapshot memory beforeState = _snapshot(vehicle);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IERC20Errors.ERC20InsufficientAllowance.selector,
+                address(vault),
+                BOUNDARY_AMOUNT_OUT - 1,
+                BOUNDARY_AMOUNT_OUT
+            )
+        );
+        _sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT, block.timestamp);
+
+        _assertUnchanged(beforeState, vehicle);
+    }
+
+    function test_sell_RejectsInexactInboundUSDatAndRollsBackAllowance() public {
+        usdat.configureTransferBehavior(SellTokenMock.TransferBehavior.RECIPIENT_SHORTFALL, vehicle, 1);
         Snapshot memory beforeState = _snapshot(vehicle);
 
         vm.expectRevert(IStakedUSDat.InvalidAssetDelta.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        _sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT, block.timestamp);
 
         _assertUnchanged(beforeState, vehicle);
     }
 
-    function test_buy_LateUSDatTransferFailureRollsBackEveryLeg() public {
-        usdat.configureTransferBehavior(BuyTokenMock.TransferBehavior.REVERT_TRANSFER, address(vault), 0);
+    function test_sell_LateSTRConTransferFailureRollsBackEveryLeg() public {
+        strcon.configureTransferBehavior(SellTokenMock.TransferBehavior.REVERT_TRANSFER, address(vault), 0);
         Snapshot memory beforeState = _snapshot(vehicle);
 
-        vm.expectRevert(BuyTokenMock.ConfiguredTransferFailure.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        vm.expectRevert(SellTokenMock.ConfiguredTransferFailure.selector);
+        _sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT, block.timestamp);
 
         _assertUnchanged(beforeState, vehicle);
-        assertEq(module.lastBuyAmount(), 0);
+        assertEq(module.lastSellAmount(), 0);
     }
 
-    function test_buy_ModuleFailureRollsBackInboundTransfer() public {
-        module.setBuyFails(true);
-        Snapshot memory beforeState = _snapshot(vehicle);
-
-        vm.expectRevert(BuyTradableModuleMock.BuyFailed.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
-
-        _assertUnchanged(beforeState, vehicle);
-    }
-
-    function test_buy_FailsClosedOnOracleAndMirrorPricingFailures() public {
+    function test_sell_FailsClosedOnOracleAndMirrorPricingFailures() public {
         module.setPriceFails(true);
         Snapshot memory beforeState = _snapshot(vehicle);
 
-        vm.expectRevert(BuyTradableModuleMock.OracleFailed.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        vm.expectRevert(SellTradableModuleMock.OracleFailed.selector);
+        _sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT, block.timestamp);
 
         _assertUnchanged(beforeState, vehicle);
         module.setPriceFails(false);
         mirror.configure(1, true);
 
-        vm.expectRevert(BuyMirrorModuleMock.PricingFailed.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        vm.expectRevert(SellMirrorModuleMock.PricingFailed.selector);
+        _sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT, block.timestamp);
 
         _assertUnchanged(beforeState, vehicle);
     }
 
-    function test_buy_RejectsEitherPreexistingCustodyShortfall() public {
-        uint256 tracked = 10e18;
-        module.seedTrackedBalance(tracked);
-        strcon.mint(address(vault), tracked - 1);
+    function test_sell_RejectsEitherPreexistingCustodyShortfall() public {
+        strcon.burn(address(vault), 1);
         Snapshot memory strconShortfallState = _snapshot(vehicle);
 
         vm.expectRevert(IStakedUSDat.CustodyShortfall.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        _sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT, block.timestamp);
 
         _assertUnchanged(strconShortfallState, vehicle);
 
@@ -453,12 +507,12 @@ contract StakedUSDatBuyTest is Test {
         Snapshot memory usdatShortfallState = _snapshot(vehicle);
 
         vm.expectRevert(IStakedUSDat.CustodyShortfall.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        _sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT, block.timestamp);
 
         _assertUnchanged(usdatShortfallState, vehicle);
     }
 
-    function test_buy_EnforcesRolePauseRestrictedAndDeadlineGuards() public {
+    function test_sell_EnforcesRolePauseRestrictedAndDeadlineGuards() public {
         Snapshot memory beforeState = _snapshot(vehicle);
 
         vm.expectRevert(
@@ -467,46 +521,45 @@ contract StakedUSDatBuyTest is Test {
             )
         );
         vm.prank(unauthorized);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
-
+        _sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT, block.timestamp);
         _assertUnchanged(beforeState, vehicle);
 
         vault.pause();
         vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        _sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT, block.timestamp);
         vault.unpause();
         _assertUnchanged(beforeState, vehicle);
 
         vault.setMarketMode(IStakedUSDat.MarketMode.RESTRICTED);
         vm.expectRevert(IStakedUSDat.MarketRestricted.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        _sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT, block.timestamp);
         vault.setMarketMode(IStakedUSDat.MarketMode.REGULAR);
         _assertUnchanged(beforeState, vehicle);
 
         vm.expectRevert(IStakedUSDat.DeadlineExpired.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp - 1);
+        _sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT, block.timestamp - 1);
         _assertUnchanged(beforeState, vehicle);
     }
 
-    function test_buy_RejectsEitherZeroAmount() public {
+    function test_sell_RejectsEitherZeroAmount() public {
         Snapshot memory beforeState = _snapshot(vehicle);
 
         vm.expectRevert(IStakedUSDat.ZeroAmount.selector);
-        vault.buy(0, AMOUNT_OUT, block.timestamp);
+        _sell(0, BOUNDARY_AMOUNT_OUT, block.timestamp);
 
         vm.expectRevert(IStakedUSDat.ZeroAmount.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, 0, block.timestamp);
+        _sell(AMOUNT_IN, 0, block.timestamp);
 
         _assertUnchanged(beforeState, vehicle);
     }
 
-    function test_buy_UsesCurrentVehiclePriceAndTolerance() public {
+    function test_sell_UsesCurrentVehiclePriceAndTolerance() public {
         address replacementVehicle = makeAddr("replacementVehicle");
-        strcon.mint(replacementVehicle, VEHICLE_INVENTORY);
+        usdat.mint(replacementVehicle, VEHICLE_CASH);
         vm.prank(replacementVehicle);
-        strcon.approve(address(vault), VEHICLE_INVENTORY);
+        usdat.approve(address(vault), VEHICLE_CASH);
 
-        module.setPrice(90e8);
+        module.setPrice(110e8);
         vault.setExecutionTolerance(0);
 
         uint256 oldVehicleUsdat = usdat.balanceOf(vehicle);
@@ -518,19 +571,19 @@ contract StakedUSDatBuyTest is Test {
 
         Snapshot memory beforeState = _snapshot(replacementVehicle);
         vm.expectEmit(true, true, false, true, address(vault));
-        emit AssetBought(address(module), replacementVehicle, BOUNDARY_AMOUNT_IN, AMOUNT_OUT, ORACLE_PRICE);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        emit AssetSold(address(module), replacementVehicle, AMOUNT_IN, BOUNDARY_AMOUNT_OUT, ORACLE_PRICE);
+        _sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT, block.timestamp);
 
-        assertEq(usdat.balanceOf(replacementVehicle), beforeState.vehicleUsdat + BOUNDARY_AMOUNT_IN);
-        assertEq(strcon.balanceOf(replacementVehicle), beforeState.vehicleStrcon - AMOUNT_OUT);
+        assertEq(usdat.balanceOf(replacementVehicle), beforeState.vehicleUsdat - BOUNDARY_AMOUNT_OUT);
+        assertEq(strcon.balanceOf(replacementVehicle), beforeState.vehicleStrcon + AMOUNT_IN);
         assertEq(usdat.balanceOf(vehicle), oldVehicleUsdat);
         assertEq(strcon.balanceOf(vehicle), oldVehicleStrcon);
     }
 
-    function test_buy_HasNoCallerSelectedModuleAbi() public {
+    function test_sell_HasNoCallerSelectedModuleAbi() public {
         Snapshot memory beforeState = _snapshot(vehicle);
         bytes memory callData = abi.encodeWithSignature(
-            "buy(address,uint256,uint256,uint256)", address(module), BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp
+            "sell(address,uint256,uint256,uint256)", address(module), AMOUNT_IN, BOUNDARY_AMOUNT_OUT, block.timestamp
         );
 
         (bool success, bytes memory returnData) = address(vault).call(callData);
@@ -540,6 +593,10 @@ contract StakedUSDatBuyTest is Test {
         _assertUnchanged(beforeState, vehicle);
     }
 
+    function _sell(uint256 amountIn, uint256 amountOut, uint256 deadline) private {
+        vault.sell(amountIn, amountOut, deadline);
+    }
+
     function _snapshot(address currentVehicle) private view returns (Snapshot memory state) {
         state.vaultUsdat = usdat.balanceOf(address(vault));
         state.trackedUsdat = vault.usdatBalance();
@@ -547,7 +604,7 @@ contract StakedUSDatBuyTest is Test {
         state.vaultStrcon = strcon.balanceOf(address(vault));
         state.vehicleStrcon = strcon.balanceOf(currentVehicle);
         state.moduleBalance = module.balance();
-        state.vehicleAllowance = strcon.allowance(currentVehicle, address(vault));
+        state.vehicleAllowance = usdat.allowance(currentVehicle, address(vault));
         state.shareBalance = vault.balanceOf(address(this));
         state.shareSupply = vault.totalSupply();
         state.surplusAmount = vault.surplusVestingAmount();
@@ -561,7 +618,7 @@ contract StakedUSDatBuyTest is Test {
         assertEq(strcon.balanceOf(address(vault)), state.vaultStrcon);
         assertEq(strcon.balanceOf(currentVehicle), state.vehicleStrcon);
         assertEq(module.balance(), state.moduleBalance);
-        assertEq(strcon.allowance(currentVehicle, address(vault)), state.vehicleAllowance);
+        assertEq(usdat.allowance(currentVehicle, address(vault)), state.vehicleAllowance);
         assertEq(vault.balanceOf(address(this)), state.shareBalance);
         assertEq(vault.totalSupply(), state.shareSupply);
         assertEq(vault.surplusVestingAmount(), state.surplusAmount);

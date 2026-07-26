@@ -4,8 +4,8 @@ pragma solidity ^0.8.20;
 import {Test} from "forge-std/Test.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-import {IStrcPriceOracle} from "../../src/v2/interfaces/IStrcPriceOracle.sol";
-import {STRCMirrorModule} from "../../src/v2/modules/MirrorSTRC/STRCMirrorModule.sol";
+import {IStrcPriceOracle} from "../../../src/v2/interfaces/oracles/IStrcPriceOracle.sol";
+import {STRCMirrorModule} from "../../../src/v2/modules/MirrorSTRC/STRCMirrorModule.sol";
 
 contract STRCMirrorOracleMock {
     error PricingFailed();

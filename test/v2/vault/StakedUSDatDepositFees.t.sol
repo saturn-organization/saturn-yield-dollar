@@ -8,11 +8,11 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 
-import {StakedUSDat} from "../../src/v2/StakedUSDat.sol";
-import {IStakedUSDat} from "../../src/v2/interfaces/IStakedUSDat.sol";
-import {IWithdrawalQueueERC721} from "../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
-import {ZeroAccountingModuleMock, ZeroTradableModuleMock} from "./FixedModuleMocks.sol";
-import {V2InitializationHelper} from "./V2InitializationHelper.sol";
+import {StakedUSDat} from "../../../src/v2/StakedUSDat.sol";
+import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
+import {IWithdrawalQueueERC721} from "../../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
+import {ZeroAccountingModuleMock, ZeroTradableModuleMock} from "../helpers/FixedModuleMocks.sol";
+import {V2InitializationHelper} from "../helpers/V2InitializationHelper.sol";
 
 contract DepositFeeUSDatMock is ERC20 {
     uint256 public eip2612PermitCalls;

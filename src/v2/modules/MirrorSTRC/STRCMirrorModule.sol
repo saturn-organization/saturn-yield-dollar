@@ -5,8 +5,8 @@ import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol"
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-import {IAccountingModule} from "../../interfaces/IAccountingModule.sol";
-import {IStrcPriceOracle} from "../../interfaces/IStrcPriceOracle.sol";
+import {IAccountingModule} from "../../interfaces/modules/IAccountingModule.sol";
+import {IStrcPriceOracle} from "../../interfaces/oracles/IStrcPriceOracle.sol";
 
 /**
  * @title STRCMirrorModule

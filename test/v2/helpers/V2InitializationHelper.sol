@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {StakedUSDat} from "../../src/v2/StakedUSDat.sol";
-import {IStakedUSDat} from "../../src/v2/interfaces/IStakedUSDat.sol";
-import {ISTRCMirrorModule} from "../../src/v2/interfaces/ISTRCMirrorModule.sol";
-import {ISTRConModule} from "../../src/v2/interfaces/ISTRConModule.sol";
+import {StakedUSDat} from "../../../src/v2/StakedUSDat.sol";
+import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
+import {ISTRCMirrorModule} from "../../../src/v2/interfaces/modules/ISTRCMirrorModule.sol";
+import {ISTRConModule} from "../../../src/v2/interfaces/modules/ISTRConModule.sol";
 
 abstract contract BoundMirrorModuleMock {
     address public immutable VAULT;

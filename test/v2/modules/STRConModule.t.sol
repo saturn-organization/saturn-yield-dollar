@@ -4,9 +4,9 @@ pragma solidity ^0.8.20;
 import {Test} from "forge-std/Test.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-import {ISTRConModule} from "../../src/v2/interfaces/ISTRConModule.sol";
-import {ISTRConPriceOracle} from "../../src/v2/interfaces/ISTRConPriceOracle.sol";
-import {STRConModule} from "../../src/v2/modules/STRCon/STRConModule.sol";
+import {ISTRConModule} from "../../../src/v2/interfaces/modules/ISTRConModule.sol";
+import {ISTRConPriceOracle} from "../../../src/v2/interfaces/oracles/ISTRConPriceOracle.sol";
+import {STRConModule} from "../../../src/v2/modules/STRCon/STRConModule.sol";
 
 contract STRConModuleVaultMock {
     mapping(bytes32 role => mapping(address account => bool enabled)) private _roles;

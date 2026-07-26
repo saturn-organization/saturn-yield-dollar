@@ -5,10 +5,10 @@ import {Test} from "forge-std/Test.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 
-import {IPriceOracle} from "../../src/v2/interfaces/IPriceOracle.sol";
-import {ISTRConPriceOracle} from "../../src/v2/interfaces/ISTRConPriceOracle.sol";
-import {ISyntheticSharesOracle} from "../../src/v2/interfaces/ISyntheticSharesOracle.sol";
-import {STRConPriceOracle} from "../../src/v2/modules/STRCon/STRConPriceOracle.sol";
+import {IPriceOracle} from "../../../src/v2/interfaces/oracles/IPriceOracle.sol";
+import {ISTRConPriceOracle} from "../../../src/v2/interfaces/oracles/ISTRConPriceOracle.sol";
+import {ISyntheticSharesOracle} from "../../../src/v2/interfaces/oracles/ISyntheticSharesOracle.sol";
+import {STRConPriceOracle} from "../../../src/v2/modules/STRCon/STRConPriceOracle.sol";
 
 contract STRConChainlinkFeedMock is IPriceOracle {
     error FeedReadFailed();

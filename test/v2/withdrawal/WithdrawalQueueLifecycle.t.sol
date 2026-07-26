@@ -5,8 +5,8 @@ import {Test} from "forge-std/Test.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 
-import {WithdrawalQueueERC721} from "../../src/v2/WithdrawalQueueERC721.sol";
-import {IWithdrawalQueueERC721} from "../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
+import {WithdrawalQueueERC721} from "../../../src/v2/WithdrawalQueueERC721.sol";
+import {IWithdrawalQueueERC721} from "../../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
 
 contract TerminalTokenMock is IERC721Receiver {
     enum TransferMode {

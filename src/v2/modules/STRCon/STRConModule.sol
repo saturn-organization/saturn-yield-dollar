@@ -4,9 +4,9 @@ pragma solidity ^0.8.20;
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-import {ISTRConModule} from "../../interfaces/ISTRConModule.sol";
-import {ISTRConPriceOracle} from "../../interfaces/ISTRConPriceOracle.sol";
-import {ITradableModule} from "../../interfaces/ITradableModule.sol";
+import {ISTRConModule} from "../../interfaces/modules/ISTRConModule.sol";
+import {ITradableModule} from "../../interfaces/modules/ITradableModule.sol";
+import {ISTRConPriceOracle} from "../../interfaces/oracles/ISTRConPriceOracle.sol";
 
 /**
  * @title STRConModule

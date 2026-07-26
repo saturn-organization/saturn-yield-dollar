@@ -2,8 +2,8 @@
 pragma solidity ^0.8.20;
 
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
-import {ISTRCMirrorModule} from "./ISTRCMirrorModule.sol";
-import {ISTRConModule} from "./ISTRConModule.sol";
+import {ISTRCMirrorModule} from "./modules/ISTRCMirrorModule.sol";
+import {ISTRConModule} from "./modules/ISTRConModule.sol";
 
 /**
  * @title IStakedUSDat

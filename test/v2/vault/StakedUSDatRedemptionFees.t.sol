@@ -9,11 +9,11 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
-import {StakedUSDat} from "../../src/v2/StakedUSDat.sol";
-import {IStakedUSDat} from "../../src/v2/interfaces/IStakedUSDat.sol";
-import {IWithdrawalQueueERC721} from "../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
-import {ZeroAccountingModuleMock, ZeroTradableModuleMock} from "./FixedModuleMocks.sol";
-import {V2InitializationHelper} from "./V2InitializationHelper.sol";
+import {StakedUSDat} from "../../../src/v2/StakedUSDat.sol";
+import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
+import {IWithdrawalQueueERC721} from "../../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
+import {ZeroAccountingModuleMock, ZeroTradableModuleMock} from "../helpers/FixedModuleMocks.sol";
+import {V2InitializationHelper} from "../helpers/V2InitializationHelper.sol";
 
 contract RedemptionFeeUSDatMock is ERC20 {
     constructor() ERC20("USDat", "USDat") {}

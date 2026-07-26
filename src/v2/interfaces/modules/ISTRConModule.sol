@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {ISTRConPriceOracle} from "./ISTRConPriceOracle.sol";
+import {ISTRConPriceOracle} from "../oracles/ISTRConPriceOracle.sol";
 import {ITradableModule} from "./ITradableModule.sol";
 
 /**

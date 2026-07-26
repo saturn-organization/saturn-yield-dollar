@@ -7,12 +7,12 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
-import {StakedUSDat} from "../../src/v2/StakedUSDat.sol";
-import {IAccountingModule} from "../../src/v2/interfaces/IAccountingModule.sol";
-import {IStakedUSDat} from "../../src/v2/interfaces/IStakedUSDat.sol";
-import {ITradableModule} from "../../src/v2/interfaces/ITradableModule.sol";
-import {IWithdrawalQueueERC721} from "../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
-import {BoundMirrorModuleMock, V2InitializationHelper} from "./V2InitializationHelper.sol";
+import {StakedUSDat} from "../../../src/v2/StakedUSDat.sol";
+import {IAccountingModule} from "../../../src/v2/interfaces/modules/IAccountingModule.sol";
+import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
+import {ITradableModule} from "../../../src/v2/interfaces/modules/ITradableModule.sol";
+import {IWithdrawalQueueERC721} from "../../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
+import {BoundMirrorModuleMock, V2InitializationHelper} from "../helpers/V2InitializationHelper.sol";
 
 contract RescueTokenMock is ERC20 {
     uint8 private immutable _TOKEN_DECIMALS;

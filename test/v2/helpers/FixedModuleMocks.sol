@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {IAccountingModule} from "../../src/v2/interfaces/IAccountingModule.sol";
-import {ITradableModule} from "../../src/v2/interfaces/ITradableModule.sol";
+import {IAccountingModule} from "../../../src/v2/interfaces/modules/IAccountingModule.sol";
+import {ITradableModule} from "../../../src/v2/interfaces/modules/ITradableModule.sol";
 import {BoundMirrorModuleMock, BoundSTRConModuleMock} from "./V2InitializationHelper.sol";
 
 contract ZeroAccountingModuleMock is IAccountingModule, BoundMirrorModuleMock {

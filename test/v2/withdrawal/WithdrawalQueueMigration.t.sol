@@ -4,10 +4,10 @@ pragma solidity ^0.8.20;
 import {Test} from "forge-std/Test.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
-import {WithdrawalQueueERC721 as WithdrawalQueueV1} from "../../src/v1/WithdrawalQueueERC721.sol";
-import {WithdrawalQueueERC721 as WithdrawalQueueV2} from "../../src/v2/WithdrawalQueueERC721.sol";
-import {IStakedUSDat} from "../../src/v2/interfaces/IStakedUSDat.sol";
-import {IWithdrawalQueueERC721 as IWithdrawalQueueV2} from "../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
+import {WithdrawalQueueERC721 as WithdrawalQueueV1} from "../../../src/v1/WithdrawalQueueERC721.sol";
+import {WithdrawalQueueERC721 as WithdrawalQueueV2} from "../../../src/v2/WithdrawalQueueERC721.sol";
+import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
+import {IWithdrawalQueueERC721 as IWithdrawalQueueV2} from "../../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
 
 contract QueueUSDatMock {
     mapping(address account => uint256 balance) public balanceOf;

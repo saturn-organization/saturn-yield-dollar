@@ -22,8 +22,8 @@ import {IWithdrawalQueueERC721} from "./interfaces/IWithdrawalQueueERC721.sol";
 import {IStakedUSDat} from "./interfaces/IStakedUSDat.sol";
 import {IUSDat} from "./interfaces/IUSDat.sol";
 import {IERC20PermitExtended} from "./interfaces/IERC20PermitExtended.sol";
-import {ISTRCMirrorModule} from "./interfaces/ISTRCMirrorModule.sol";
-import {ISTRConModule} from "./interfaces/ISTRConModule.sol";
+import {ISTRCMirrorModule} from "./interfaces/modules/ISTRCMirrorModule.sol";
+import {ISTRConModule} from "./interfaces/modules/ISTRConModule.sol";
 
 /**
  * @title StakedUSDat

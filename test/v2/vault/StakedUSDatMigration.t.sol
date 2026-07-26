@@ -8,17 +8,17 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 
-import {StakedUSDat as StakedUSDatV1} from "../../src/v1/StakedUSDat.sol";
-import {IStrcPriceOracle as IStrcPriceOracleV1} from "../../src/v1/interfaces/IStrcPriceOracle.sol";
-import {IWithdrawalQueueERC721 as IWithdrawalQueueV1} from "../../src/v1/interfaces/IWithdrawalQueueERC721.sol";
-import {StakedUSDat as StakedUSDatV2} from "../../src/v2/StakedUSDat.sol";
-import {IStakedUSDat} from "../../src/v2/interfaces/IStakedUSDat.sol";
-import {IStrcPriceOracle} from "../../src/v2/interfaces/IStrcPriceOracle.sol";
-import {ISTRCMirrorModule} from "../../src/v2/interfaces/ISTRCMirrorModule.sol";
-import {ISTRConPriceOracle} from "../../src/v2/interfaces/ISTRConPriceOracle.sol";
-import {IWithdrawalQueueERC721 as IWithdrawalQueueV2} from "../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
-import {STRCMirrorModule} from "../../src/v2/modules/MirrorSTRC/STRCMirrorModule.sol";
-import {STRConModule} from "../../src/v2/modules/STRCon/STRConModule.sol";
+import {StakedUSDat as StakedUSDatV1} from "../../../src/v1/StakedUSDat.sol";
+import {IStrcPriceOracle as IStrcPriceOracleV1} from "../../../src/v1/interfaces/IStrcPriceOracle.sol";
+import {IWithdrawalQueueERC721 as IWithdrawalQueueV1} from "../../../src/v1/interfaces/IWithdrawalQueueERC721.sol";
+import {StakedUSDat as StakedUSDatV2} from "../../../src/v2/StakedUSDat.sol";
+import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
+import {IStrcPriceOracle} from "../../../src/v2/interfaces/oracles/IStrcPriceOracle.sol";
+import {ISTRCMirrorModule} from "../../../src/v2/interfaces/modules/ISTRCMirrorModule.sol";
+import {ISTRConPriceOracle} from "../../../src/v2/interfaces/oracles/ISTRConPriceOracle.sol";
+import {IWithdrawalQueueERC721 as IWithdrawalQueueV2} from "../../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
+import {STRCMirrorModule} from "../../../src/v2/modules/MirrorSTRC/STRCMirrorModule.sol";
+import {STRConModule} from "../../../src/v2/modules/STRCon/STRConModule.sol";
 
 contract MigrationUSDatMock is ERC20 {
     constructor() ERC20("USDat", "USDat") {}

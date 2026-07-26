@@ -8,12 +8,12 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
-import {StakedUSDat} from "../../src/v2/StakedUSDat.sol";
-import {IAccountingModule} from "../../src/v2/interfaces/IAccountingModule.sol";
-import {IStakedUSDat} from "../../src/v2/interfaces/IStakedUSDat.sol";
-import {IWithdrawalQueueERC721} from "../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
-import {ZeroTradableModuleMock} from "./FixedModuleMocks.sol";
-import {BoundMirrorModuleMock, V2InitializationHelper} from "./V2InitializationHelper.sol";
+import {StakedUSDat} from "../../../src/v2/StakedUSDat.sol";
+import {IAccountingModule} from "../../../src/v2/interfaces/modules/IAccountingModule.sol";
+import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
+import {IWithdrawalQueueERC721} from "../../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
+import {ZeroTradableModuleMock} from "../helpers/FixedModuleMocks.sol";
+import {BoundMirrorModuleMock, V2InitializationHelper} from "../helpers/V2InitializationHelper.sol";
 
 contract SurplusUSDatMock is ERC20 {
     constructor() ERC20("USDat", "USDat") {}
