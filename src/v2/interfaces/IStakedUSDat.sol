@@ -29,9 +29,9 @@ interface IStakedUSDat is IERC4626 {
      * @notice Vault operating mode selected for current market conditions.
      */
     enum MarketMode {
-        REGULAR,
-        ELEVATED,
-        RESTRICTED
+        Regular,
+        Elevated,
+        Restricted
     }
 
     // ============ V2 Initialization ============
@@ -500,8 +500,9 @@ interface IStakedUSDat is IERC4626 {
      * Transfers shares to the withdrawal queue and mints an NFT representing the request.
      * Never prices.
      * @param shares The number of shares to redeem (>= MIN_REQUEST_SHARES).
-     * @param minSharePrice Limit: minimum execution price per 1e18 shares. The request
-     * fills at this price or better; below it, it is skipped and stays queued.
+     * @param minSharePrice Limit: minimum net USDat payout per 1e18 shares after the
+     * active redemption fee. The request fills at this price or better; below it,
+     * it is skipped and stays queued.
      * @return requestId The ID of the withdrawal request NFT.
      */
     function requestRedeem(uint256 shares, uint256 minSharePrice) external returns (uint256 requestId);
@@ -509,9 +510,10 @@ interface IStakedUSDat is IERC4626 {
     /**
      * @notice Attempts to redeem a complete queued request against the cash buffer.
      * @dev Only callable by the withdrawal queue (immutable address check). Prices,
-     * checks the gross limit and liquidity, then burns and transfers atomically.
+     * deducts the active fee, checks the net payout limit and liquidity, then burns
+     * and transfers atomically.
      * @param shares The complete number of escrowed shares to redeem.
-     * @param minSharePrice The minimum gross USDat per 1e18 shares.
+     * @param minSharePrice The minimum net USDat payout per 1e18 shares.
      * @return result Whether the request settled or why it was skipped.
      * @return usdat The net USDat transferred to the queue when settled.
      */

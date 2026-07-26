@@ -212,7 +212,7 @@ contract StakedUSDatReinitializerTest is Test {
         assertEq(vaultV2.elevatedRedemptionFeeBps(), 10);
         assertEq(vaultV2.elevatedDepositFeeBps(), 25);
         assertEq(vaultV2.executionToleranceBps(), 50);
-        assertEq(uint256(vaultV2.marketMode()), uint256(IStakedUSDat.MarketMode.REGULAR));
+        assertEq(uint256(vaultV2.marketMode()), uint256(IStakedUSDat.MarketMode.Regular));
         assertEq(vaultV2.surplusVestingAmount(), 0);
         assertEq(vaultV2.surplusVestingStartTimestamp(), 0);
         assertEq(vaultV2.surplusVestingPeriod(), 3 days);

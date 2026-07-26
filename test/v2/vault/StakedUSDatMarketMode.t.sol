@@ -31,17 +31,17 @@ contract StakedUSDatMarketModeTest is Test {
     }
 
     function test_DefaultModeIsRegular() public view {
-        assertEq(uint256(vault.marketMode()), uint256(IStakedUSDat.MarketMode.REGULAR));
+        assertEq(uint256(vault.marketMode()), uint256(IStakedUSDat.MarketMode.Regular));
     }
 
     function test_SetMarketMode_TransitionsAndEmits() public {
-        _setMode(IStakedUSDat.MarketMode.REGULAR, IStakedUSDat.MarketMode.ELEVATED);
-        _setMode(IStakedUSDat.MarketMode.ELEVATED, IStakedUSDat.MarketMode.RESTRICTED);
-        _setMode(IStakedUSDat.MarketMode.RESTRICTED, IStakedUSDat.MarketMode.REGULAR);
+        _setMode(IStakedUSDat.MarketMode.Regular, IStakedUSDat.MarketMode.Elevated);
+        _setMode(IStakedUSDat.MarketMode.Elevated, IStakedUSDat.MarketMode.Restricted);
+        _setMode(IStakedUSDat.MarketMode.Restricted, IStakedUSDat.MarketMode.Regular);
     }
 
     function test_SetMarketMode_EmitsForIdempotentTarget() public {
-        _setMode(IStakedUSDat.MarketMode.REGULAR, IStakedUSDat.MarketMode.REGULAR);
+        _setMode(IStakedUSDat.MarketMode.Regular, IStakedUSDat.MarketMode.Regular);
     }
 
     function test_SetMarketMode_RequiresMarketModeManagerRole() public {
@@ -51,30 +51,30 @@ contract StakedUSDatMarketModeTest is Test {
             )
         );
         vm.prank(unauthorized);
-        vault.setMarketMode(IStakedUSDat.MarketMode.ELEVATED);
+        vault.setMarketMode(IStakedUSDat.MarketMode.Elevated);
 
-        assertEq(uint256(vault.marketMode()), uint256(IStakedUSDat.MarketMode.REGULAR));
+        assertEq(uint256(vault.marketMode()), uint256(IStakedUSDat.MarketMode.Regular));
     }
 
     function test_SetMarketMode_RemainsCallableWhilePaused() public {
         vault.pause();
 
-        vault.setMarketMode(IStakedUSDat.MarketMode.ELEVATED);
+        vault.setMarketMode(IStakedUSDat.MarketMode.Elevated);
 
-        assertEq(uint256(vault.marketMode()), uint256(IStakedUSDat.MarketMode.ELEVATED));
+        assertEq(uint256(vault.marketMode()), uint256(IStakedUSDat.MarketMode.Elevated));
         assertTrue(vault.paused());
     }
 
     function test_WhenNotRestricted_AllowsRegularAndElevated() public {
         assertTrue(vault.guardedOperation());
 
-        vault.setMarketMode(IStakedUSDat.MarketMode.ELEVATED);
+        vault.setMarketMode(IStakedUSDat.MarketMode.Elevated);
 
         assertTrue(vault.guardedOperation());
     }
 
     function test_WhenNotRestricted_RevertsRestricted() public {
-        vault.setMarketMode(IStakedUSDat.MarketMode.RESTRICTED);
+        vault.setMarketMode(IStakedUSDat.MarketMode.Restricted);
 
         vm.expectRevert(IStakedUSDat.MarketRestricted.selector);
         vault.guardedOperation();

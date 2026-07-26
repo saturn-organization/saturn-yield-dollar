@@ -67,7 +67,7 @@ contract StakedUSDatBaselineTest is Test {
         assertTrue(vaultV2.isBlacklisted(blacklisted));
         assertEq(vaultV2.usdatBalance(), uint256(legacySlots[7]));
         assertEq(vaultV2.recoveryAddress(), address(0));
-        assertEq(uint256(vaultV2.marketMode()), uint256(IStakedUSDat.MarketMode.REGULAR));
+        assertEq(uint256(vaultV2.marketMode()), uint256(IStakedUSDat.MarketMode.Regular));
         assertEq(vaultV2.elevatedDepositFeeBps(), uint256(legacySlots[5]));
         assertEq(vaultV2.depositFeeBps(), 0);
         vm.expectRevert();
@@ -91,7 +91,7 @@ contract StakedUSDatBaselineTest is Test {
         vaultV2.grantRole(vaultV2.PARAMETER_MANAGER_ROLE(), address(this));
         vaultV2.grantRole(vaultV2.MARKET_MODE_MANAGER_ROLE(), address(this));
         vaultV2.setRecoveryAddress(recoveryAddress);
-        vaultV2.setMarketMode(IStakedUSDat.MarketMode.ELEVATED);
+        vaultV2.setMarketMode(IStakedUSDat.MarketMode.Elevated);
         assertEq(vaultV2.depositFeeBps(), 25);
 
         for (uint256 slot = 0; slot < 10; slot++) {
@@ -101,7 +101,7 @@ contract StakedUSDatBaselineTest is Test {
         assertEq(vm.load(address(proxy), bytes32(uint256(5))), bytes32(uint256(25)));
 
         uint256 expectedSlotTen = uint256(uint160(recoveryAddress))
-            | (uint256(uint8(IStakedUSDat.MarketMode.ELEVATED)) << 160) | (uint256(5) << 168) | (uint256(10) << 184);
+            | (uint256(uint8(IStakedUSDat.MarketMode.Elevated)) << 160) | (uint256(5) << 168) | (uint256(10) << 184);
         assertEq(vm.load(address(proxy), bytes32(uint256(10))), bytes32(expectedSlotTen));
         assertEq(vm.load(address(proxy), bytes32(uint256(11))), bytes32(uint256(uint160(address(strcMirrorModule)))));
         assertEq(vm.load(address(proxy), bytes32(uint256(12))), bytes32(uint256(uint160(address(strconModule)))));

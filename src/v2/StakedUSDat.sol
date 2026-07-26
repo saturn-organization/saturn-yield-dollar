@@ -172,7 +172,7 @@ contract StakedUSDat is
     }
 
     modifier whenNotRestricted() {
-        require(marketMode != MarketMode.RESTRICTED, MarketRestricted());
+        require(marketMode != MarketMode.Restricted, MarketRestricted());
         _;
     }
 
@@ -256,7 +256,7 @@ contract StakedUSDat is
         _setElevatedDepositFee(config.elevatedDepositFeeBps);
         _setExecutionTolerance(config.executionToleranceBps);
         surplusVestingPeriod = 3 days;
-        marketMode = MarketMode.REGULAR;
+        marketMode = MarketMode.Regular;
 
         _grantV2Role(PARAMETER_MANAGER_ROLE, roles.parameterManager);
         _grantV2Role(MARKET_MODE_MANAGER_ROLE, roles.marketModeManager);
@@ -384,14 +384,14 @@ contract StakedUSDat is
     /// @inheritdoc IERC4626
     /// @dev Returns 0 when paused, deposits are restricted, or NAV cannot be priced.
     function maxDeposit(address) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
-        if (paused() || marketMode == MarketMode.RESTRICTED) return 0;
+        if (paused() || marketMode == MarketMode.Restricted) return 0;
         return _canPriceTotalAssets() ? type(uint256).max : 0;
     }
 
     /// @inheritdoc IERC4626
     /// @dev Returns 0 when paused, mints are restricted, or NAV cannot be priced.
     function maxMint(address) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
-        if (paused() || marketMode == MarketMode.RESTRICTED) return 0;
+        if (paused() || marketMode == MarketMode.Restricted) return 0;
         return _canPriceTotalAssets() ? type(uint256).max : 0;
     }
 
@@ -740,9 +740,9 @@ contract StakedUSDat is
     }
 
     /// @inheritdoc IStakedUSDat
-    /// @dev The queue's single settlement primitive: price, validate, burn, and
-    /// transfer a complete request in one call. The fee stays in the vault and
-    /// accrues to remaining shares.
+    /// @dev The queue's single settlement primitive: price, deduct the fee, validate
+    /// the net payout per share, burn, and transfer a complete request in one call.
+    /// The fee stays in the vault and accrues to remaining shares.
     function redeemQueuedShares(uint256 shares, uint256 minSharePrice)
         external
         nonReentrant
@@ -755,13 +755,14 @@ contract StakedUSDat is
         _sweep();
 
         uint256 gross = convertToAssets(shares);
-        uint256 maximumSharePrice = Math.mulDiv(gross, 1e18, shares);
-        if (minSharePrice > maximumSharePrice) {
+        uint256 fee = Math.mulDiv(gross, redemptionFeeBps(), BPS_DENOMINATOR, Math.Rounding.Ceil);
+        usdat = gross - fee;
+
+        uint256 netSharePrice = Math.mulDiv(usdat, 1e18, shares, Math.Rounding.Floor);
+        if (netSharePrice < minSharePrice) {
             return (RedemptionResult.BelowLimit, 0);
         }
 
-        uint256 fee = Math.mulDiv(gross, redemptionFeeBps(), BPS_DENOMINATOR, Math.Rounding.Ceil);
-        usdat = gross - fee;
         if (usdatBalance < usdat) {
             return (RedemptionResult.InsufficientLiquidity, 0);
         }
@@ -775,12 +776,12 @@ contract StakedUSDat is
 
     /// @inheritdoc IStakedUSDat
     function redemptionFeeBps() public view returns (uint16) {
-        return marketMode == MarketMode.REGULAR ? baseRedemptionFeeBps : elevatedRedemptionFeeBps;
+        return marketMode == MarketMode.Regular ? baseRedemptionFeeBps : elevatedRedemptionFeeBps;
     }
 
     /// @inheritdoc IStakedUSDat
     function depositFeeBps() public view returns (uint256) {
-        return marketMode == MarketMode.REGULAR ? 0 : elevatedDepositFeeBps;
+        return marketMode == MarketMode.Regular ? 0 : elevatedDepositFeeBps;
     }
 
     /// @dev Returns whether every fixed NAV leg can currently be priced.

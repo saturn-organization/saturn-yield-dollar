@@ -335,7 +335,7 @@ contract StakedUSDatBuyTest is Test {
 
     function test_buy_AllowsFavorablePriceInElevatedMode() public {
         vault.setExecutionTolerance(0);
-        vault.setMarketMode(IStakedUSDat.MarketMode.ELEVATED);
+        vault.setMarketMode(IStakedUSDat.MarketMode.Elevated);
 
         vault.buy(FAVORABLE_AMOUNT_IN, AMOUNT_OUT, block.timestamp + 1);
 
@@ -477,10 +477,10 @@ contract StakedUSDatBuyTest is Test {
         vault.unpause();
         _assertUnchanged(beforeState, vehicle);
 
-        vault.setMarketMode(IStakedUSDat.MarketMode.RESTRICTED);
+        vault.setMarketMode(IStakedUSDat.MarketMode.Restricted);
         vm.expectRevert(IStakedUSDat.MarketRestricted.selector);
         vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
-        vault.setMarketMode(IStakedUSDat.MarketMode.REGULAR);
+        vault.setMarketMode(IStakedUSDat.MarketMode.Regular);
         _assertUnchanged(beforeState, vehicle);
 
         vm.expectRevert(IStakedUSDat.DeadlineExpired.selector);

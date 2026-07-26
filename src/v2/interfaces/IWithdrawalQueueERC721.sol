@@ -8,9 +8,10 @@ pragma solidity ^0.8.20;
  * @dev A UUPS upgradeable NFT-based withdrawal queue where each withdrawal request
  * is represented as an ERC721 token. Users request redemptions from StakedUSDat,
  * their shares are escrowed, and they receive an NFT representing their claim.
- * The queue is a limit-order book against NAV: the operator processes complete
- * requests against the vault's cash buffer, each priced by the vault at its live
- * mark. The queue never prices; its settlement coupling is redeemQueuedShares.
+ * The queue is a limit-order book against the vault-calculated net redemption
+ * price: the operator processes complete requests against the vault's cash buffer
+ * using live NAV and the active redemption fee. The queue never prices; its
+ * settlement coupling is redeemQueuedShares.
  */
 interface IWithdrawalQueueERC721 {
     // ============ Enums ============
@@ -39,8 +40,9 @@ interface IWithdrawalQueueERC721 {
      * @param shares The complete escrowed share amount, retained unchanged.
      * @param usdatOwed Zero until processing assigns the complete fixed payout.
      * @param timestamp The timestamp when the request was created.
-     * @param minSharePrice Limit: minimum execution price per 1e18 shares (v1 slot,
-     * was minUsdatReceived — legacy values are reinterpreted unchanged).
+     * @param minSharePrice Limit: minimum net USDat payout per 1e18 shares after
+     * the active redemption fee (v1 slot, was minUsdatReceived — legacy values
+     * are reinterpreted unchanged).
      * @param status Authoritative request lifecycle state.
      */
     struct Request {
@@ -110,7 +112,7 @@ interface IWithdrawalQueueERC721 {
     /**
      * @dev Emitted when a holder updates a request's limit price.
      * @param tokenId The NFT token ID of the updated request.
-     * @param newMinSharePrice The new minimum execution price per 1e18 shares.
+     * @param newMinSharePrice The new minimum net USDat payout per 1e18 shares.
      */
     event MinSharePriceUpdated(uint256 indexed tokenId, uint256 newMinSharePrice);
 
@@ -171,7 +173,8 @@ interface IWithdrawalQueueERC721 {
      * Reverts if the user is restricted by either sUSDat or USDat.
      * @param user The user requesting withdrawal.
      * @param shares The amount of sUSDat shares escrowed.
-     * @param minSharePrice The minimum execution price per 1e18 shares.
+     * @param minSharePrice The minimum net USDat payout per 1e18 shares after the
+     * active redemption fee.
      * @return tokenId The NFT token ID (same as request ID).
      */
     function addRequest(address user, uint256 shares, uint256 minSharePrice) external returns (uint256 tokenId);
@@ -181,7 +184,7 @@ interface IWithdrawalQueueERC721 {
      * direction; applies to the request's future settlement attempt.
      * @dev Only callable by the NFT owner.
      * @param tokenId The token ID of the request to update.
-     * @param newMinSharePrice The new minimum execution price per 1e18 shares.
+     * @param newMinSharePrice The new minimum net USDat payout per 1e18 shares.
      */
     function updateMinSharePrice(uint256 tokenId, uint256 newMinSharePrice) external;
 

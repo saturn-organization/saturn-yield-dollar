@@ -101,10 +101,10 @@ contract StakedUSDatDepositFeesTest is Test {
         assertEq(vault.depositFeeBps(), 0);
         assertEq(vault.elevatedDepositFeeBps(), ELEVATED_DEPOSIT_FEE_BPS);
 
-        vault.setMarketMode(IStakedUSDat.MarketMode.ELEVATED);
+        vault.setMarketMode(IStakedUSDat.MarketMode.Elevated);
         assertEq(vault.depositFeeBps(), ELEVATED_DEPOSIT_FEE_BPS);
 
-        vault.setMarketMode(IStakedUSDat.MarketMode.RESTRICTED);
+        vault.setMarketMode(IStakedUSDat.MarketMode.Restricted);
         assertEq(vault.depositFeeBps(), ELEVATED_DEPOSIT_FEE_BPS);
     }
 
@@ -283,7 +283,7 @@ contract StakedUSDatDepositFeesTest is Test {
         uint256 expectedShares = vault.previewDeposit(GROSS_ASSETS);
         uint256 expectedAssets = vault.previewMint(NET_SHARES);
 
-        vault.setMarketMode(IStakedUSDat.MarketMode.RESTRICTED);
+        vault.setMarketMode(IStakedUSDat.MarketMode.Restricted);
 
         assertEq(vault.previewDeposit(GROSS_ASSETS), expectedShares);
         assertEq(vault.previewMint(NET_SHARES), expectedAssets);
@@ -326,7 +326,7 @@ contract StakedUSDatDepositFeesTest is Test {
     }
 
     function _setElevatedMode() private {
-        vault.setMarketMode(IStakedUSDat.MarketMode.ELEVATED);
+        vault.setMarketMode(IStakedUSDat.MarketMode.Elevated);
     }
 
     function _assertGrossAccounting(uint256 grossAssets, uint256 shares) private view {

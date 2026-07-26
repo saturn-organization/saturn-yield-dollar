@@ -443,15 +443,15 @@ contract WithdrawalQueueRealSettlementIntegrationTest is Test {
     }
 
     function test_processRequests_RegularModeRemainsAvailable() public {
-        _assertModeSettles(IStakedUSDat.MarketMode.REGULAR);
+        _assertModeSettles(IStakedUSDat.MarketMode.Regular);
     }
 
     function test_processRequests_ElevatedModeRemainsAvailable() public {
-        _assertModeSettles(IStakedUSDat.MarketMode.ELEVATED);
+        _assertModeSettles(IStakedUSDat.MarketMode.Elevated);
     }
 
     function test_processRequests_RestrictedModeRevertsWithoutMutation() public {
-        vault.setMarketMode(IStakedUSDat.MarketMode.RESTRICTED);
+        vault.setMarketMode(IStakedUSDat.MarketMode.Restricted);
 
         vm.prank(alice);
         uint256 tokenId = vault.requestRedeem(20e18, 0);

@@ -117,7 +117,8 @@ contract WithdrawalQueueERC721 is
     /// upgradeToAndCall.
     /// @dev Grants the §2.8 roles (new role ids, nothing carries over from v1).
     /// Existing requests are deliberately untouched: the v1 minUsdatReceived slot
-    /// is reinterpreted in place as minSharePrice without numeric conversion.
+    /// is reinterpreted in place as the net-of-fee minSharePrice without numeric
+    /// conversion.
     /// Every v1 InProgress request must be returned to Requested before the upgrade.
     /// @param operator The OPERATOR_ROLE holder (processRequests).
     /// @param enforcer The ENFORCER_ROLE holder (seizeRequest, seize).

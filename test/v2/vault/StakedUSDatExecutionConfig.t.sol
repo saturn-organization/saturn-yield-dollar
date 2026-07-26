@@ -129,14 +129,14 @@ contract StakedUSDatExecutionConfigTest is Test {
     }
 
     function test_executionConfig_RemainsCallableWhilePausedAndRestricted() public {
-        vault.setMarketMode(IStakedUSDat.MarketMode.RESTRICTED);
+        vault.setMarketMode(IStakedUSDat.MarketMode.Restricted);
         vault.pause();
 
         vault.setExecutionVehicle(executionVehicle);
         vault.setExecutionTolerance(500);
 
         assertTrue(vault.paused());
-        assertEq(uint256(vault.marketMode()), uint256(IStakedUSDat.MarketMode.RESTRICTED));
+        assertEq(uint256(vault.marketMode()), uint256(IStakedUSDat.MarketMode.Restricted));
         assertEq(vault.executionVehicle(), executionVehicle);
         assertEq(vault.executionToleranceBps(), 500);
     }

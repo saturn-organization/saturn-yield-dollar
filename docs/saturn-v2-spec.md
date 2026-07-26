@@ -52,7 +52,7 @@ sUSDat mutations; queue-local pause separately gates queue-only actions (§2.6).
 | `claim` + `claimBatch`/`claimAll`/`claimBatchFor`/`claimAllFor` | single `claim(tokenId)` (§2.6) |
 | `_validateTotals`, `_isWithinTolerance`, `_validateAmount`, oracle/asset-sale reads | dropped — the queue never knows which backing asset funds the buffer; settlement pricing and fees live in the vault |
 | `lockRequests` / `unlockRequests`, `InProgress` | dropped — settlement is atomic at the validated mark |
-| `minUsdatReceived` (absolute payout bound) | `minSharePrice` (6-decimal minimum gross USDat per `1e18` shares, §2.6); the same storage slot is reinterpreted without conversion and legacy owners receive a grace period to update or cancel (§3.1) |
+| `minUsdatReceived` (absolute payout bound) | `minSharePrice` (6-decimal minimum net USDat payout per `1e18` shares after the active redemption fee, §2.6); the same storage slot is reinterpreted without conversion and legacy owners receive a grace period to update or cancel (§3.1) |
 | dust flow (`approve` + `collectDust`) | dropped |
 | `SlippageExceeded` revert on unmet limit | below-limit requests are skipped, not reverted |
 | no cancellation | NFT owner may cancel an open request and recover all escrowed shares while the queue is unpaused; a vault pause makes the sUSDat return transfer revert |
@@ -597,7 +597,7 @@ struct Request {
     uint256 shares;          // full escrowed amount; v2 does not partially fill
     uint256 usdatOwed;       // zero until the complete request is processed
     uint256 timestamp;
-    uint256 minSharePrice;   // 6-decimal minimum gross USDat per 1e18 shares (reuses v1 slot)
+    uint256 minSharePrice;   // 6-decimal minimum net USDat per 1e18 shares (reuses v1 slot)
     RequestStatus status;    // InProgress retained and Cancelled appended for storage compatibility
 }
 ```
@@ -608,11 +608,11 @@ Processed USDat stays in the queue until claimed. There are no partial fills: th
 `shares` value is never decremented; the corresponding escrowed shares are either burned
 on complete settlement or returned on cancellation.
 
-**Limit semantics.** `minSharePrice` is the minimum **gross** execution price in 6-decimal
-USDat per `1e18` shares, checked before the redemption fee. A below-limit request is skipped
-and remains open until NAV recovers, its owner changes the limit with
-`updateMinSharePrice`, or cancels. The owner may raise or lower it while the request is open
-and the queue active.
+**Limit semantics.** `minSharePrice` is the minimum **net** USDat payout in 6-decimal USDat
+per `1e18` shares, checked after deducting the active redemption fee selected at processing.
+A below-limit request is skipped and remains open until its net payout price recovers, its
+owner changes the limit with `updateMinSharePrice`, or cancels. The owner may raise or lower
+it while the request is open and the queue active.
 
 **Creation gate.** `addRequest` uses an `onlySUSDAT` modifier wrapping an immutable-address
 check, not an AccessControl role:
@@ -660,11 +660,11 @@ function redeemQueuedShares(uint256 shares, uint256 minSharePrice)
     external onlyWithdrawalQueue whenNotPaused whenNotRestricted
     returns (RedemptionResult result, uint256 usdat);
 // gross = convertToAssets(shares), floor-rounded and priced before the burn
-// maximumSharePrice = Math.mulDiv(gross, 1e18, shares)
-// minSharePrice > maximumSharePrice → BelowLimit
-// (equivalent to gross < ceil(shares * minSharePrice / 1e18), without limit overflow)
 // fee = Math.mulDiv(gross, redemptionFeeBps(), 10_000, Math.Rounding.Ceil)
 // net = gross - fee
+// netSharePrice = Math.mulDiv(net, 1e18, shares, Math.Rounding.Floor)
+// netSharePrice < minSharePrice → BelowLimit
+// (equivalent to net < ceil(shares * minSharePrice / 1e18), without limit overflow)
 // usdatBalance < net → InsufficientLiquidity
 // otherwise burn every share, decrement usdatBalance by net,
 // transfer net USDat to the queue, and return Settled
@@ -676,10 +676,11 @@ may settle. The operator selects and orders IDs; there is no FIFO guarantee.
 
 Each successful settlement reprices the next request at the then-current NAV. When the
 redemption fee is nonzero, only the net payout leaves the vault, so the retained fee accrues
-to the remaining shares: a later request may receive a slightly higher gross share price or
-cross its `minSharePrice` after an earlier request settles. This fee-accreted sequential
-pricing and its ordering consequences are explicit and accepted; processing does not
-snapshot one batch-wide price.
+to the remaining shares. A later request receives a slightly higher gross share price and,
+under an unchanged fee tier, a slightly higher net share price that may cross its
+`minSharePrice`. The active fee can independently change settlement eligibility. This
+fee-accreted sequential pricing and its ordering consequences are explicit and accepted;
+processing does not snapshot one batch-wide price.
 
 Even for a buggy queue, `redeemQueuedShares` burns only queue-held shares at current vault
 NAV and fee, and settles only a complete, buffer-covered request while processing is
@@ -739,8 +740,8 @@ single-token `ENFORCER_ROLE` operations (§2.8).
 
 Invariants:
 - A request is settled completely or not at all; v2 never partially burns its shares.
-- Every processed request is priced at current gross NAV, satisfies its `minSharePrice`, and
-  pays that gross value net of the active redemption fee.
+- Every processed request is priced at current gross NAV, pays that gross value net of the
+  active redemption fee, and satisfies its `minSharePrice` on that net payout per share.
 - Queue sUSDat custody is at least the sum of `shares` across open requests; queue USDat
   custody is at least the sum of `usdatOwed` across processed requests.
 - Unsolicited sUSDat or USDat transfers are untracked excess: they do not change request
@@ -754,12 +755,12 @@ Invariants:
 Market mode is separate from hard protocol pause:
 
 ```solidity
-enum MarketMode { REGULAR, ELEVATED, RESTRICTED }
+enum MarketMode { Regular, Elevated, Restricted }
 
 MarketMode public marketMode;
 
 modifier whenNotRestricted() {
-    require(marketMode != MarketMode.RESTRICTED, MarketRestricted());
+    require(marketMode != MarketMode.Restricted, MarketRestricted());
     _;
 }
 
@@ -816,14 +817,15 @@ For storage compatibility, the v1 `depositFeeBps` slot stores
 | Fee | Destination | Configuration and purpose |
 |---|---|---|
 | elevated deposit fee (`elevatedDepositFeeBps`) | stays in the vault | anti-dilution against higher-risk entry windows; `setElevatedDepositFee` (`PARAMETER_MANAGER_ROLE`), capped at 500 bps |
-| redemption fee (`baseRedemptionFeeBps` / `elevatedRedemptionFeeBps`) | stays in the vault | exits process at cost on average; `setRedemptionFees` (`PARAMETER_MANAGER_ROLE`), `base ≤ elevated ≤ 500`; the gross limit check remains pre-fee |
+| redemption fee (`baseRedemptionFeeBps` / `elevatedRedemptionFeeBps`) | stays in the vault | exits process at cost on average; `setRedemptionFees` (`PARAMETER_MANAGER_ROLE`), `base ≤ elevated ≤ 500`; the net payout limit is checked after the active fee |
 
 The intended launch range for the redemption-fee tiers is approximately 5–10 bps; the exact
 base and elevated values remain approved launch parameters.
 
 `previewDeposit`/`previewMint` include `depositFeeBps()`. `previewRedeem` remains gross
-(`convertToAssets`); `redeem()` is disabled and frontends use §2.6 for net queue proceeds.
-Appendix F gives the permission matrix.
+(`convertToAssets`); `redeem()` is disabled, and frontends apply the active redemption fee
+when presenting the net queue proceeds and `minSharePrice` described in §2.6. The fee is not
+snapshotted at request creation. Appendix F gives the permission matrix.
 
 ### 2.8 Roles
 
@@ -833,7 +835,7 @@ Capability-named (`keccak256("<NAME>_ROLE")`):
 |---|---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | Grant/revoke roles; authorize UUPS upgrades; execute `migrate` | StakedUSDat and queue, with separate grants | No other role | Yes |
 | `PARAMETER_MANAGER_ROLE` | Set fees, vesting/reward limits, oracle/trade/migration parameters, `recoveryAddress`, the execution vehicle and tolerance, and the active STRCon oracle wrapper | Vault role registry, including checks by bound modules and wrapper | No other role | Yes |
-| `MARKET_MODE_MANAGER_ROLE` | Select `REGULAR`, `ELEVATED`, or `RESTRICTED`; cannot set fee amounts or clear hard pause | StakedUSDat | `OPERATOR_ROLE` only | No |
+| `MARKET_MODE_MANAGER_ROLE` | Select `Regular`, `Elevated`, or `Restricted`; cannot set fee amounts or clear hard pause | StakedUSDat | `OPERATOR_ROLE` only | No |
 | `OPERATOR_ROLE` | Execute `buy`/`sell`, transfer surplus and STRCMirrorModule rewards, and select/order queue requests for processing | StakedUSDat and queue, with separate grants | `MARKET_MODE_MANAGER_ROLE` only | No |
 | `BLACKLISTER_ROLE` | Add/remove the canonical sUSDat blacklist; cannot move or destroy positions | StakedUSDat | No other role | No |
 | `ENFORCER_ROLE` | Seize blacklisted positions and rescue untracked vault excess; cannot blacklist | StakedUSDat and queue, with separate grants | No other role | Yes |
@@ -902,7 +904,7 @@ function initializeV2(V2Config calldata config, V2Roles calldata roles)
 `STRConModule.balance()`. It installs the remaining configuration through the same internal
 setters used after initialization, which enforce address, recovery, fee, and tolerance
 requirements. It permanently binds the two module slots, grants each role in `V2Roles`, sets
-`surplusVestingPeriod = 3 days`, and sets `marketMode = MarketMode.REGULAR`. It preserves
+`surplusVestingPeriod = 3 days`, and sets `marketMode = MarketMode.Regular`. It preserves
 the existing `DEFAULT_ADMIN_ROLE` holders and hard-pause state.
 
 The caller does not supply the legacy mirror state. The reinitializer reads
@@ -976,13 +978,14 @@ the mirror and recognizes STRCon, subject to `migrationToleranceBps`.
 2. Rehearse the exact batch against current mainnet state. A storage-layout error, an
    accounting mismatch, or any v1 queue request still marked `InProgress` blocks
    scheduling; return such requests to `Requested` first.
-3. Announce that each legacy `minUsdatReceived` value will become a 6-decimal
-   `minSharePrice` per `1e18` shares. Leave requests unchanged and allow owners sufficient
-   time after the upgrade to update or cancel before queue processing resumes.
+3. Announce that each legacy `minUsdatReceived` value will become a 6-decimal minimum net
+   `minSharePrice` per `1e18` shares after the active redemption fee. Leave requests
+   unchanged and allow owners sufficient time after the upgrade to update or cancel before
+   queue processing resumes.
 4. Schedule the two `upgradeToAndCall` operations through the five-day timelock. The sUSDat
    `initializeV2(config, roles)` call defined in §2.9 installs both modules, the approved
    nonzero `recoveryAddress`, parameters, and roles, initializes
-   `MarketMode.REGULAR`, and maps the legacy vault slots into the renamed `STRCMirrorModule`
+   `MarketMode.Regular`, and maps the legacy vault slots into the renamed `STRCMirrorModule`
    state:
 
    ```solidity
@@ -1056,7 +1059,7 @@ oracle read; its reward and parameter mutations reject.
 |---|---|---|
 | Step-1 state migration | Incorrect seeding changes NAV, share price, or reward vesting. | Exact five-field seed mapping, fork rehearsal, atomic upgrade, and pre/post accounting comparison. Any mismatch blocks Step 2. |
 | Partner readiness | Although the sUSDat and queue proxy addresses remain, functions move or disappear and bots, indexers, and frontends need the new ABIs and module addresses. | Publish final ABIs, addresses, behavior changes, and upgrade timing; confirm critical partners are ready before Step 1. |
-| Legacy queue limits | Reinterpreting `minUsdatReceived` as `minSharePrice` may park or unexpectedly execute an old request. | Announce the change and leave sufficient time to update or cancel before processing resumes; return every `InProgress` request to `Requested` before upgrade. |
+| Legacy queue limits | Reinterpreting `minUsdatReceived` as a net-of-fee per-share `minSharePrice` may park or unexpectedly execute an old request. | Announce the change and leave sufficient time to update or cancel before processing resumes; return every `InProgress` request to `Requested` before upgrade. |
 | Transition liquidity | Mirrored STRC cannot be sold after Step 1, so queue funding depends on available USDat until STRCon is recognized. | Forecast the transition buffer and communicate that insufficient liquidity delays processing. |
 | Step-2 execution | Unvested rewards, incomplete STRCon delivery, invalid pricing, or excessive oracle basis prevent conversion. | Timelock, zero-unvested and zero-STRCon preconditions, exact delivery, NAV tolerance, and atomic reversion. |
 | Post-upgrade oracle liveness | Fail-closed pricing can make value-sensitive operations and partner integrations unavailable. | Partners test revert handling; monitoring and the Appendix G recovery runbook remain active. |
@@ -1169,9 +1172,10 @@ pro-rata math or settlement-generated dust, and can skip unmet limits. Each requ
 current NAV. With a zero redemption fee, sequential fills share one price apart from
 rounding because each removes assets and shares proportionally. With a nonzero fee, only
 the net payout leaves, so the retained fee accrues to remaining shares and later requests
-receive a slightly higher gross price. This order-dependence—including its interaction with
-operator-selected ordering and `minSharePrice`—is accepted. The intended 5–10 bps launch
-range keeps the effect small but does not eliminate it.
+receive a slightly higher gross price and, under an unchanged fee tier, a slightly higher
+net price. This order-dependence—including its interaction with operator-selected ordering
+and `minSharePrice`—is accepted. The intended 5–10 bps launch range keeps the effect small
+but does not eliminate it.
 
 **Queue-side entry with a narrow vault primitive.** The alternative—vault-side processing
 that loops queue state—must enforce queue invariants across contracts or delegate back.
@@ -1184,9 +1188,10 @@ window (lock → sell STRC over hours → settle at attested price). Atomic sett
 validated mark has no such window.
 
 **`minSharePrice` instead of `minUsdatReceived`.** A per-share limit means the same thing
-at every order size and compares directly with live share price. Gross execution is checked
-before charging the active fee. Legacy values remain unchanged; a communicated grace period
-lets owners overwrite or cancel without permanent token-ID/migration branches (§3.1).
+at every order size and directly protects the payout per share. The net payout price is
+checked after charging the active fee. Legacy values remain unchanged; a communicated grace
+period lets owners overwrite or cancel without permanent token-ID/migration branches
+(§3.1).
 
 **Whole requests instead of partial fills.** v2 closes a request completely or skips it.
 This keeps lifecycle linear and `shares` constant, gives one claim per processing event, and

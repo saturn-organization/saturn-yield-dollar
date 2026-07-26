@@ -198,7 +198,7 @@ contract StakedUSDatFixedModuleAccountingTest is Test {
         assertEq(vault.maxDeposit(address(this)), type(uint256).max);
         assertEq(vault.maxMint(address(this)), type(uint256).max);
 
-        vault.setMarketMode(IStakedUSDat.MarketMode.ELEVATED);
+        vault.setMarketMode(IStakedUSDat.MarketMode.Elevated);
 
         assertEq(vault.maxDeposit(address(this)), type(uint256).max);
         assertEq(vault.maxMint(address(this)), type(uint256).max);
@@ -232,7 +232,7 @@ contract StakedUSDatFixedModuleAccountingTest is Test {
     function test_maxDepositAndMaxMint_ShortCircuitWhileRestricted() public {
         mirror.configure(1, MIRROR_VALUE, false);
         strcon.configure(1, STRCON_VALUE, false);
-        vault.setMarketMode(IStakedUSDat.MarketMode.RESTRICTED);
+        vault.setMarketMode(IStakedUSDat.MarketMode.Restricted);
 
         vm.record();
         assertEq(vault.maxDeposit(address(this)), 0);
