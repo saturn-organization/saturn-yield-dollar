@@ -28,7 +28,7 @@ contract SellTokenMock is ERC20 {
     error ConfiguredTransferFailure();
     error ConservativeOrderViolated();
 
-    uint8 private immutable _tokenDecimals;
+    uint8 private immutable _TOKEN_DECIMALS;
     TransferBehavior private _behavior;
     address private _affectedSender;
     uint256 private _shortfall;
@@ -43,11 +43,11 @@ contract SellTokenMock is ERC20 {
     uint256 public moduleBalanceObservedAtTransfer;
 
     constructor(string memory name_, string memory symbol_, uint8 decimals_) ERC20(name_, symbol_) {
-        _tokenDecimals = decimals_;
+        _TOKEN_DECIMALS = decimals_;
     }
 
     function decimals() public view override returns (uint8) {
-        return _tokenDecimals;
+        return _TOKEN_DECIMALS;
     }
 
     function mint(address to, uint256 amount) external {

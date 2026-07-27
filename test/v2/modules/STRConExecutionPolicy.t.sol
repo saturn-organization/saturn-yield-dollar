@@ -111,7 +111,7 @@ contract STRConExecutionPolicyTest is Test {
     bytes32 private constant PARAMETER_MANAGER_ROLE = keccak256("PARAMETER_MANAGER_ROLE");
 
     uint256 private constant ASSET_AMOUNT = 100e18;
-    uint256 private constant BUY_BOUNDARY = 10_500e6;
+    uint128 private constant BUY_BOUNDARY = 10_500e6;
     uint256 private constant BUY_FAVORABLE = 9_900e6;
     uint256 private constant SELL_BOUNDARY = 9_500e6;
     uint256 private constant SELL_FAVORABLE = 10_100e6;
@@ -360,7 +360,7 @@ contract STRConExecutionPolicyTest is Test {
     }
 
     function test_executionCapacity_RefillsLinearlyAtExactBoundary() public {
-        policy.setExecutionCapacity(uint128(BUY_BOUNDARY), 8_640e6);
+        policy.setExecutionCapacity(BUY_BOUNDARY, 8_640e6);
         vault.validateBuy(policy, BUY_BOUNDARY, ASSET_AMOUNT, vehicle);
         assertEq(_capacity(policy).available, 0);
 
@@ -378,7 +378,7 @@ contract STRConExecutionPolicyTest is Test {
     }
 
     function test_failedPriceAndOracleValidationRollBackCapacity() public {
-        policy.setExecutionCapacity(uint128(BUY_BOUNDARY), 0);
+        policy.setExecutionCapacity(BUY_BOUNDARY, 0);
         Capacity memory beforeCapacity = _capacity(policy);
 
         vm.expectRevert(ISTRConExecutionPolicy.ExecutionPriceMismatch.selector);
@@ -416,7 +416,7 @@ contract STRConExecutionPolicyTest is Test {
 
     function test_vehicleAndToleranceUpdatesDoNotResetCapacityAndZeroMaximumDisables() public {
         address replacement = makeAddr("replacementVehicle");
-        policy.setExecutionCapacity(uint128(BUY_BOUNDARY), 0);
+        policy.setExecutionCapacity(BUY_BOUNDARY, 0);
         vault.validateBuy(policy, BUY_BOUNDARY, ASSET_AMOUNT, vehicle);
         Capacity memory empty = _capacity(policy);
 

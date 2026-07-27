@@ -26,17 +26,17 @@ contract BuyTokenMock is ERC20 {
 
     error ConfiguredTransferFailure();
 
-    uint8 private immutable _tokenDecimals;
+    uint8 private immutable _TOKEN_DECIMALS;
     TransferBehavior private _behavior;
     address private _affectedSender;
     uint256 private _shortfall;
 
     constructor(string memory name_, string memory symbol_, uint8 decimals_) ERC20(name_, symbol_) {
-        _tokenDecimals = decimals_;
+        _TOKEN_DECIMALS = decimals_;
     }
 
     function decimals() public view override returns (uint8) {
-        return _tokenDecimals;
+        return _TOKEN_DECIMALS;
     }
 
     function mint(address to, uint256 amount) external {
@@ -238,7 +238,7 @@ contract StakedUSDatBuyTest is Test {
     uint256 private constant CASH = 100_000e6;
     uint256 private constant VEHICLE_INVENTORY = 10_000e18;
     uint256 private constant AMOUNT_OUT = 100e18;
-    uint256 private constant BOUNDARY_AMOUNT_IN = 10_500_000_000;
+    uint128 private constant BOUNDARY_AMOUNT_IN = 10_500_000_000;
     uint256 private constant FAVORABLE_AMOUNT_IN = 9_900_000_000;
 
     BuyTokenMock private usdat;
@@ -335,7 +335,7 @@ contract StakedUSDatBuyTest is Test {
     }
 
     function test_executionCapacity_RefillsLinearlyAtExactBoundary() public {
-        policy.setExecutionCapacity(uint128(BOUNDARY_AMOUNT_IN), 8_640e6);
+        policy.setExecutionCapacity(BOUNDARY_AMOUNT_IN, 8_640e6);
         vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
 
         (, uint128 availableAtEmpty,,) = policy.executionCapacity();
@@ -358,7 +358,7 @@ contract StakedUSDatBuyTest is Test {
     }
 
     function test_buy_InsufficientExecutionCapacityRollsBackEveryLeg() public {
-        uint128 availableBefore = uint128(BOUNDARY_AMOUNT_IN - 1);
+        uint128 availableBefore = BOUNDARY_AMOUNT_IN - 1;
         policy.setExecutionCapacity(availableBefore, 0);
         Snapshot memory beforeState = _snapshot(vehicle);
 
@@ -371,7 +371,7 @@ contract StakedUSDatBuyTest is Test {
     }
 
     function test_buy_LaterFailureRollsBackConsumedExecutionCapacity() public {
-        policy.setExecutionCapacity(uint128(BOUNDARY_AMOUNT_IN), 0);
+        policy.setExecutionCapacity(BOUNDARY_AMOUNT_IN, 0);
         usdat.configureTransferBehavior(BuyTokenMock.TransferBehavior.REVERT_TRANSFER, address(vault), 0);
         Snapshot memory beforeState = _snapshot(vehicle);
 
@@ -386,7 +386,7 @@ contract StakedUSDatBuyTest is Test {
     function test_buy_RejectsExecutionVehicleChangedAfterApproval() public {
         address approvedVehicle = vehicle;
         address replacementVehicle = makeAddr("replacementVehicle");
-        policy.setExecutionCapacity(uint128(BOUNDARY_AMOUNT_IN), 0);
+        policy.setExecutionCapacity(BOUNDARY_AMOUNT_IN, 0);
         policy.setExecutionVehicle(replacementVehicle);
         Snapshot memory beforeState = _snapshot(replacementVehicle);
 
@@ -435,7 +435,7 @@ contract StakedUSDatBuyTest is Test {
         vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
         _assertUnchanged(beforeState, vehicle);
 
-        policy.setExecutionCapacity(uint128(BOUNDARY_AMOUNT_IN), 0);
+        policy.setExecutionCapacity(BOUNDARY_AMOUNT_IN, 0);
         Snapshot memory reenabledState = _snapshot(vehicle);
         vm.expectRevert(ISTRConExecutionPolicy.ExecutionCapacityExceeded.selector);
         vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);

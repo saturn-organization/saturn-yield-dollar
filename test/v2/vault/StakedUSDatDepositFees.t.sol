@@ -52,7 +52,7 @@ contract DepositFeeUSDatMock is ERC20 {
 contract StakedUSDatDepositFeesTest is Test {
     uint256 private constant GROSS_ASSETS = 100e6;
     uint256 private constant NET_SHARES = 95e18;
-    uint256 private constant ELEVATED_DEPOSIT_FEE_BPS = 500;
+    uint16 private constant ELEVATED_DEPOSIT_FEE_BPS = 500;
 
     DepositFeeUSDatMock private usdat;
     StakedUSDat private vault;
@@ -72,7 +72,7 @@ contract StakedUSDatDepositFeesTest is Test {
         strconModule = new ZeroTradableModuleMock(address(vault));
 
         V2InitializationHelper.initialize(
-            vault, address(strcMirrorModule), address(strconModule), 5, 10, uint16(ELEVATED_DEPOSIT_FEE_BPS)
+            vault, address(strcMirrorModule), address(strconModule), 5, 10, ELEVATED_DEPOSIT_FEE_BPS
         );
         vault.grantRole(vault.PARAMETER_MANAGER_ROLE(), address(this));
         vault.grantRole(vault.MARKET_MODE_MANAGER_ROLE(), address(this));
