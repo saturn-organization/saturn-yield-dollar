@@ -309,7 +309,8 @@ contract StakedUSDatMigrationTest is Test {
             baseRedemptionFeeBps: 5,
             elevatedRedemptionFeeBps: 10,
             elevatedDepositFeeBps: 25,
-            executionToleranceBps: 50
+            executionToleranceBps: 50,
+            initialRegularModeValidUntil: uint64(block.timestamp + 8 hours)
         });
         IStakedUSDat.V2Roles memory roles = IStakedUSDat.V2Roles({
             parameterManager: address(this),

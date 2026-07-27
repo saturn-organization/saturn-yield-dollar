@@ -565,7 +565,11 @@ contract WithdrawalQueueRealSettlementIntegrationTest is Test {
     }
 
     function _assertModeSettles(IStakedUSDat.MarketMode mode) private {
-        vault.setMarketMode(mode);
+        if (mode == IStakedUSDat.MarketMode.Regular) {
+            vault.authorizeRegularMode(uint64(block.timestamp + 8 hours));
+        } else {
+            vault.setMarketMode(mode);
+        }
 
         vm.prank(alice);
         uint256 tokenId = vault.requestRedeem(20e18, 0);

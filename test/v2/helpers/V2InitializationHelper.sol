@@ -41,6 +41,7 @@ abstract contract BoundSTRConModuleMock {
 library V2InitializationHelper {
     address internal constant RECOVERY_ADDRESS = address(0x1001);
     address internal constant EXECUTION_VEHICLE = address(0x1002);
+    uint64 internal constant MAX_REGULAR_MODE_VALIDITY = 8 hours;
 
     function initialize(
         StakedUSDat vault,
@@ -49,6 +50,26 @@ library V2InitializationHelper {
         uint16 baseRedemptionFeeBps,
         uint16 elevatedRedemptionFeeBps,
         uint16 elevatedDepositFeeBps
+    ) internal {
+        initialize(
+            vault,
+            mirror,
+            strcon,
+            baseRedemptionFeeBps,
+            elevatedRedemptionFeeBps,
+            elevatedDepositFeeBps,
+            uint64(block.timestamp + MAX_REGULAR_MODE_VALIDITY)
+        );
+    }
+
+    function initialize(
+        StakedUSDat vault,
+        address mirror,
+        address strcon,
+        uint16 baseRedemptionFeeBps,
+        uint16 elevatedRedemptionFeeBps,
+        uint16 elevatedDepositFeeBps,
+        uint64 regularModeValidUntil
     ) internal {
         vault.initializeV2(
             IStakedUSDat.V2Config({
@@ -59,7 +80,8 @@ library V2InitializationHelper {
                 baseRedemptionFeeBps: baseRedemptionFeeBps,
                 elevatedRedemptionFeeBps: elevatedRedemptionFeeBps,
                 elevatedDepositFeeBps: elevatedDepositFeeBps,
-                executionToleranceBps: 0
+                executionToleranceBps: 0,
+                initialRegularModeValidUntil: regularModeValidUntil
             }),
             IStakedUSDat.V2Roles({
                 parameterManager: address(this),

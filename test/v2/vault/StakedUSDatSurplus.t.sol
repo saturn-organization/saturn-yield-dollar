@@ -326,6 +326,7 @@ contract StakedUSDatSurplusTest is Test {
         uint256 shares = vault.balanceOf(address(this));
         assertTrue(vault.transfer(address(queue), shares));
         vm.warp(block.timestamp + DEFAULT_VESTING_PERIOD);
+        vault.authorizeRegularMode(uint64(block.timestamp + 8 hours));
 
         uint256 gross = vault.convertToAssets(shares);
         uint256 expectedPayout = gross - Math.mulDiv(gross, 5, 10_000, Math.Rounding.Ceil);

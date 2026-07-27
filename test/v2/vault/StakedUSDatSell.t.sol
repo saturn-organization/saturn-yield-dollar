@@ -533,7 +533,7 @@ contract StakedUSDatSellTest is Test {
         vault.setMarketMode(IStakedUSDat.MarketMode.Restricted);
         vm.expectRevert(IStakedUSDat.MarketRestricted.selector);
         _sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT, block.timestamp);
-        vault.setMarketMode(IStakedUSDat.MarketMode.Regular);
+        vault.authorizeRegularMode(uint64(block.timestamp + 8 hours));
         _assertUnchanged(beforeState, vehicle);
 
         vm.expectRevert(IStakedUSDat.DeadlineExpired.selector);

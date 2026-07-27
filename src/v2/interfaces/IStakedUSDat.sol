@@ -45,6 +45,7 @@ interface IStakedUSDat is IERC4626 {
         uint16 elevatedRedemptionFeeBps;
         uint16 elevatedDepositFeeBps;
         uint16 executionToleranceBps;
+        uint64 initialRegularModeValidUntil;
     }
 
     struct V2Roles {
@@ -79,6 +80,11 @@ interface IStakedUSDat is IERC4626 {
      * @dev Thrown when an operation is disabled in Restricted mode.
      */
     error MarketRestricted();
+
+    /**
+     * @dev Thrown when Regular mode is selected without a valid bounded authorization.
+     */
+    error InvalidRegularModeAuthorization();
 
     /**
      * @dev Thrown when attempting to un-blacklist an address that is not blacklisted.
@@ -264,6 +270,12 @@ interface IStakedUSDat is IERC4626 {
      * @param newMode The new market mode.
      */
     event MarketModeChanged(MarketMode oldMode, MarketMode newMode);
+
+    /**
+     * @dev Emitted when Regular mode is authorized through a new deadline.
+     * @param validUntil The exclusive timestamp through which Regular mode is authorized.
+     */
+    event RegularModeAuthorized(uint64 validUntil);
 
     /**
      * @dev Emitted when the redemption fee tiers are updated.
@@ -536,10 +548,15 @@ interface IStakedUSDat is IERC4626 {
     function recoveryAddress() external view returns (address);
 
     /**
-     * @notice Returns the current vault operating mode.
-     * @return The current market mode.
+     * @notice Returns the effective vault operating mode.
+     * @return Regular before its authorization expires, otherwise Elevated or Restricted.
      */
     function marketMode() external view returns (MarketMode);
+
+    /**
+     * @notice Returns the exclusive timestamp through which Regular mode is authorized.
+     */
+    function regularModeValidUntil() external view returns (uint64);
 
     /**
      * @notice Returns the base redemption fee in basis points.
@@ -658,12 +675,20 @@ interface IStakedUSDat is IERC4626 {
     function setMigrationTolerance(uint16 newBps) external;
 
     /**
-     * @notice Sets the vault operating mode.
+     * @notice Sets the vault to Elevated or Restricted mode.
      * @dev Only callable by addresses with the MARKET_MODE_MANAGER_ROLE. This remains
-     * callable while the vault is paused.
+     * callable while the vault is paused. Regular requires authorizeRegularMode.
      * @param newMode The explicit target market mode.
      */
     function setMarketMode(MarketMode newMode) external;
+
+    /**
+     * @notice Authorizes Regular mode through a bounded future deadline.
+     * @dev Only callable by addresses with the MARKET_MODE_MANAGER_ROLE. This remains
+     * callable while the vault is paused.
+     * @param validUntil The exclusive timestamp through which Regular mode is authorized.
+     */
+    function authorizeRegularMode(uint64 validUntil) external;
 
     /**
      * @notice Updates both redemption fee tiers.

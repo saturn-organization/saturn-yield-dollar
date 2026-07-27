@@ -35,7 +35,7 @@ the sole token-backed tradable module.
 | oracle failure reverts `totalAssets()` and all views | same fail-closed reverts, kept deliberately; `maxDeposit`/`maxMint` catch and report 0 for ERC-4626 (§2.2) |
 | — | `transferInSurplus` cash surplus inlet (§2.1) |
 | one configured deposit fee | market-mode fee: zero in Regular, elevated in Elevated, and deposits disabled in Restricted (§2.4, §2.7) |
-| — | `MarketMode` selects Regular, Elevated, or Restricted operation; hard pause remains separate (§2.7) |
+| — | `MarketMode` selects Regular, Elevated, or Restricted operation; Regular authorization expires fail-safe to Elevated, and hard pause remains separate (§2.7) |
 | — | `seize` (§2.8) |
 | `PROCESSOR_ROLE`, `COMPLIANCE_ROLE` | capability-named role taxonomy (§2.8) |
 
@@ -757,22 +757,49 @@ Market mode is separate from hard protocol pause:
 ```solidity
 enum MarketMode { Regular, Elevated, Restricted }
 
-MarketMode public marketMode;
+uint64 public constant MAX_REGULAR_MODE_VALIDITY = 8 hours;
+uint64 public regularModeValidUntil;
+/// @custom:oz-renamed-from marketMode
+MarketMode private _configuredMarketMode;
+
+function marketMode() public view returns (MarketMode);
+
+event MarketModeChanged(MarketMode oldMode, MarketMode newMode);
+event RegularModeAuthorized(uint64 validUntil);
 
 modifier whenNotRestricted() {
-    require(marketMode != MarketMode.Restricted, MarketRestricted());
+    require(marketMode() != MarketMode.Restricted, MarketRestricted());
     _;
 }
 
 function setMarketMode(MarketMode newMode)
     external onlyRole(MARKET_MODE_MANAGER_ROLE);
+
+function authorizeRegularMode(uint64 validUntil)
+    external onlyRole(MARKET_MODE_MANAGER_ROLE);
 ```
 
-`setMarketMode` sets an explicit target and emits
-`MarketModeChanged(MarketMode oldMode, MarketMode newMode)`. It cannot price assets, move
-funds, change NAV, or clear a hard pause. It remains callable while hard paused so the
-time-appropriate mode can be installed before unpause. `MARKET_MODE_MANAGER_ROLE` initially
-shares the `OPERATOR_ROLE` address; either may later be reassigned independently.
+The vault stores a configured mode separately from the effective mode returned by
+`marketMode()`. Configured Elevated and Restricted are always effective. Configured Regular
+is effective only while `block.timestamp < regularModeValidUntil`; at
+`block.timestamp >= regularModeValidUntil`, `marketMode()` returns Elevated. Expiry is a
+view-time rule: it does not mutate storage and emits no event. Every internal mode check,
+fee getter, preview, `maxDeposit`, and `maxMint` uses the effective `marketMode()`.
+
+`setMarketMode` accepts only Elevated or Restricted. Passing Regular reverts with
+`InvalidRegularModeAuthorization()`. It emits
+`MarketModeChanged(MarketMode oldEffectiveMode, MarketMode newMode)`.
+`authorizeRegularMode(validUntil)` is the only route to configured Regular. It requires
+`block.timestamp < validUntil <= block.timestamp + MAX_REGULAR_MODE_VALIDITY`; an invalid,
+expired, or too-distant deadline reverts with `InvalidRegularModeAuthorization()`. Every
+successful authorization or renewal sets `regularModeValidUntil`, configures Regular,
+emits `MarketModeChanged(oldEffectiveMode, MarketMode.Regular)`, and emits
+`RegularModeAuthorized(uint64 validUntil)`.
+
+Both functions remain callable while hard paused so the time-appropriate mode can be
+installed before unpause. Neither can price assets, move funds, change NAV, or clear a hard
+pause. `MARKET_MODE_MANAGER_ROLE` initially shares the `OPERATOR_ROLE` address; either may
+later be reassigned independently.
 
 - **Regular:** deposits and mints have no deposit fee; queue processing uses the base
   redemption fee.
@@ -790,25 +817,40 @@ shares the `OPERATOR_ROLE` address; either may later be reassigned independently
   upgrade, unpause, and enforcement remain available.
 
 Mode transitions are an operational requirement; the vault has no market-hours calendar.
-At each U.S. regular-session close—normally 4:00 p.m. ET, or the scheduled early
-close—`MARKET_MODE_MANAGER_ROLE` sets Elevated. Elevated remains active through postmarket,
-overnight, premarket, weekends, and holidays. Regular resumes only after the Calculated
-feed publishes a valid update during the next regular-hours session and all wrapper checks
-pass.
+While the U.S. regular session is confirmed open, an authorized keeper may authorize
+Regular only through a future deadline no more than eight hours away. The deadline should
+not extend beyond the confirmed session. At each regular-session close—normally 4:00 p.m.
+ET, or the scheduled early close—`MARKET_MODE_MANAGER_ROLE` still sets Elevated. If that
+transaction is missed, Regular expires to effective Elevated at its deadline on the next
+view or interaction. Elevated remains active through postmarket, overnight, premarket,
+weekends, and holidays.
+
+Returning from effective Elevated or Restricted to Regular requires a fresh
+`authorizeRegularMode` transaction based on the keeper's confirmation that the regular
+session is open. The existing STRCon oracle and its freshness/divergence checks are pricing
+controls; they do not prove that the market is open. On-chain Regular authorization records
+the authorized keeper's market-open attestation, not independent oracle evidence.
+Monitoring indexes every `RegularModeAuthorized` event, alerts before
+`regularModeValidUntil`, and alerts when effective mode becomes Elevated without an
+explicit `MarketModeChanged` transaction. The production control manifest names the
+primary monitoring owner, fallback keeper, and risk approver.
 
 Restricted is reserved solely for a credible executable protocol arbitrage identified by
 monitoring. Raw API/Calculated divergence alone does not trigger it; an identified
 arbitrage triggers Restricted regardless of that divergence. Once the arbitrage is no
-longer executable, `MARKET_MODE_MANAGER_ROLE` restores the time-appropriate mode.
+longer executable, `MARKET_MODE_MANAGER_ROLE` restores Elevated with `setMarketMode` or
+authorizes Regular with fresh evidence, as time-appropriate.
 
 Restricted is not an oracle fallback or last-known mark. Oracle validation remains
 independent and reverts pricing in every mode when its checks fail. V2 imposes no
-cumulative deposit-loss bound beyond these oracle and mode controls.
+cumulative deposit-loss budget or mode-dependent deposit cap beyond these oracle and mode
+controls.
 
-`depositFeeBps()` returns zero in Regular and `elevatedDepositFeeBps` otherwise; Restricted
-execution stays disabled but previews remain conservative. `redemptionFeeBps()` returns
-`baseRedemptionFeeBps` in Regular and `elevatedRedemptionFeeBps` otherwise. Requests use the
-mode at processing; creation does not snapshot fees.
+`depositFeeBps()` returns zero when effective `marketMode()` is Regular and
+`elevatedDepositFeeBps` otherwise; Restricted execution stays disabled but previews remain
+conservative. `redemptionFeeBps()` returns `baseRedemptionFeeBps` in effective Regular and
+`elevatedRedemptionFeeBps` otherwise. Requests use the effective mode at processing;
+creation does not snapshot fees.
 
 For storage compatibility, the v1 `depositFeeBps` slot stores
 `elevatedDepositFeeBps`; its selector now returns the mode-derived fee. The v1
@@ -835,7 +877,7 @@ Capability-named (`keccak256("<NAME>_ROLE")`):
 |---|---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | Grant/revoke roles; authorize UUPS upgrades; execute `migrate` | StakedUSDat and queue, with separate grants | No other role | Yes |
 | `PARAMETER_MANAGER_ROLE` | Set fees, vesting/reward limits, oracle/trade/migration parameters, `recoveryAddress`, the execution vehicle and tolerance, and the active STRCon oracle wrapper | Vault role registry, including checks by bound modules and wrapper | No other role | Yes |
-| `MARKET_MODE_MANAGER_ROLE` | Select `Regular`, `Elevated`, or `Restricted`; cannot set fee amounts or clear hard pause | StakedUSDat | `OPERATOR_ROLE` only | No |
+| `MARKET_MODE_MANAGER_ROLE` | Set Elevated or Restricted and grant expiring Regular authorization for at most eight hours; cannot set fee amounts or clear hard pause | StakedUSDat | `OPERATOR_ROLE` only | No |
 | `OPERATOR_ROLE` | Execute `buy`/`sell`, transfer surplus and STRCMirrorModule rewards, and select/order queue requests for processing | StakedUSDat and queue, with separate grants | `MARKET_MODE_MANAGER_ROLE` only | No |
 | `BLACKLISTER_ROLE` | Add/remove the canonical sUSDat blacklist; cannot move or destroy positions | StakedUSDat | No other role | No |
 | `ENFORCER_ROLE` | Seize blacklisted positions and rescue untracked vault excess; cannot blacklist | StakedUSDat and queue, with separate grants | No other role | Yes |
@@ -882,6 +924,7 @@ struct V2Config {
     uint16 elevatedRedemptionFeeBps;
     uint16 elevatedDepositFeeBps;
     uint16 executionToleranceBps;
+    uint64 initialRegularModeValidUntil;
 }
 
 struct V2Roles {
@@ -904,8 +947,11 @@ function initializeV2(V2Config calldata config, V2Roles calldata roles)
 `STRConModule.balance()`. It installs the remaining configuration through the same internal
 setters used after initialization, which enforce address, recovery, fee, and tolerance
 requirements. It permanently binds the two module slots, grants each role in `V2Roles`, sets
-`surplusVestingPeriod = 3 days`, and sets `marketMode = MarketMode.Regular`. It preserves
-the existing `DEFAULT_ADMIN_ROLE` holders and hard-pause state.
+`surplusVestingPeriod = 3 days`, configures Regular, and sets
+`regularModeValidUntil = config.initialRegularModeValidUntil`. The initial deadline must be
+strictly in the future and no more than `MAX_REGULAR_MODE_VALIDITY` after initialization,
+so `marketMode()` begins as effective Regular. It preserves the existing
+`DEFAULT_ADMIN_ROLE` holders and hard-pause state.
 
 The caller does not supply the legacy mirror state. The reinitializer reads
 `strcBalance`, `vestingAmount`, `lastDistributionTimestamp`, `vestingPeriod`, and
@@ -984,9 +1030,9 @@ the mirror and recognizes STRCon, subject to `migrationToleranceBps`.
    queue processing resumes.
 4. Schedule the two `upgradeToAndCall` operations through the five-day timelock. The sUSDat
    `initializeV2(config, roles)` call defined in §2.9 installs both modules, the approved
-   nonzero `recoveryAddress`, parameters, and roles, initializes
-   `MarketMode.Regular`, and maps the legacy vault slots into the renamed `STRCMirrorModule`
-   state:
+   nonzero `recoveryAddress`, parameters, and roles, initializes effective Regular through
+   the approved future `initialRegularModeValidUntil`, and maps the legacy vault slots into
+   the renamed `STRCMirrorModule` state:
 
    ```solidity
    strcMirrorModule.seed({
@@ -1004,9 +1050,9 @@ the mirror and recognizes STRCon, subject to `migrationToleranceBps`.
 5. After the delay, execute both upgrades atomically; failure of either reinitializer
    reverts the batch. From this point, the vault cannot buy or sell mirrored STRC, and
    reward and vesting calls target `STRCMirrorModule`. The reinitializer preserves the prior hard
-   pause state. If the vault is unpaused, Regular-mode deposits and settlement permissions
-   apply immediately; operators still withhold queue processing for the communicated
-   legacy-request grace period.
+   pause state. If the vault is unpaused and the initial authorization remains valid,
+   Regular-mode deposits and settlement permissions apply immediately; operators still
+   withhold queue processing for the communicated legacy-request grace period.
 6. Confirm that pre/post `totalAssets()`, share conversion, and unvested rewards match; all
    five seeded values, module bindings, recovery address, roles, and initial parameters are
    correct; and `STRConModule.balance() == 0`. Any mismatch blocks the validation gate and
@@ -1213,16 +1259,19 @@ while requests, funded claims, and transfers stay live. Vault hard pause contain
 sUSDat mutations; queue-local pause separately contains funded claims and queue-only state.
 Separate `MARKET_MODE_MANAGER_ROLE` allows later separation from execution despite shared
 initial holders. Both fees stay in the vault to offset dilution, not create revenue.
-Elevated is the required off-hours mode; Restricted is reserved for identified executable
-arbitrage rather than raw oracle divergence.
+Regular authorization expires after at most eight hours, so a missed close transaction
+fails safe to effective Elevated. Elevated is the required off-hours mode; Restricted is
+reserved for identified executable arbitrage rather than raw oracle divergence.
 
 **Flat redemption fee, two tiers.** Exact per-request cost attribution is a policy choice
 rather than a measurement (which module funded what buffer refill?) and requires fused
 funding/processing. A measured-spread flat fee targets average cost; governance-set
 base/elevated tiers cover normal versus off-hours/stress settlement. Mode selects, but
-cannot set, the tier; `setMarketMode(mode)` names it explicitly. The operating runbook
-enters Elevated at market close; on-chain session detection from Calculated freshness was
-rejected as unnecessary calendar machinery.
+cannot set, the tier. `setMarketMode` explicitly selects Elevated or Restricted;
+`authorizeRegularMode` selects Regular only through a bounded deadline. The operating
+runbook enters Elevated at market close, while expiration provides a fail-safe if that
+transaction is missed. Treating Calculated freshness as on-chain market-open evidence was
+rejected because freshness validates a price update, not the trading session.
 
 **Role taxonomy.** Names follow the OZ/LayerZero capability convention (agent nouns /
 `…_MANAGER`), not team/service names. Freeze ≠ seize and pause ≠ unpause limit compromised
@@ -1439,8 +1488,10 @@ it creates no reserve or guarantee.
 
 ## Appendix F — Market-mode permissions
 
-Vault hard pause is not a `MarketMode`; it overrides the selected mode for vault and sUSDat
-mutations without automatically pausing queue-only actions.
+Vault hard pause is not a `MarketMode`; it overrides the effective mode for vault and
+sUSDat mutations without automatically pausing queue-only actions. In this table, Regular
+means configured Regular before `regularModeValidUntil`; after that deadline the Elevated
+column applies.
 
 | Operation | Regular | Elevated | Restricted | Vault hard paused |
 |---|---|---|---|---|
@@ -1453,7 +1504,8 @@ mutations without automatically pausing queue-only actions.
 | Transfer sUSDat | Yes | Yes | Yes | No |
 | Transfer request NFT | Yes | Yes | Yes | Yes |
 | Buy/sell STRCon | Yes | Yes | No | No |
-| Set market mode | Yes | Yes | Yes | Yes |
+| Set Elevated/Restricted | Yes | Yes | Yes | Yes |
+| Authorize Regular | Yes | Yes | Yes | Yes |
 | Governance/oracle recovery | Yes | Yes | Yes | Yes |
 
 Read-only views remain available while hard paused as well as in every market mode, subject
@@ -1483,11 +1535,12 @@ While paused, the incident owner records custody reconciliation, issuer/custodia
 exact-address eligibility evidence, approved recoverable value and method, and
 oracle/settlement validation. For a temporary condition without write-down,
 `MARKET_MODE_MANAGER_ROLE` first installs the time-appropriate mode while the vault remains
-paused; `UNPAUSER_ROLE` may then resume the vault only after risk approval and a successful
-exact-address transfer or redemption test. Permanent impairment requires NAV to reflect
-the approved recovery value before resumption: `PARAMETER_MANAGER_ROLE` may install a
-reviewed recovery-value wrapper through `STRConModule.setOracle` when the loss is
-expressible as a per-STRCon price; otherwise governance executes a timelocked forward
+paused: Elevated or Restricted through `setMarketMode`, or Regular through a fresh bounded
+`authorizeRegularMode`. `UNPAUSER_ROLE` may then resume the vault only after risk approval
+and a successful exact-address transfer or redemption test. Permanent impairment requires
+NAV to reflect the approved recovery value before resumption: `PARAMETER_MANAGER_ROLE` may
+install a reviewed recovery-value wrapper through `STRConModule.setOracle` when the loss
+is expressible as a per-STRCon price; otherwise governance executes a timelocked forward
 upgrade for the recovery instrument. V2 has no generic haircut setter. The incident record
-references the `Paused`, applicable `MarketModeChanged`, `OracleUpdated`, governance, and
-`Unpaused` transactions.
+references the `Paused`, applicable `MarketModeChanged` and `RegularModeAuthorized`,
+`OracleUpdated`, governance, and `Unpaused` transactions.

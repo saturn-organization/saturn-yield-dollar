@@ -204,6 +204,16 @@ contract StakedUSDatFixedModuleAccountingTest is Test {
         assertEq(vault.maxMint(address(this)), type(uint256).max);
     }
 
+    function test_maxDepositAndMaxMint_RemainUncappedWhenRegularAuthorizationExpires() public {
+        mirror.configure(1, MIRROR_VALUE, false);
+        strcon.configure(1, STRCON_VALUE, false);
+        vm.warp(vault.regularModeValidUntil());
+
+        assertEq(uint256(vault.marketMode()), uint256(IStakedUSDat.MarketMode.Elevated));
+        assertEq(vault.maxDeposit(address(this)), type(uint256).max);
+        assertEq(vault.maxMint(address(this)), type(uint256).max);
+    }
+
     function test_maxDepositAndMaxMint_ReturnZeroWhenMirrorPricingFails() public {
         mirror.configure(1, MIRROR_VALUE, true);
 

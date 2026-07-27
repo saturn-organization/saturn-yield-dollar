@@ -24,6 +24,7 @@ import {IUSDat} from "./interfaces/IUSDat.sol";
 import {IERC20PermitExtended} from "./interfaces/IERC20PermitExtended.sol";
 import {ISTRCMirrorModule} from "./interfaces/modules/ISTRCMirrorModule.sol";
 import {ISTRConModule} from "./interfaces/modules/ISTRConModule.sol";
+import {STRConRotationLogic} from "./libraries/STRConRotationLogic.sol";
 
 /**
  * @title StakedUSDat
@@ -101,6 +102,9 @@ contract StakedUSDat is
     /// @notice Maximum whole-vault NAV change permitted during migration (5%).
     uint16 public constant MAX_MIGRATION_TOLERANCE_BPS = 500;
 
+    /// @notice Maximum duration of a Regular-mode authorization.
+    uint64 public constant MAX_REGULAR_MODE_VALIDITY = 8 hours;
+
     /// @notice Maximum surplus intake per tranche (5% of pre-transfer NAV).
     uint256 public constant MAX_SURPLUS_BPS = 500;
 
@@ -133,8 +137,9 @@ contract StakedUSDat is
     /// @notice Canonical destination for seized shares and withdrawal requests
     address public recoveryAddress;
 
-    /// @inheritdoc IStakedUSDat
-    MarketMode public override marketMode;
+    /// @dev Configured mode before applying Regular-mode expiry.
+    /// @custom:oz-renamed-from marketMode
+    MarketMode private _configuredMarketMode;
 
     /// @inheritdoc IStakedUSDat
     uint16 public override baseRedemptionFeeBps;
@@ -166,13 +171,16 @@ contract StakedUSDat is
     /// @inheritdoc IStakedUSDat
     uint16 public migrationToleranceBps;
 
+    /// @inheritdoc IStakedUSDat
+    uint64 public override regularModeValidUntil;
+
     modifier notZero(uint256 amount) {
         _notZero(amount);
         _;
     }
 
     modifier whenNotRestricted() {
-        require(marketMode != MarketMode.Restricted, MarketRestricted());
+        require(marketMode() != MarketMode.Restricted, MarketRestricted());
         _;
     }
 
@@ -256,7 +264,7 @@ contract StakedUSDat is
         _setElevatedDepositFee(config.elevatedDepositFeeBps);
         _setExecutionTolerance(config.executionToleranceBps);
         surplusVestingPeriod = 3 days;
-        marketMode = MarketMode.Regular;
+        _authorizeRegularMode(config.initialRegularModeValidUntil);
 
         _grantV2Role(PARAMETER_MANAGER_ROLE, roles.parameterManager);
         _grantV2Role(MARKET_MODE_MANAGER_ROLE, roles.marketModeManager);
@@ -384,14 +392,14 @@ contract StakedUSDat is
     /// @inheritdoc IERC4626
     /// @dev Returns 0 when paused, deposits are restricted, or NAV cannot be priced.
     function maxDeposit(address) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
-        if (paused() || marketMode == MarketMode.Restricted) return 0;
+        if (paused() || marketMode() == MarketMode.Restricted) return 0;
         return _canPriceTotalAssets() ? type(uint256).max : 0;
     }
 
     /// @inheritdoc IERC4626
     /// @dev Returns 0 when paused, mints are restricted, or NAV cannot be priced.
     function maxMint(address) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
-        if (paused() || marketMode == MarketMode.Restricted) return 0;
+        if (paused() || marketMode() == MarketMode.Restricted) return 0;
         return _canPriceTotalAssets() ? type(uint256).max : 0;
     }
 
@@ -464,7 +472,7 @@ contract StakedUSDat is
         require(navBefore != 0, ZeroNAV());
 
         IERC20 strcon = IERC20(strconModule.asset());
-        uint256 strconCustody = _pullExact(strcon, executionVehicle, expectedStrcon);
+        uint256 strconCustody = STRConRotationLogic.pullExact(strcon, executionVehicle, expectedStrcon);
 
         strcMirrorModule.retire();
         strconModule.buy(expectedStrcon);
@@ -496,30 +504,18 @@ contract StakedUSDat is
         totalAssets();
 
         address vehicle = executionVehicle;
-        IERC20 strcon = IERC20(strconModule.asset());
-        IERC20 usdat = IERC20(asset());
 
-        _pullExact(strcon, vehicle, assetReceived);
-
-        uint256 oraclePrice = _validateBuyPrice(usdatPaid, assetReceived);
+        uint256 oraclePrice =
+            STRConRotationLogic.prepareBuy(strconModule, vehicle, usdatPaid, assetReceived, executionToleranceBps);
 
         usdatBalance -= usdatPaid;
         strconModule.buy(assetReceived);
 
-        uint256 usdatCustody = _transferExact(usdat, vehicle, usdatPaid);
-        _requireCustodyFloors(usdatCustody, strcon.balanceOf(address(this)));
+        STRConRotationLogic.completeBuy(
+            IERC20(asset()), strconModule, vehicle, usdatPaid, usdatBalance, surplusVestingAmount
+        );
 
         emit AssetBought(address(strconModule), vehicle, usdatPaid, assetReceived, oraclePrice);
-    }
-
-    /// @dev Applies the adverse-only buy bound and returns the validated oracle price.
-    function _validateBuyPrice(uint256 usdatPaid, uint256 assetReceived) private view returns (uint256 oraclePrice) {
-        oraclePrice = strconModule.getPrice();
-        uint256 buyPrice = Math.mulDiv(usdatPaid, 1e20, assetReceived, Math.Rounding.Ceil);
-        uint256 maxBuyPrice = Math.mulDiv(
-            oraclePrice, BPS_DENOMINATOR + uint256(executionToleranceBps), BPS_DENOMINATOR, Math.Rounding.Floor
-        );
-        require(buyPrice <= maxBuyPrice, ExecutionPriceMismatch());
     }
 
     /// @inheritdoc IStakedUSDat
@@ -540,57 +536,19 @@ contract StakedUSDat is
 
         address vehicle = executionVehicle;
         IERC20 usdat = IERC20(asset());
-        IERC20 strcon = IERC20(strconModule.asset());
 
-        _pullExact(usdat, vehicle, usdatReceived);
-
-        uint256 oraclePrice = _validateSellPrice(assetDelivered, usdatReceived);
+        uint256 oraclePrice = STRConRotationLogic.prepareSell(
+            usdat, strconModule, vehicle, assetDelivered, usdatReceived, executionToleranceBps
+        );
 
         strconModule.sell(assetDelivered);
         usdatBalance += usdatReceived;
 
-        uint256 strconCustody = _transferExact(strcon, vehicle, assetDelivered);
-        _requireCustodyFloors(usdat.balanceOf(address(this)), strconCustody);
+        STRConRotationLogic.completeSell(
+            usdat, strconModule, vehicle, assetDelivered, usdatBalance, surplusVestingAmount
+        );
 
         emit AssetSold(address(strconModule), vehicle, assetDelivered, usdatReceived, oraclePrice);
-    }
-
-    /// @dev Applies the adverse-only sell bound and returns the validated oracle price.
-    function _validateSellPrice(uint256 assetDelivered, uint256 usdatReceived)
-        private
-        view
-        returns (uint256 oraclePrice)
-    {
-        oraclePrice = strconModule.getPrice();
-        uint256 sellPrice = Math.mulDiv(usdatReceived, 1e20, assetDelivered, Math.Rounding.Floor);
-        uint256 minSellPrice = Math.mulDiv(
-            oraclePrice, BPS_DENOMINATOR - uint256(executionToleranceBps), BPS_DENOMINATOR, Math.Rounding.Ceil
-        );
-        require(sellPrice >= minSellPrice, ExecutionPriceMismatch());
-    }
-
-    /// @dev Pulls an exact token amount into the vault.
-    function _pullExact(IERC20 token, address from, uint256 amount) private returns (uint256 custodyAfter) {
-        uint256 custodyBefore = token.balanceOf(address(this));
-        token.safeTransferFrom(from, address(this), amount);
-        custodyAfter = token.balanceOf(address(this));
-
-        require(custodyAfter >= custodyBefore && custodyAfter - custodyBefore == amount, InvalidAssetDelta());
-    }
-
-    /// @dev Transfers an exact token amount out of the vault and returns the remaining custody.
-    function _transferExact(IERC20 token, address to, uint256 amount) private returns (uint256 custodyAfter) {
-        uint256 custodyBefore = token.balanceOf(address(this));
-        token.safeTransfer(to, amount);
-        custodyAfter = token.balanceOf(address(this));
-
-        require(custodyBefore >= custodyAfter && custodyBefore - custodyAfter == amount, InvalidAssetDelta());
-    }
-
-    /// @dev Enforces the tracked USDat/surplus and STRCon custody floors.
-    function _requireCustodyFloors(uint256 usdatCustody, uint256 strconCustody) private view {
-        require(usdatCustody >= usdatBalance && usdatCustody - usdatBalance >= surplusVestingAmount, CustodyShortfall());
-        require(strconCustody >= strconModule.balance(), CustodyShortfall());
     }
 
     // ============ Deposit Functions ============
@@ -776,12 +734,12 @@ contract StakedUSDat is
 
     /// @inheritdoc IStakedUSDat
     function redemptionFeeBps() public view returns (uint16) {
-        return marketMode == MarketMode.Regular ? baseRedemptionFeeBps : elevatedRedemptionFeeBps;
+        return marketMode() == MarketMode.Regular ? baseRedemptionFeeBps : elevatedRedemptionFeeBps;
     }
 
     /// @inheritdoc IStakedUSDat
     function depositFeeBps() public view returns (uint256) {
-        return marketMode == MarketMode.Regular ? 0 : elevatedDepositFeeBps;
+        return marketMode() == MarketMode.Regular ? 0 : elevatedDepositFeeBps;
     }
 
     /// @dev Returns whether every fixed NAV leg can currently be priced.
@@ -887,10 +845,33 @@ contract StakedUSDat is
 
     /// @inheritdoc IStakedUSDat
     function setMarketMode(MarketMode newMode) external onlyRole(MARKET_MODE_MANAGER_ROLE) {
-        MarketMode oldMode = marketMode;
-        marketMode = newMode;
+        require(newMode != MarketMode.Regular, InvalidRegularModeAuthorization());
+
+        MarketMode oldMode = marketMode();
+        _configuredMarketMode = newMode;
+        regularModeValidUntil = 0;
 
         emit MarketModeChanged(oldMode, newMode);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function authorizeRegularMode(uint64 validUntil) external onlyRole(MARKET_MODE_MANAGER_ROLE) {
+        _authorizeRegularMode(validUntil);
+    }
+
+    /// @dev Installs a fresh bounded Regular-mode authorization.
+    function _authorizeRegularMode(uint64 validUntil) private {
+        require(
+            block.timestamp < validUntil && validUntil <= block.timestamp + MAX_REGULAR_MODE_VALIDITY,
+            InvalidRegularModeAuthorization()
+        );
+
+        MarketMode oldMode = marketMode();
+        _configuredMarketMode = MarketMode.Regular;
+        regularModeValidUntil = validUntil;
+
+        emit MarketModeChanged(oldMode, MarketMode.Regular);
+        emit RegularModeAuthorized(validUntil);
     }
 
     /// @inheritdoc IStakedUSDat
@@ -947,6 +928,15 @@ contract StakedUSDat is
         require(account != address(0), InvalidZeroAddress());
         _requireNotBlacklisted(account);
         require(!IUSDat(asset()).isFrozen(account), AddressBlacklisted());
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function marketMode() public view returns (MarketMode) {
+        MarketMode configuredMode = _configuredMarketMode;
+        if (configuredMode == MarketMode.Regular && block.timestamp >= regularModeValidUntil) {
+            return MarketMode.Elevated;
+        }
+        return configuredMode;
     }
 
     /// @inheritdoc IStakedUSDat
