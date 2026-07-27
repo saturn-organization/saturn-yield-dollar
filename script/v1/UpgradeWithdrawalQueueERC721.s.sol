@@ -2,7 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Script, console} from "forge-std/Script.sol";
-import {WithdrawalQueueERC721} from "../src/v1/WithdrawalQueueERC721.sol";
+import {WithdrawalQueueERC721} from "../../src/v1/WithdrawalQueueERC721.sol";
 
 /**
  * @title UpgradeWithdrawalQueueERC721
@@ -16,11 +16,11 @@ import {WithdrawalQueueERC721} from "../src/v1/WithdrawalQueueERC721.sol";
  * - RPC_URL: RPC endpoint
  *
  * Usage (with Fireblocks):
- *   source .env && fireblocks-json-rpc --http -- forge script script/UpgradeWithdrawalQueueERC721.s.sol \
+ *   source .env && fireblocks-json-rpc --http -- forge script script/v1/UpgradeWithdrawalQueueERC721.s.sol \
  *     --sender $ADMIN --slow --broadcast --unlocked --rpc-url {}
  *
  * Usage (with private key):
- *   source .env && forge script script/UpgradeWithdrawalQueueERC721.s.sol --rpc-url $RPC_URL --broadcast --private-key $ADMIN_PRIVATE_KEY
+ *   source .env && forge script script/v1/UpgradeWithdrawalQueueERC721.s.sol --rpc-url $RPC_URL --broadcast --private-key $ADMIN_PRIVATE_KEY
  */
 contract UpgradeWithdrawalQueueERC721 is Script {
     address constant USDAT = 0x23238f20b894f29041f48D88eE91131C395Aaa71;

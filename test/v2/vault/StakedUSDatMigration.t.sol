@@ -322,7 +322,7 @@ contract StakedUSDatMigrationTest is Test {
             elevatedRedemptionFeeBps: 10,
             elevatedDepositFeeBps: 25,
             executionToleranceBps: 50,
-            initialRegularModeValidUntil: uint64(block.timestamp + 8 hours),
+            migrationToleranceBps: 0,
             initialExecutionCapacity: type(uint128).max,
             initialExecutionRefillPerDay: 0
         });

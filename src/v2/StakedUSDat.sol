@@ -261,8 +261,10 @@ contract StakedUSDat is
         _setRecoveryAddress(config.recoveryAddress);
         _setRedemptionFees(config.baseRedemptionFeeBps, config.elevatedRedemptionFeeBps);
         _setElevatedDepositFee(config.elevatedDepositFeeBps);
+        _setMigrationTolerance(config.migrationToleranceBps);
         surplusVestingPeriod = 3 days;
-        _authorizeRegularMode(config.initialRegularModeValidUntil);
+        _configuredMarketMode = MarketMode.Elevated;
+        regularModeValidUntil = 0;
         config.executionPolicy
             .initialize(
                 config.executionVehicle,
@@ -796,6 +798,10 @@ contract StakedUSDat is
 
     /// @inheritdoc IStakedUSDat
     function setMigrationTolerance(uint16 newBps) external onlyRole(PARAMETER_MANAGER_ROLE) {
+        _setMigrationTolerance(newBps);
+    }
+
+    function _setMigrationTolerance(uint16 newBps) private {
         require(newBps <= MAX_MIGRATION_TOLERANCE_BPS, InvalidMigrationTolerance());
         uint16 oldBps = migrationToleranceBps;
         migrationToleranceBps = newBps;

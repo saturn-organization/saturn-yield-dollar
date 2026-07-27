@@ -1,4 +1,4 @@
-# Deployment Scripts
+# V1 Deployment Scripts
 
 ## Overview
 
@@ -60,7 +60,7 @@ DEPOSIT_FEE_RECIPIENT=<fee_recipient_address>
 ## Deployment Command
 
 ```bash
-source .env && forge script script/Deploy.s.sol --rpc-url $RPC_URL --private-key $PRIVATE_KEY --broadcast
+source .env && forge script script/v1/Deploy.s.sol --rpc-url $RPC_URL --private-key $PRIVATE_KEY --broadcast
 ```
 
 ## Verification
@@ -99,10 +99,10 @@ To upgrade implementations without changing proxy addresses:
 
 ```bash
 # Upgrade StakedUSDat
-forge script script/UpgradeStakedUSDat.s.sol --rpc-url $RPC_URL --broadcast
+forge script script/v1/UpgradeStakedUSDat.s.sol --rpc-url $RPC_URL --broadcast
 
 # Upgrade WithdrawalQueueERC721
-forge script script/UpgradeWithdrawalQueueERC721.s.sol --rpc-url $RPC_URL --broadcast
+forge script script/v1/UpgradeWithdrawalQueueERC721.s.sol --rpc-url $RPC_URL --broadcast
 ```
 
 ## Mock Oracle (Testnet Only)
@@ -111,10 +111,10 @@ For testnet deployments, a mock oracle is available:
 
 ```bash
 # Deploy mock oracle
-forge script script/DeployMockOracle.s.sol --rpc-url $RPC_URL --broadcast
+forge script script/v1/DeployMockOracle.s.sol --rpc-url $RPC_URL --broadcast
 
 # Update heartbeat (run periodically to prevent staleness)
-MOCK_ORACLE=<address> forge script script/OracleHeartbeat.s.sol --rpc-url $RPC_URL --broadcast
+MOCK_ORACLE=<address> forge script script/v1/OracleHeartbeat.s.sol --rpc-url $RPC_URL --broadcast
 ```
 
 ## Roles

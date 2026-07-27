@@ -139,7 +139,7 @@ library V2InitializationHelper {
                 elevatedRedemptionFeeBps: elevatedRedemptionFeeBps,
                 elevatedDepositFeeBps: elevatedDepositFeeBps,
                 executionToleranceBps: 0,
-                initialRegularModeValidUntil: regularModeValidUntil,
+                migrationToleranceBps: 0,
                 initialExecutionCapacity: initialExecutionCapacity,
                 initialExecutionRefillPerDay: initialExecutionRefillPerDay
             }),
@@ -153,5 +153,8 @@ library V2InitializationHelper {
                 unpauser: address(this)
             })
         );
+        if (vault.hasRole(vault.MARKET_MODE_MANAGER_ROLE(), address(this))) {
+            vault.authorizeRegularMode(regularModeValidUntil);
+        }
     }
 }

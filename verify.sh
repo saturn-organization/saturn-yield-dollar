@@ -42,7 +42,7 @@ fi
 # 2. LOCAL: compile + deploy the audited source with the prod args; the script
 #    logs the three code hashes in this order:
 #    StrcPriceOracle, WithdrawalQueueERC721, StakedUSDat
-HASHES=$(forge script script/VerifyCodeHash.s.sol 2>/dev/null | grep -oiE '0x[0-9a-f]{64}')
+HASHES=$(forge script script/v1/VerifyCodeHash.s.sol 2>/dev/null | grep -oiE '0x[0-9a-f]{64}')
 ORACLE_LOCAL=$(echo "$HASHES" | sed -n 1p)
 WQ_LOCAL=$(echo "$HASHES" | sed -n 2p)
 SUSDAT_LOCAL=$(echo "$HASHES" | sed -n 3p)

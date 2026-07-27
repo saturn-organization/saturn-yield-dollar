@@ -47,7 +47,7 @@ interface IStakedUSDat is IERC4626 {
         uint16 elevatedRedemptionFeeBps;
         uint16 elevatedDepositFeeBps;
         uint16 executionToleranceBps;
-        uint64 initialRegularModeValidUntil;
+        uint16 migrationToleranceBps;
         uint128 initialExecutionCapacity;
         uint128 initialExecutionRefillPerDay;
     }

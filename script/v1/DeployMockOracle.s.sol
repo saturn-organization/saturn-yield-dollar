@@ -2,7 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Script, console} from "forge-std/Script.sol";
-import {MockChainlinkOracle} from "../test/mocks/MockChainlinkOracle.sol";
+import {MockChainlinkOracle} from "../../test/mocks/MockChainlinkOracle.sol";
 
 /**
  * @title DeployMockOracle
@@ -16,7 +16,7 @@ import {MockChainlinkOracle} from "../test/mocks/MockChainlinkOracle.sol";
  * - RPC_URL: RPC endpoint
  *
  * Usage:
- *   forge script script/DeployMockOracle.s.sol --rpc-url $RPC_URL --broadcast
+ *   forge script script/v1/DeployMockOracle.s.sol --rpc-url $RPC_URL --broadcast
  */
 contract DeployMockOracle is Script {
     function run() external {

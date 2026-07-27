@@ -1075,7 +1075,7 @@ struct V2Config {
     uint16 elevatedRedemptionFeeBps;
     uint16 elevatedDepositFeeBps;
     uint16 executionToleranceBps;
-    uint64 initialRegularModeValidUntil;
+    uint16 migrationToleranceBps;
     uint128 initialExecutionCapacity;
     uint128 initialExecutionRefillPerDay;
 }
@@ -1100,10 +1100,13 @@ function initializeV2(V2Config calldata config, V2Roles calldata roles)
 `VAULT` and `STRCON_MODULE` bindings, and a zero initial `STRConModule.balance()`. It
 permanently binds the two module slots and the execution-policy slot, installs vault-owned
 configuration through the same internal setters used after initialization, grants each role
-in `V2Roles`, sets `surplusVestingPeriod = 3 days`, configures Regular, and sets
-`regularModeValidUntil = config.initialRegularModeValidUntil`. The initial deadline must be
-strictly in the future and no more than `MAX_REGULAR_MODE_VALIDITY` after initialization,
-so `marketMode()` begins as effective Regular.
+in `V2Roles`, sets `surplusVestingPeriod = 3 days`, configures Elevated, and sets
+`regularModeValidUntil = 0`. The vault therefore begins in effective Elevated mode.
+The initializer requires `config.migrationToleranceBps <=
+MAX_MIGRATION_TOLERANCE_BPS` and installs that reviewed Step 1 value.
+Entering Regular after the upgrade requires a separate fresh `authorizeRegularMode`
+transaction whose deadline is strictly in the future and no more than
+`MAX_REGULAR_MODE_VALIDITY` after authorization.
 
 Within that same reinitializer, the vault calls
 `config.executionPolicy.initialize(config.executionVehicle,
@@ -1121,8 +1124,7 @@ The caller does not supply the legacy mirror state. The reinitializer reads
 `STRCMirrorModule.seed`. Oracle-wrapper parameters remain properties of the separately deployed
 wrapper rather than initializer calldata.
 
-Migration tolerance is deliberately not an initializer argument. It starts at zero and is
-approved after the §3.2 validation gate:
+Migration tolerance is a reviewed Step 1 initializer argument:
 
 ```solidity
 uint16 public constant MAX_MIGRATION_TOLERANCE_BPS = 500;
@@ -1135,8 +1137,8 @@ function setMigrationTolerance(uint16 newBps)
     onlyRole(PARAMETER_MANAGER_ROLE);
 ```
 
-`setMigrationTolerance` remains callable while hard paused, requires
-`newBps <= MAX_MIGRATION_TOLERANCE_BPS`, stores the new value, and emits
+Both initialization and `setMigrationTolerance` require the supplied value to be at most
+`MAX_MIGRATION_TOLERANCE_BPS`, store the new value, and emit
 `MigrationToleranceUpdated`. The active value may be materially below the 500-bps
 governance ceiling. Completion is recorded by the fixed mirror's permanent `retired` state
 rather than a duplicate vault boolean.
@@ -1207,8 +1209,8 @@ the mirror and recognizes STRCon, subject to `migrationToleranceBps`.
 4. Schedule the two `upgradeToAndCall` operations through the five-day timelock. The sUSDat
    `initializeV2(config, roles)` call defined in §2.9 installs both modules and the fixed
    execution policy, installs the approved nonzero `recoveryAddress`, parameters, and roles,
-   initializes effective Regular through the approved future
-   `initialRegularModeValidUntil`, atomically initializes the policy's vehicle, tolerance,
+   initializes effective Elevated with no outstanding Regular authorization, atomically
+   initializes the migration tolerance and the policy's vehicle, execution tolerance,
    capacity, and refill rate, and maps the legacy vault slots into the renamed
    `STRCMirrorModule` state:
 
@@ -1223,13 +1225,12 @@ the mirror and recognizes STRCon, subject to `migrationToleranceBps`.
    ```
 
    The legacy slots remain reserved. The queue reinitializer installs its approved v2
-   configuration without rewriting existing requests. `migrationToleranceBps` remains zero until
-   the §3.2 validation gate determines the approved active value.
+   configuration without rewriting existing requests.
 5. After the delay, execute both upgrades atomically; failure of either reinitializer
    reverts the batch. From this point, the vault cannot buy or sell mirrored STRC, and
    reward and vesting calls target `STRCMirrorModule`. The reinitializer preserves the prior hard
-   pause state. If the vault is unpaused and the initial authorization remains valid,
-   Regular-mode deposits and settlement permissions apply immediately; operators still
+   pause state. If the vault is unpaused, Elevated-mode deposit and settlement permissions
+   apply immediately; operators still
    withhold queue processing for the communicated legacy-request grace period.
 6. Confirm that pre/post `totalAssets()`, share conversion, and unvested rewards match; all
    five seeded values, module and policy bindings, recovery address, roles, vault
@@ -1238,14 +1239,12 @@ the mirror and recognizes STRCon, subject to `migrationToleranceBps`.
 
 ### 3.2 Validation gate (before Step 2)
 
-Run one small STRCon buy/sell round-trip through the execution vehicle. Step 2 remains
-blocked until settlement, execution tolerance and capacity consumption, custody, and oracle
-behavior match §2, `STRCMirrorModule` state is unchanged, and
-`STRConModule.balance() == 0`. Set the fixed policy's launch `executionToleranceBps`
-conservatively from actual executable quotes rather than the 500-bps ceiling, and set its
-execution capacity and refill from the approved turnover and loss budget. Use the observed
-STRCMirrorModule/STRCon oracle basis to approve `migrationToleranceBps` at or below the
-500-bps hard cap defined in §2.9.
+1. Run one small STRCon buy/sell round-trip through the execution vehicle.
+2. Confirm from the observed STRCMirrorModule/STRCon oracle basis that the initialized
+   `migrationToleranceBps` remains conservative and sufficient. Any approved adjustment
+   must be active before scheduling Step 2 and remain at or below the 500-bps hard cap
+   defined in §2.9.
+3. Ensure there are no remaining `InProgress` Requests. They will be locked forever.
 
 ### 3.3 Step 2 — `migrate()`
 

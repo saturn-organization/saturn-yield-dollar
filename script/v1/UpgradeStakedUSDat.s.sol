@@ -2,9 +2,9 @@
 pragma solidity ^0.8.20;
 
 import {Script, console} from "forge-std/Script.sol";
-import {StakedUSDat} from "../src/v1/StakedUSDat.sol";
-import {IStrcPriceOracle} from "../src/v1/interfaces/IStrcPriceOracle.sol";
-import {IWithdrawalQueueERC721} from "../src/v1/interfaces/IWithdrawalQueueERC721.sol";
+import {StakedUSDat} from "../../src/v1/StakedUSDat.sol";
+import {IStrcPriceOracle} from "../../src/v1/interfaces/IStrcPriceOracle.sol";
+import {IWithdrawalQueueERC721} from "../../src/v1/interfaces/IWithdrawalQueueERC721.sol";
 
 /**
  * @title UpgradeStakedUSDat
@@ -18,11 +18,11 @@ import {IWithdrawalQueueERC721} from "../src/v1/interfaces/IWithdrawalQueueERC72
  * - RPC_URL: RPC endpoint
  *
  * Usage (with Fireblocks):
- *   source .env && fireblocks-json-rpc --http -- forge script script/UpgradeStakedUSDat.s.sol \
+ *   source .env && fireblocks-json-rpc --http -- forge script script/v1/UpgradeStakedUSDat.s.sol \
  *     --sender $ADMIN --slow --broadcast --unlocked --rpc-url {}
  *
  * Usage (with private key):
- *   source .env && forge script script/UpgradeStakedUSDat.s.sol --rpc-url $RPC_URL --broadcast --private-key $ADMIN_PRIVATE_KEY
+ *   source .env && forge script script/v1/UpgradeStakedUSDat.s.sol --rpc-url $RPC_URL --broadcast --private-key $ADMIN_PRIVATE_KEY
  */
 contract UpgradeStakedUSDat is Script {
     address constant STRC_ORACLE = 0x5f7eCD0D045c393da6cb6c933c671AC305A871BF;

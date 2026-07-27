@@ -31,7 +31,7 @@ interface IExpectedStakedUSDatV2Initializer {
         uint16 elevatedRedemptionFeeBps;
         uint16 elevatedDepositFeeBps;
         uint16 executionToleranceBps;
-        uint64 initialRegularModeValidUntil;
+        uint16 migrationToleranceBps;
         uint128 initialExecutionCapacity;
         uint128 initialExecutionRefillPerDay;
     }
@@ -224,7 +224,8 @@ contract StakedUSDatReinitializerTest is Test {
         assertEq(vaultV2.elevatedRedemptionFeeBps(), 10);
         assertEq(vaultV2.elevatedDepositFeeBps(), 25);
         assertEq(configuredPolicy.executionToleranceBps(), 50);
-        assertEq(vaultV2.regularModeValidUntil(), uint64(block.timestamp + 8 hours));
+        assertEq(vaultV2.migrationToleranceBps(), 50);
+        assertEq(vaultV2.regularModeValidUntil(), 0);
         (
             uint128 executionCapacity,
             uint128 availableExecutionCapacity,
@@ -235,7 +236,7 @@ contract StakedUSDatReinitializerTest is Test {
         assertEq(availableExecutionCapacity, executionCapacity);
         assertEq(executionRefillPerDay, 100_000e6);
         assertEq(executionCapacityLastUpdated, uint64(block.timestamp));
-        assertEq(uint256(vaultV2.marketMode()), uint256(IStakedUSDat.MarketMode.Regular));
+        assertEq(uint256(vaultV2.marketMode()), uint256(IStakedUSDat.MarketMode.Elevated));
         assertEq(vaultV2.surplusVestingAmount(), 0);
         assertEq(vaultV2.surplusVestingStartTimestamp(), 0);
         assertEq(vaultV2.surplusVestingPeriod(), 3 days);
@@ -268,6 +269,15 @@ contract StakedUSDatReinitializerTest is Test {
 
     function test_initializeV2_InvalidInputRollsBackUpgradeAndCanRetry() public {
         IExpectedStakedUSDatV2Initializer.V2Config memory config = _validConfig();
+        config.migrationToleranceBps = 501;
+
+        vm.expectRevert(IStakedUSDat.InvalidMigrationTolerance.selector);
+        _upgrade(config);
+
+        assertEq(vaultV1.getStrcOracle(), address(legacyOracle));
+        assertFalse(mirror.seeded());
+
+        config.migrationToleranceBps = 50;
         config.executionVehicle = address(0);
 
         vm.expectRevert(IStakedUSDat.InvalidZeroAddress.selector);
@@ -280,32 +290,23 @@ contract StakedUSDatReinitializerTest is Test {
         _upgrade(config);
 
         assertTrue(mirror.seeded());
+        assertEq(StakedUSDatV2(proxy).migrationToleranceBps(), 50);
         assertEq(StakedUSDatV2(proxy).executionPolicy().executionVehicle(), executionVehicle);
     }
 
-    function test_initializeV2_InvalidRegularAuthorizationRollsBackUpgradeAndCanRetry() public {
-        IExpectedStakedUSDatV2Initializer.V2Config memory config = _validConfig();
-        config.initialRegularModeValidUntil = uint64(block.timestamp);
-
-        vm.expectRevert(IStakedUSDat.InvalidRegularModeAuthorization.selector);
-        _upgrade(config);
-
-        assertEq(vaultV1.getStrcOracle(), address(legacyOracle));
-        assertFalse(mirror.seeded());
-
-        config.initialRegularModeValidUntil = uint64(block.timestamp + 8 hours + 1);
-        vm.expectRevert(IStakedUSDat.InvalidRegularModeAuthorization.selector);
-        _upgrade(config);
-
-        assertEq(vaultV1.getStrcOracle(), address(legacyOracle));
-        assertFalse(mirror.seeded());
-
-        config.initialRegularModeValidUntil = uint64(block.timestamp + 8 hours);
-        _upgrade(config);
+    function test_initializeV2_StartsElevatedAndRegularRequiresFreshAuthorization() public {
+        _upgrade(_validConfig());
 
         StakedUSDatV2 vaultV2 = StakedUSDatV2(proxy);
         assertTrue(mirror.seeded());
-        assertEq(vaultV2.regularModeValidUntil(), uint64(block.timestamp + 8 hours));
+        assertEq(vaultV2.regularModeValidUntil(), 0);
+        assertEq(uint256(vaultV2.marketMode()), uint256(IStakedUSDat.MarketMode.Elevated));
+
+        uint64 validUntil = uint64(block.timestamp + 8 hours);
+        vm.prank(roles.marketModeManager);
+        vaultV2.authorizeRegularMode(validUntil);
+
+        assertEq(vaultV2.regularModeValidUntil(), validUntil);
         assertEq(uint256(vaultV2.marketMode()), uint256(IStakedUSDat.MarketMode.Regular));
     }
 
@@ -343,7 +344,7 @@ contract StakedUSDatReinitializerTest is Test {
             elevatedRedemptionFeeBps: 10,
             elevatedDepositFeeBps: 25,
             executionToleranceBps: 50,
-            initialRegularModeValidUntil: uint64(block.timestamp + 8 hours),
+            migrationToleranceBps: 50,
             initialExecutionCapacity: 1_000_000e6,
             initialExecutionRefillPerDay: 100_000e6
         });
