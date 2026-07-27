@@ -20,11 +20,12 @@ import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC2
 
 import {IWithdrawalQueueERC721} from "./interfaces/IWithdrawalQueueERC721.sol";
 import {IStakedUSDat} from "./interfaces/IStakedUSDat.sol";
+import {ISTRConExecutionPolicy} from "./interfaces/ISTRConExecutionPolicy.sol";
 import {IUSDat} from "./interfaces/IUSDat.sol";
 import {IERC20PermitExtended} from "./interfaces/IERC20PermitExtended.sol";
 import {ISTRCMirrorModule} from "./interfaces/modules/ISTRCMirrorModule.sol";
 import {ISTRConModule} from "./interfaces/modules/ISTRConModule.sol";
-import {STRConRotationLogic} from "./libraries/STRConRotationLogic.sol";
+import {STRConTradeExecutionLogic} from "./libraries/STRConTradeExecutionLogic.sol";
 
 /**
  * @title StakedUSDat
@@ -96,9 +97,6 @@ contract StakedUSDat is
     /// @notice Maximum elevated deposit fee (5%).
     uint256 public constant MAX_DEPOSIT_FEE_BPS = 500;
 
-    /// @notice Maximum adverse STRCon execution deviation (5%).
-    uint16 public constant MAX_EXECUTION_TOLERANCE_BPS = 500;
-
     /// @notice Maximum whole-vault NAV change permitted during migration (5%).
     uint16 public constant MAX_MIGRATION_TOLERANCE_BPS = 500;
 
@@ -163,10 +161,7 @@ contract StakedUSDat is
     uint256 public override surplusVestingPeriod;
 
     /// @inheritdoc IStakedUSDat
-    address public override executionVehicle;
-
-    /// @inheritdoc IStakedUSDat
-    uint16 public override executionToleranceBps;
+    ISTRConExecutionPolicy public override executionPolicy;
 
     /// @inheritdoc IStakedUSDat
     uint16 public migrationToleranceBps;
@@ -180,7 +175,7 @@ contract StakedUSDat is
     }
 
     modifier whenNotRestricted() {
-        require(marketMode() != MarketMode.Restricted, MarketRestricted());
+        _requireNotRestricted();
         _;
     }
 
@@ -204,6 +199,10 @@ contract StakedUSDat is
     /// @dev Reverts if the given amount is zero.
     function _notZero(uint256 amount) internal pure {
         require(amount != 0, ZeroAmount());
+    }
+
+    function _requireNotRestricted() internal view {
+        require(marketMode() != MarketMode.Restricted, MarketRestricted());
     }
 
     function _requireWithdrawalQueue() internal view {
@@ -258,13 +257,19 @@ contract StakedUSDat is
 
         strcMirrorModule = config.strcMirrorModule;
         strconModule = config.strconModule;
+        executionPolicy = config.executionPolicy;
         _setRecoveryAddress(config.recoveryAddress);
-        _setExecutionVehicle(config.executionVehicle);
         _setRedemptionFees(config.baseRedemptionFeeBps, config.elevatedRedemptionFeeBps);
         _setElevatedDepositFee(config.elevatedDepositFeeBps);
-        _setExecutionTolerance(config.executionToleranceBps);
         surplusVestingPeriod = 3 days;
         _authorizeRegularMode(config.initialRegularModeValidUntil);
+        config.executionPolicy
+            .initialize(
+                config.executionVehicle,
+                config.executionToleranceBps,
+                config.initialExecutionCapacity,
+                config.initialExecutionRefillPerDay
+            );
 
         _grantV2Role(PARAMETER_MANAGER_ROLE, roles.parameterManager);
         _grantV2Role(MARKET_MODE_MANAGER_ROLE, roles.marketModeManager);
@@ -284,7 +289,8 @@ contract StakedUSDat is
     function _validateV2Modules(V2Config calldata config) private view {
         require(
             config.strcMirrorModule.VAULT() == address(this) && config.strconModule.VAULT() == address(this)
-                && config.strconModule.balance() == 0,
+                && config.strconModule.balance() == 0 && config.executionPolicy.VAULT() == address(this)
+                && address(config.executionPolicy.STRCON_MODULE()) == address(config.strconModule),
             InvalidModule()
         );
     }
@@ -467,27 +473,15 @@ contract StakedUSDat is
     {
         _requireUnexpiredDeadline(deadline);
         require(strconModule.balance() == 0, InvalidModule());
-
-        uint256 navBefore = totalAssets();
-        require(navBefore != 0, ZeroNAV());
-
-        IERC20 strcon = IERC20(strconModule.asset());
-        uint256 strconCustody = STRConRotationLogic.pullExact(strcon, executionVehicle, expectedStrcon);
-
-        strcMirrorModule.retire();
-        strconModule.buy(expectedStrcon);
-
-        uint256 navAfter = totalAssets();
-        uint256 delta = navAfter >= navBefore ? navAfter - navBefore : navBefore - navAfter;
-        require(delta <= Math.mulDiv(navBefore, migrationToleranceBps, BPS_DENOMINATOR), MigrationNAVMismatch());
-
-        require(strconCustody >= strconModule.balance(), CustodyShortfall());
+        STRConTradeExecutionLogic.executeMigration(
+            strcMirrorModule, strconModule, executionPolicy.executionVehicle(), expectedStrcon, migrationToleranceBps
+        );
     }
 
     // ============ Rotation Functions ============
 
     /// @inheritdoc IStakedUSDat
-    function buy(uint256 usdatPaid, uint256 assetReceived, uint256 deadline)
+    function buy(uint256 usdatPaid, uint256 assetReceived, address expectedVehicle, uint256 deadline)
         external
         nonReentrant
         whenNotPaused
@@ -503,23 +497,21 @@ contract StakedUSDat is
         // Rotations fail closed when either fixed module cannot price (§2.2).
         totalAssets();
 
-        address vehicle = executionVehicle;
-
-        uint256 oraclePrice =
-            STRConRotationLogic.prepareBuy(strconModule, vehicle, usdatPaid, assetReceived, executionToleranceBps);
-
         usdatBalance -= usdatPaid;
-        strconModule.buy(assetReceived);
-
-        STRConRotationLogic.completeBuy(
-            IERC20(asset()), strconModule, vehicle, usdatPaid, usdatBalance, surplusVestingAmount
+        STRConTradeExecutionLogic.executeBuy(
+            executionPolicy,
+            IERC20(asset()),
+            strconModule,
+            expectedVehicle,
+            usdatPaid,
+            assetReceived,
+            usdatBalance,
+            surplusVestingAmount
         );
-
-        emit AssetBought(address(strconModule), vehicle, usdatPaid, assetReceived, oraclePrice);
     }
 
     /// @inheritdoc IStakedUSDat
-    function sell(uint256 assetDelivered, uint256 usdatReceived, uint256 deadline)
+    function sell(uint256 assetDelivered, uint256 usdatReceived, address expectedVehicle, uint256 deadline)
         external
         nonReentrant
         whenNotPaused
@@ -534,21 +526,17 @@ contract StakedUSDat is
         // Rotations fail closed when either fixed module cannot price (§2.2).
         totalAssets();
 
-        address vehicle = executionVehicle;
-        IERC20 usdat = IERC20(asset());
-
-        uint256 oraclePrice = STRConRotationLogic.prepareSell(
-            usdat, strconModule, vehicle, assetDelivered, usdatReceived, executionToleranceBps
-        );
-
-        strconModule.sell(assetDelivered);
         usdatBalance += usdatReceived;
-
-        STRConRotationLogic.completeSell(
-            usdat, strconModule, vehicle, assetDelivered, usdatBalance, surplusVestingAmount
+        STRConTradeExecutionLogic.executeSell(
+            executionPolicy,
+            IERC20(asset()),
+            strconModule,
+            expectedVehicle,
+            assetDelivered,
+            usdatReceived,
+            usdatBalance,
+            surplusVestingAmount
         );
-
-        emit AssetSold(address(strconModule), vehicle, assetDelivered, usdatReceived, oraclePrice);
     }
 
     // ============ Deposit Functions ============
@@ -804,34 +792,6 @@ contract StakedUSDat is
     /// @inheritdoc IStakedUSDat
     function setRecoveryAddress(address newRecoveryAddress) external onlyRole(PARAMETER_MANAGER_ROLE) {
         _setRecoveryAddress(newRecoveryAddress);
-    }
-
-    /// @inheritdoc IStakedUSDat
-    function setExecutionVehicle(address newVehicle) external onlyRole(PARAMETER_MANAGER_ROLE) {
-        _setExecutionVehicle(newVehicle);
-    }
-
-    /// @dev Validates and updates the execution counterparty.
-    function _setExecutionVehicle(address newVehicle) internal {
-        require(newVehicle != address(0), InvalidZeroAddress());
-        address oldVehicle = executionVehicle;
-        executionVehicle = newVehicle;
-
-        emit ExecutionVehicleUpdated(oldVehicle, newVehicle);
-    }
-
-    /// @inheritdoc IStakedUSDat
-    function setExecutionTolerance(uint16 newBps) external onlyRole(PARAMETER_MANAGER_ROLE) {
-        _setExecutionTolerance(newBps);
-    }
-
-    /// @dev Validates and updates the maximum adverse execution deviation.
-    function _setExecutionTolerance(uint16 newBps) internal {
-        require(newBps <= MAX_EXECUTION_TOLERANCE_BPS, InvalidExecutionTolerance());
-        uint16 oldBps = executionToleranceBps;
-        executionToleranceBps = newBps;
-
-        emit ExecutionToleranceUpdated(oldBps, newBps);
     }
 
     /// @inheritdoc IStakedUSDat

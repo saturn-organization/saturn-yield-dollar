@@ -10,8 +10,11 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {StakedUSDat} from "../../../src/v2/StakedUSDat.sol";
+import {STRConExecutionPolicy} from "../../../src/v2/STRConExecutionPolicy.sol";
 import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
+import {ISTRConExecutionPolicy} from "../../../src/v2/interfaces/ISTRConExecutionPolicy.sol";
 import {IWithdrawalQueueERC721} from "../../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
+import {ISTRConModule} from "../../../src/v2/interfaces/modules/ISTRConModule.sol";
 import {ZeroAccountingModuleMock, ZeroTradableModuleMock} from "../helpers/FixedModuleMocks.sol";
 import {V2InitializationHelper} from "../helpers/V2InitializationHelper.sol";
 
@@ -101,25 +104,28 @@ contract StakedUSDatRedemptionFeesTest is Test {
     }
 
     function test_initializeV2_RequiresAdminAndRunsOnce() public {
+        ISTRConExecutionPolicy unauthorizedPolicy = _newPolicy();
         vm.expectRevert(
             abi.encodeWithSelector(
                 IAccessControl.AccessControlUnauthorizedAccount.selector, unauthorized, vault.DEFAULT_ADMIN_ROLE()
             )
         );
         vm.prank(unauthorized);
-        _initialize(5, 10);
+        _initializeWithPolicy(5, 10, unauthorizedPolicy);
 
         _initialize(5, 10);
 
+        ISTRConExecutionPolicy replacementPolicy = _newPolicy();
         vm.expectRevert(Initializable.InvalidInitialization.selector);
-        _initialize(5, 10);
+        _initializeWithPolicy(5, 10, replacementPolicy);
     }
 
     function test_initializeV2_InvalidFeesDoNotConsumeReinitializer() public {
+        ISTRConExecutionPolicy policy = _newPolicy();
         vm.expectRevert(IStakedUSDat.InvalidFee.selector);
-        _initialize(11, 10);
+        _initializeWithPolicy(11, 10, policy);
 
-        _initialize(5, 10);
+        _initializeWithPolicy(5, 10, policy);
 
         assertEq(vault.baseRedemptionFeeBps(), 5);
         assertEq(vault.elevatedRedemptionFeeBps(), 10);
@@ -315,8 +321,25 @@ contract StakedUSDatRedemptionFeesTest is Test {
     }
 
     function _initialize(uint16 baseBps, uint16 elevatedBps) private {
-        V2InitializationHelper.initialize(
-            vault, address(strcMirrorModule), address(strconModule), baseBps, elevatedBps, 25
+        _initializeWithPolicy(baseBps, elevatedBps, _newPolicy());
+    }
+
+    function _newPolicy() private returns (ISTRConExecutionPolicy) {
+        return new STRConExecutionPolicy(address(vault), ISTRConModule(address(strconModule)));
+    }
+
+    function _initializeWithPolicy(uint16 baseBps, uint16 elevatedBps, ISTRConExecutionPolicy policy) private {
+        V2InitializationHelper.initializeWithPolicy(
+            vault,
+            address(strcMirrorModule),
+            ISTRConModule(address(strconModule)),
+            policy,
+            baseBps,
+            elevatedBps,
+            25,
+            uint64(block.timestamp + 8 hours),
+            type(uint128).max,
+            0
         );
     }
 

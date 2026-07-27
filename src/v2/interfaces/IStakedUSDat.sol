@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
+import {ISTRConExecutionPolicy} from "./ISTRConExecutionPolicy.sol";
 import {ISTRCMirrorModule} from "./modules/ISTRCMirrorModule.sol";
 import {ISTRConModule} from "./modules/ISTRConModule.sol";
 
@@ -39,6 +40,7 @@ interface IStakedUSDat is IERC4626 {
     struct V2Config {
         ISTRCMirrorModule strcMirrorModule;
         ISTRConModule strconModule;
+        ISTRConExecutionPolicy executionPolicy;
         address recoveryAddress;
         address executionVehicle;
         uint16 baseRedemptionFeeBps;
@@ -46,6 +48,8 @@ interface IStakedUSDat is IERC4626 {
         uint16 elevatedDepositFeeBps;
         uint16 executionToleranceBps;
         uint64 initialRegularModeValidUntil;
+        uint128 initialExecutionCapacity;
+        uint128 initialExecutionRefillPerDay;
     }
 
     struct V2Roles {
@@ -117,11 +121,6 @@ interface IStakedUSDat is IERC4626 {
     error InsufficientBalance();
 
     /**
-     * @dev Thrown when a realized execution price exceeds the configured adverse tolerance.
-     */
-    error ExecutionPriceMismatch();
-
-    /**
      * @dev Thrown when redemption fee tiers are invalid.
      */
     error InvalidFee();
@@ -130,11 +129,6 @@ interface IStakedUSDat is IERC4626 {
      * @dev Thrown when a fixed module address does not contain deployed code.
      */
     error InvalidModule();
-
-    /**
-     * @dev Thrown when the execution tolerance exceeds the protocol maximum.
-     */
-    error InvalidExecutionTolerance();
 
     /**
      * @dev Thrown when the migration tolerance exceeds the protocol maximum.
@@ -214,20 +208,6 @@ interface IStakedUSDat is IERC4626 {
      * @param newAddress The new recovery address.
      */
     event RecoveryAddressUpdated(address indexed oldAddress, address indexed newAddress);
-
-    /**
-     * @dev Emitted when the execution vehicle changes.
-     * @param oldVehicle The previous execution vehicle.
-     * @param newVehicle The new execution vehicle.
-     */
-    event ExecutionVehicleUpdated(address indexed oldVehicle, address indexed newVehicle);
-
-    /**
-     * @dev Emitted when the execution tolerance changes.
-     * @param oldBps The previous tolerance in basis points.
-     * @param newBps The new tolerance in basis points.
-     */
-    event ExecutionToleranceUpdated(uint16 oldBps, uint16 newBps);
 
     /**
      * @dev Emitted when the migration NAV tolerance changes.
@@ -480,9 +460,10 @@ interface IStakedUSDat is IERC4626 {
      * The vehicle must approve the vault to pull assetReceived of the fixed module asset.
      * @param usdatPaid The exact USDat paid, in 6-decimal units.
      * @param assetReceived The exact module asset received, in its native decimals.
+     * @param expectedVehicle The execution vehicle approved for this exact trade.
      * @param deadline The inclusive execution deadline.
      */
-    function buy(uint256 usdatPaid, uint256 assetReceived, uint256 deadline) external;
+    function buy(uint256 usdatPaid, uint256 assetReceived, address expectedVehicle, uint256 deadline) external;
 
     /**
      * @notice Sells an exact amount of STRCon to the configured execution vehicle.
@@ -490,9 +471,10 @@ interface IStakedUSDat is IERC4626 {
      * The vehicle must approve the vault to pull usdatReceived USDat.
      * @param assetDelivered The exact module asset delivered to the vehicle, in its native decimals.
      * @param usdatReceived The exact USDat received, in 6-decimal units.
+     * @param expectedVehicle The execution vehicle approved for this exact trade.
      * @param deadline The inclusive execution deadline.
      */
-    function sell(uint256 assetDelivered, uint256 usdatReceived, uint256 deadline) external;
+    function sell(uint256 assetDelivered, uint256 usdatReceived, address expectedVehicle, uint256 deadline) external;
 
     // ============ Migration Functions ============
 
@@ -589,14 +571,9 @@ interface IStakedUSDat is IERC4626 {
     function strconModule() external view returns (ISTRConModule);
 
     /**
-     * @notice Returns the counterparty used for STRCon settlement.
+     * @notice Returns the fixed STRCon execution policy.
      */
-    function executionVehicle() external view returns (address);
-
-    /**
-     * @notice Returns the maximum adverse STRCon execution deviation in basis points.
-     */
-    function executionToleranceBps() external view returns (uint16);
+    function executionPolicy() external view returns (ISTRConExecutionPolicy);
 
     /**
      * @notice Returns the maximum permitted whole-vault NAV change during migration.
@@ -650,21 +627,6 @@ interface IStakedUSDat is IERC4626 {
      * @param newRecoveryAddress The new recovery address.
      */
     function setRecoveryAddress(address newRecoveryAddress) external;
-
-    /**
-     * @notice Updates the counterparty used for STRCon settlement.
-     * @dev Only callable by PARAMETER_MANAGER_ROLE. The vehicle cannot be zero.
-     * @param newVehicle The new execution vehicle.
-     */
-    function setExecutionVehicle(address newVehicle) external;
-
-    /**
-     * @notice Updates the maximum adverse STRCon execution deviation.
-     * @dev Only callable by PARAMETER_MANAGER_ROLE. The value cannot exceed
-     * MAX_EXECUTION_TOLERANCE_BPS.
-     * @param newBps The new tolerance in basis points.
-     */
-    function setExecutionTolerance(uint16 newBps) external;
 
     /**
      * @notice Updates the whole-vault NAV tolerance for migration.

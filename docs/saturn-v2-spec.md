@@ -3,8 +3,9 @@
 **Status:** Draft 2 (rewrite of [draft 1](./saturn-v2-upgrade-spec-draft1.md))
 **Date:** 2026-07-24
 **Scope:** The v2 upgrade of `StakedUSDat` and `WithdrawalQueueERC721`: fixed accounting
-modules for the legacy STRC mirror and STRCon, the STRC → STRCon migration, and the
-withdrawal-queue rework. Arbitrary multi-asset support is deferred.
+modules for the legacy STRC mirror and STRCon, a fixed STRCon execution policy, the
+STRC → STRCon migration, and the withdrawal-queue rework. Arbitrary multi-asset support is
+deferred.
 
 Layout: §1 summarizes changes; §2 is normative; §3 is the migration runbook; §4–5 track
 open questions and risks. Appendices A–G record rationale, empirical findings, deferred
@@ -25,9 +26,9 @@ the sole token-backed tradable module.
 
 | v1 | v2 |
 |---|---|
-| `strcBalance` mirror accounting, `_strcTotalAssets()` | two fixed module slots; `totalAssets()` explicitly includes `STRCMirrorModule.recognizedValue()` and `STRConModule.recognizedValue()` (§2.1–2.2) |
-| `convertFromUsdat` / `convertFromStrc` + `_validateConversion` | exact-amount `buy(usdatPaid, assetReceived, deadline)` / `sell(assetDelivered, usdatReceived, deadline)` (§2.5); the vault settles tokens, validates execution price, and directs STRCon module accounting |
-| vault-global `toleranceBps`, `setTolerance` | vault-global `executionToleranceBps`, used only by `buy`/`sell` and capped at 500 bps |
+| `strcBalance` mirror accounting, `_strcTotalAssets()` | two fixed module slots plus one fixed STRCon execution-policy slot; `totalAssets()` explicitly includes `STRCMirrorModule.recognizedValue()` and `STRConModule.recognizedValue()` (§2.1–2.2) |
+| `convertFromUsdat` / `convertFromStrc` + `_validateConversion` | exact-amount `buy(usdatPaid, assetReceived, expectedVehicle, deadline)` / `sell(assetDelivered, usdatReceived, expectedVehicle, deadline)` (§2.5); vault-context library code settles tokens and directs STRCon accounting, while the fixed policy validates price and rate-limits aggregate turnover |
+| vault-global `toleranceBps`, `setTolerance` | fixed-policy `executionToleranceBps`, used only by `buy`/`sell` and capped at 500 bps, plus one policy-owned two-sided execution-capacity bucket |
 | hard-wired `StrcPriceOracle`, `getStrcOracle()` | per-module oracles (§2.3) |
 | `transferInRewards` + STRC vesting surface | moves into STRCMirrorModule (§2.3); retires with it |
 | `burnQueuedShares(shares, strcAmount)` | `redeemQueuedShares(shares, minSharePrice)` (§2.6) |
@@ -69,7 +70,7 @@ Flat list of deployed functions that do not exist in v2 (successor in parenthese
 **StakedUSDat:** `convertFromUsdat` / `convertFromStrc` (→ `buy`/`sell`),
 `burnQueuedShares` (→ `redeemQueuedShares`), `collectDust`, `claim`, `claimBatch`,
 `transferInRewards`, `getUnvestedAmount`, `setVestingPeriod`, `setMaxRewardsBps` (→ all four
-move into STRCMirrorModule), `setTolerance` (→ `StakedUSDat.setExecutionTolerance`),
+move into STRCMirrorModule), `setTolerance` (→ `STRConExecutionPolicy.setExecutionTolerance`),
 `getStrcOracle` (→ per-module oracles),
 `setDepositFee` (→ `setElevatedDepositFee`).
 
@@ -145,19 +146,22 @@ Invariants:
 ### 2.2 Module framework
 
 Modules are accounting adapters; custody and ERC20 settlement remain in the vault. Modules
-hold no tokens or vault allowances. The v2 reinitializer sets two fixed slots:
+hold no tokens or vault allowances. The v2 reinitializer sets two fixed module slots and
+one fixed execution-policy slot:
 
 ```solidity
 IAccountingModule public strcMirrorModule;
 ITradableModule public strconModule;
+ISTRConExecutionPolicy public executionPolicy;
 ```
 
 V2 has no module registry, registration function, loop, or allocation configuration. Both
 modules are direct, non-proxy deployments. Each constructor fixes `VAULT`;
-`STRConModule` also fixes `ASSET`. The vault slots have no post-reinitializer setter.
-Replacing a module, its code, or a vault/asset binding requires a new module and timelocked
-vault upgrade. Accounting counters and explicitly authorized oracle/numeric configuration
-remain mutable.
+`STRConModule` also fixes `ASSET`. `STRConExecutionPolicy` is likewise a direct, non-proxy
+deployment whose constructor fixes `VAULT` and `STRCON_MODULE`. None of the three vault
+slots has a post-reinitializer setter. Replacing a module, policy, its code, or an immutable
+binding requires a new deployment and timelocked vault upgrade. Accounting counters and
+explicitly authorized oracle/numeric configuration remain mutable.
 
 ```solidity
 interface IAccountingModule {
@@ -186,12 +190,12 @@ interface ITradableModule is IAccountingModule {
 ```
 
 Only the vault calls module `buy` and `sell`; they move no tokens and update `balance()`
-from vault-measured deltas. `getPrice()` returns the validated module price; the vault
-calculates execution price and enforces tolerance (§2.5). The vault entrypoints reject zero
-amounts before calling the module; the accounting-only module callbacks do not duplicate
-that validation. USDat and STRCon must be standard, non-rebasing, non-fee-on-transfer
-ERC20s without transfer callbacks; each transfer must produce the exact requested vault
-balance delta.
+from vault-measured amounts. `getPrice()` returns the validated module price;
+`STRConExecutionPolicy` calculates execution price, enforces tolerance, and consumes
+capacity (§2.5). The vault entrypoints reject zero amounts before calling the module; the
+accounting-only module callbacks do not duplicate that validation. USDat and STRCon must be
+standard, non-rebasing, non-fee-on-transfer ERC20s without transfer callbacks; each transfer
+must produce the exact requested vault balance delta.
 
 `STRCMirrorModule` implements `IAccountingModule`; it is tokenless and has no vault trading
 entrypoint. `STRConModule` implements `ITradableModule`. The vault's `buy` and `sell`
@@ -417,24 +421,31 @@ events. STRCMirrorModule keeps the deployed v1 `StrcPriceOracle`.
   interacting with Ondo, handling USDon residuals, and carrying STRCon inventory. Its
   legs, balances, quotes, and liabilities stay outside vault accounting; on chain it is
   only the configured counterparty to an exact USDat↔STRCon exchange.
-  `setExecutionVehicle(newVehicle)` is `PARAMETER_MANAGER_ROLE`, rejects zero, and emits
-  `ExecutionVehicleUpdated(oldVehicle, newVehicle)`; replacing it does not replace the
-  module.
+  `STRConExecutionPolicy.setExecutionVehicle(newVehicle)` is authorized by reading
+  `PARAMETER_MANAGER_ROLE` from the vault, rejects zero, and emits
+  `ExecutionVehicleUpdated(oldVehicle, newVehicle)` from the policy. Replacing the vehicle
+  does not replace the policy or module. Each rotation supplies `expectedVehicle`; the
+  policy rejects a mismatch with its current vehicle, so a vehicle change invalidates
+  pending transactions prepared for the prior counterparty.
 
-  The vault pulls the vehicle's leg with `safeTransferFrom`, verifies the exact balance
-  delta, performs the conservative accounting transition, then sends its leg directly to
-  the configured vehicle. The vehicle approves the vault; the vault never approves the
-  vehicle or module. A buy decreases `usdatBalance` before recognizing delivered STRCon; a
-  sell derecognizes STRCon before increasing `usdatBalance`. Intermediate NAV may
-  understate but never overstate. Later failure atomically reverts transfers and accounting.
-
-  The vault checks the realized price from measured amounts against
-  `STRConModule.getPrice()` (§2.5), then verifies final token deltas and the custody floors.
+  The vault applies the final `usdatBalance` delta before making exactly one linked
+  `STRConTradeExecutionLogic.executeBuy` or `executeSell` call. The linked external library runs
+  by `DELEGATECALL` in the vault context and therefore performs the complete token and
+  module settlement from the vault address. It first calls the fixed policy normally;
+  that policy validates the vehicle and realized price against `STRConModule.getPrice()`
+  and consumes policy-owned capacity (§2.5). The policy cannot transfer vault assets or
+  write vault storage. The library then pulls the vehicle's exact leg with
+  `safeTransferFrom`, updates module accounting, sends the vault's exact leg directly to
+  the vehicle, and verifies custody floors. The vehicle approves the vault; the vault never
+  approves the vehicle, policy, or module. A revert at any point rolls back the vault
+  pre-accounting, policy capacity consumption, module accounting, and all token transfers.
   Only recognized STRCon is sellable; excess remains unrecognized.
 - **Migration recognition:** there is no migration-only module setter. Step 2 requires a
-  zero `STRConModule.balance()`, verifies the exact STRCon delivery in the vault, retires
-  `STRCMirrorModule`, and calls `STRConModule.buy(expectedStrcon)`. The vault owns the
-  permanent one-shot gate, final custody-floor check, and NAV-tolerance check.
+  zero `STRConModule.balance()`. After the vault's amount, deadline, and zero-balance guards,
+  linked `STRConTradeExecutionLogic.executeMigration` runs by `DELEGATECALL` and completes the
+  exact STRCon pull, mirror retirement, STRCon recognition, custody-floor check, and
+  NAV-tolerance check in the vault context. Mirror retirement supplies the permanent
+  one-shot gate.
 
 ### 2.4 Deposits
 
@@ -469,30 +480,104 @@ disabled in v2 and the queue is the only exit.
 All STRCon buying and selling is operator-driven (`OPERATOR_ROLE`), never user-triggered:
 
 ```solidity
-uint16 public constant MAX_EXECUTION_TOLERANCE_BPS = 500;
-uint16 public executionToleranceBps;
+ISTRConExecutionPolicy public executionPolicy;
 
-function buy(uint256 usdatPaid, uint256 assetReceived, uint256 deadline) external;
+function buy(
+    uint256 usdatPaid,
+    uint256 assetReceived,
+    address expectedVehicle,
+    uint256 deadline
+) external;
 
-function sell(uint256 assetDelivered, uint256 usdatReceived, uint256 deadline) external;
+function sell(
+    uint256 assetDelivered,
+    uint256 usdatReceived,
+    address expectedVehicle,
+    uint256 deadline
+) external;
 ```
 
 `buy` and `sell` return no values. Their caller supplies both exact amounts, successful
 execution proves the specified deltas, and `AssetBought` / `AssetSold` record the validated
 oracle price.
 
-`setExecutionTolerance(newBps)` is `PARAMETER_MANAGER_ROLE`, requires
-`newBps ≤ MAX_EXECUTION_TOLERANCE_BPS`, and emits
-`ExecutionToleranceUpdated(oldBps, newBps)`. The initial value is approved before the
-upgrade (§4). This global vault parameter is used only by `buy` and `sell`.
+The production `OPERATOR_ROLE` holder is the Fireblocks wallet. A bot may initiate a
+transaction, but Fireblocks policy requires a human to approve its decoded vault target,
+`buy`/`sell` selector, exact amount arguments, `expectedVehicle`, and `deadline` before the
+wallet signs and submits it. The two exact token legs define the execution price; a separate
+price argument would be redundant. The resulting Ethereum transaction also binds the chain,
+vault, and account nonce. The vault therefore adds no EIP-712 approval, approval hash, or
+second on-chain signature path.
 
-The vault compares the validated 8-decimal STRCon/USD `oraclePrice` from
-`strconModule.getPrice()` with the 8-decimal execution price in USDat per STRCon, treating one
-USDat as one USD. The `1e20` factor converts 6-decimal USDat / 18-decimal STRCon to that
-scale. Only adverse execution beyond `executionToleranceBps` is rejected:
+`STRConExecutionPolicy` is the fixed normal-call owner of the execution vehicle, tolerance,
+price validation, and capacity:
 
 ```solidity
-buyPrice = Math.mulDiv(usdatIn, 1e20, assetReceived, Math.Rounding.Ceil);
+interface ISTRConExecutionPolicy {
+    event ExecutionVehicleUpdated(address indexed oldVehicle, address indexed newVehicle);
+    event ExecutionToleranceUpdated(uint16 oldBps, uint16 newBps);
+    event ExecutionCapacityUpdated(uint128 maximum, uint128 refillPerDay);
+
+    function VAULT() external view returns (address);
+    function STRCON_MODULE() external view returns (ISTRConModule);
+    function MAX_EXECUTION_TOLERANCE_BPS() external view returns (uint16);
+
+    function executionVehicle() external view returns (address);
+    function executionToleranceBps() external view returns (uint16);
+    function executionCapacity()
+        external
+        view
+        returns (
+            uint128 maximum,
+            uint128 available,
+            uint128 refillPerDay,
+            uint64 lastUpdated
+        );
+
+    function initialize(
+        address vehicle,
+        uint16 toleranceBps,
+        uint128 maximum,
+        uint128 refillPerDay
+    ) external;
+
+    function setExecutionVehicle(address newVehicle) external;
+    function setExecutionTolerance(uint16 newBps) external;
+    function setExecutionCapacity(uint128 newMaximum, uint128 newRefillPerDay) external;
+
+    function validateBuy(
+        uint256 usdatPaid,
+        uint256 assetReceived,
+        address expectedVehicle
+    ) external returns (uint256 oraclePrice);
+
+    function validateSell(
+        uint256 assetDelivered,
+        uint256 usdatReceived,
+        address expectedVehicle
+    ) external returns (uint256 oraclePrice);
+}
+```
+
+The policy is a direct, non-proxy contract with immutable `VAULT` and `STRCON_MODULE`
+bindings. `initialize`, `validateBuy`, and `validateSell` are callable only by that vault;
+`initialize` is additionally one-shot. Its three setters are called directly on the policy;
+each authorizes `msg.sender` by reading
+`PARAMETER_MANAGER_ROLE` from the vault's role registry. The policy has no local
+`AccessControl`. Its public getters and configuration events are likewise exposed and
+emitted by the policy, not the vault. `setExecutionTolerance(newBps)` requires
+`newBps ≤ MAX_EXECUTION_TOLERANCE_BPS`, where the maximum is 500 bps. The role is held by
+the production timelock, so vehicle, tolerance, capacity, and active STRCon oracle-wrapper
+changes are delayed and observable through their respective contracts' update events.
+
+The policy compares the validated 8-decimal STRCon/USD `oraclePrice` from its immutable
+`STRCON_MODULE.getPrice()` binding with the 8-decimal execution price in USDat per STRCon,
+treating one USDat as one USD. The `1e20` factor converts 6-decimal USDat / 18-decimal
+STRCon to that scale. Only adverse execution beyond the policy's
+`executionToleranceBps` is rejected:
+
+```solidity
+buyPrice = Math.mulDiv(usdatPaid, 1e20, assetReceived, Math.Rounding.Ceil);
 maxBuyPrice = Math.mulDiv(
     oraclePrice,
     10_000 + executionToleranceBps,
@@ -511,9 +596,54 @@ minSellPrice = Math.mulDiv(
 require(sellPrice >= minSellPrice, ExecutionPriceMismatch());
 ```
 
-Buying below the oracle range and selling above it remain valid. V2 has no rolling
-execution-loss accumulator; `OPERATOR_ROLE` is trusted not to repeat individually valid
-trades to evade the per-trade bound.
+Buying below the oracle range and selling above it remain valid. The policy's single,
+two-sided token bucket additionally bounds cumulative turnover across both functions.
+
+When `validateBuy` or `validateSell` runs, the policy first accrues
+`floor(refillPerDay × (block.timestamp − lastUpdated) / 1 days)`, capped at `maximum`.
+The trade must fit within the resulting available capacity, then subtracts its charge and
+sets `lastUpdated = block.timestamp`. Any later settlement failure rolls back the policy
+call and its capacity consumption with the rest of the transaction.
+Both buys and sells consume the same bucket, and reverse trades never refund capacity, so
+splitting or alternating directions cannot evade the aggregate limit. The
+`executionCapacity()` getter reports currently accrued `available` capacity without
+mutating its stored checkpoint.
+
+The charge is the greater of the exact USDat leg and the STRCon leg's oracle notional:
+
+```solidity
+uint256 buyOracleNotional = Math.mulDiv(
+    assetReceived,
+    oraclePrice,
+    1e20,
+    Math.Rounding.Ceil
+);
+
+uint256 sellOracleNotional = Math.mulDiv(
+    assetDelivered,
+    oraclePrice,
+    1e20,
+    Math.Rounding.Ceil
+);
+
+uint256 buyCharge = Math.max(usdatPaid, buyOracleNotional);
+uint256 sellCharge = Math.max(usdatReceived, sellOracleNotional);
+```
+
+All values are 6-decimal USDat units after conversion. Charging the maximum prevents either
+the actual USDat leg or its oracle value from understating measured turnover. Starting from
+a full bucket, turnover over an interval of `T` is bounded by
+`maximum + floor(refillPerDay × T / 1 days)`. Combined with the adverse-only per-trade
+tolerance, cumulative adverse execution is conservatively bounded by that turnover
+multiplied by `executionToleranceBps / 10_000`. A second loss accumulator is therefore not
+added.
+
+Policy function `setExecutionCapacity` first accrues under the old configuration, then
+updates the maximum and refill rate and clamps `available` to the new maximum; it never
+refills the bucket merely because configuration changed. Setting the maximum to zero
+disables rotations. Policy initialization sets `maximum` and `available` to
+`initialExecutionCapacity`, sets `refillPerDay` to
+`initialExecutionRefillPerDay`, and sets `lastUpdated` to the initialization timestamp.
 
 ```solidity
 event AssetBought(
@@ -533,39 +663,55 @@ event AssetSold(
 );
 ```
 
-Both functions are `whenNotPaused`, `whenNotRestricted`, and `nonReentrant`; reject zero
-amounts and an expired deadline; use the fixed `strconModule` and current
-`executionVehicle`; and accept no module parameter, USDC amount, Ondo quote or signature,
-route, target, arbitrary calldata, or vehicle-reported result.
+These two settlement events are declared by the linked library but, because it runs by
+`DELEGATECALL`, are emitted from the vault address.
 
-At execution, `buy` and `sell` resolve the current `executionVehicle`,
-`strconModule.getPrice()` (with its active wrapper), and `executionToleranceBps`; calldata
-does not snapshot them, so a configuration change alone does not invalidate a pending call.
-The exact amounts and `deadline` are the operator's commitment; v2 adds no freshness bound,
-so the deadline must match the intended window.
+Both functions are `whenNotPaused`, `whenNotRestricted`, and `nonReentrant`; reject zero
+amounts and an expired deadline; use the fixed `strconModule` and `executionPolicy`; and
+accept no module parameter, USDC amount, Ondo quote or separate signature, route, target,
+arbitrary calldata, or vehicle-reported result.
+
+At execution, the linked library makes one ordinary call to the fixed policy. The policy
+requires `expectedVehicle == executionVehicle`, reads the current module oracle price and
+policy tolerance, validates the adverse execution bound, and consumes policy capacity.
+`expectedVehicle` snapshots the counterparty, while the timelocked parameter paths govern
+the oracle wrapper, tolerance, and capacity. The exact amounts, expected vehicle, and
+`deadline` are the operator's commitment; v2 adds no freshness bound beyond the deadline,
+so it must match the intended approval window.
 
 After `_sweep()`, each rotation calls `totalAssets()` before settlement so the fail-closed
 rule in §2.2 covers both fixed modules. The settlement order below begins only after that
-pricing preflight succeeds.
+pricing preflight succeeds. The vault then applies its tracked-cash delta before exactly one
+linked-library call; all remaining policy validation and settlement occurs inside that call.
 
-**Buy order:** pull `assetReceived` of `strconModule.asset()` from the vehicle into the vault;
-require the exact balance increase; get `oraclePrice` and apply the buy-price check above;
-decrement `usdatBalance`; call `strconModule.buy(assetReceived)`; transfer exactly
-`usdatPaid` USDat directly to the vehicle; assert the final token deltas and custody floors.
-The fixed `STRConModule.buy` implementation deterministically increases its accounting
-balance by `assetReceived`, so the vault does not duplicate that module-internal
-transition with a before/after module balance check.
+**Buy order:** require `usdatBalance ≥ usdatPaid`; decrement `usdatBalance`; call linked
+`STRConTradeExecutionLogic.executeBuy` once by `DELEGATECALL`; normally call
+`executionPolicy.validateBuy`; pull exactly `assetReceived` of
+`strconModule.asset()` from `expectedVehicle`; call
+`strconModule.buy(assetReceived)`; transfer exactly `usdatPaid` USDat to
+`expectedVehicle`; assert custody floors; emit `AssetBought`. The fixed
+`STRConModule.buy` deterministically increases its accounting balance by `assetReceived`,
+so the vault does not duplicate that module-internal transition with a before/after module
+balance check.
 
-**Sell order:** pull `usdatReceived` USDat from the vehicle into the vault; require the exact
-balance increase; get `oraclePrice` and apply the sell-price check above; call
-`strconModule.sell(assetDelivered)`; increment `usdatBalance`; transfer exactly `assetDelivered` of
-`strconModule.asset()` directly to the vehicle; assert the final token deltas and custody
-floors. The fixed `STRConModule.sell` implementation enforces recognized balance and
-deterministically decreases its accounting balance by `assetDelivered`, so the vault does not
-duplicate that module-internal transition with a before/after module balance check.
+**Sell order:** increment `usdatBalance` by `usdatReceived`; call linked
+`STRConTradeExecutionLogic.executeSell` once by `DELEGATECALL`; normally call
+`executionPolicy.validateSell`; pull exactly `usdatReceived` USDat from
+`expectedVehicle`; call `strconModule.sell(assetDelivered)`; transfer exactly
+`assetDelivered` of `strconModule.asset()` to `expectedVehicle`; assert custody floors;
+emit `AssetSold`. The fixed `STRConModule.sell` enforces recognized balance and
+deterministically decreases its accounting balance by `assetDelivered`, so the vault does
+not duplicate that module-internal transition with a before/after module balance check.
 
-Relative to balances immediately before the first transfer, a successful call has these
-exact deltas:
+The policy call is a normal `CALL`, so it executes against policy storage and cannot mutate
+vault storage or move vault assets. The linked library executes in the vault context, so
+its token calls move vault custody. It receives all required contracts and post-accounting
+values as arguments and contains no direct vault-storage writes or hardcoded storage slots.
+Any failure—including a later transfer, module, delta, or custody-floor failure—reverts the
+whole Ethereum transaction, restoring the policy capacity, vault accounting, module
+accounting, and token balances.
+
+Relative to entry-state balances, a successful call has these exact deltas:
 
 | Value | `buy` | `sell` |
 |---|---:|---:|
@@ -876,7 +1022,7 @@ Capability-named (`keccak256("<NAME>_ROLE")`):
 | Role | Definition | Scope | Permitted co-location | Timelocked |
 |---|---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | Grant/revoke roles; authorize UUPS upgrades; execute `migrate` | StakedUSDat and queue, with separate grants | No other role | Yes |
-| `PARAMETER_MANAGER_ROLE` | Set fees, vesting/reward limits, oracle/trade/migration parameters, `recoveryAddress`, the execution vehicle and tolerance, and the active STRCon oracle wrapper | Vault role registry, including checks by bound modules and wrapper | No other role | Yes |
+| `PARAMETER_MANAGER_ROLE` | Set vault fees, vesting/reward limits, migration parameters and `recoveryAddress`; directly set the fixed policy's execution vehicle, tolerance and capacity; set the active STRCon oracle wrapper | Vault role registry, including direct authorization reads by the fixed policy, bound modules, and wrapper | No other role | Yes |
 | `MARKET_MODE_MANAGER_ROLE` | Set Elevated or Restricted and grant expiring Regular authorization for at most eight hours; cannot set fee amounts or clear hard pause | StakedUSDat | `OPERATOR_ROLE` only | No |
 | `OPERATOR_ROLE` | Execute `buy`/`sell`, transfer surplus and STRCMirrorModule rewards, and select/order queue requests for processing | StakedUSDat and queue, with separate grants | `MARKET_MODE_MANAGER_ROLE` only | No |
 | `BLACKLISTER_ROLE` | Add/remove the canonical sUSDat blacklist; cannot move or destroy positions | StakedUSDat | No other role | No |
@@ -898,6 +1044,10 @@ that no key can re-point or widen.
 Deliberate separations: **freeze ≠ seize** (a compromised blacklister can freeze, never
 move funds) and **pause ≠ unpause** (a compromised pauser can grief, not un-halt).
 
+The execution policy's parameter setters are not vault forwarding functions. The authorized
+timelock calls the fixed policy directly, and the policy verifies the caller with
+`IAccessControl(VAULT).hasRole(PARAMETER_MANAGER_ROLE, msg.sender)`.
+
 **Recovery destination.** StakedUSDat initializes one canonical `recoveryAddress` during
 upgrade. `setRecoveryAddress(newAddress)` (`PARAMETER_MANAGER_ROLE`) rejects zero or
 sUSDat/USDat-restricted addresses and emits
@@ -918,6 +1068,7 @@ structs:
 struct V2Config {
     ISTRCMirrorModule strcMirrorModule;
     ISTRConModule strconModule;
+    ISTRConExecutionPolicy executionPolicy;
     address recoveryAddress;
     address executionVehicle;
     uint16 baseRedemptionFeeBps;
@@ -925,6 +1076,8 @@ struct V2Config {
     uint16 elevatedDepositFeeBps;
     uint16 executionToleranceBps;
     uint64 initialRegularModeValidUntil;
+    uint128 initialExecutionCapacity;
+    uint128 initialExecutionRefillPerDay;
 }
 
 struct V2Roles {
@@ -943,15 +1096,24 @@ function initializeV2(V2Config calldata config, V2Roles calldata roles)
     reinitializer(2);
 ```
 
-`initializeV2` validates both immutable vault bindings and a zero initial
-`STRConModule.balance()`. It installs the remaining configuration through the same internal
-setters used after initialization, which enforce address, recovery, fee, and tolerance
-requirements. It permanently binds the two module slots, grants each role in `V2Roles`, sets
-`surplusVestingPeriod = 3 days`, configures Regular, and sets
+`initializeV2` validates both modules' immutable `VAULT` bindings, the policy's immutable
+`VAULT` and `STRCON_MODULE` bindings, and a zero initial `STRConModule.balance()`. It
+permanently binds the two module slots and the execution-policy slot, installs vault-owned
+configuration through the same internal setters used after initialization, grants each role
+in `V2Roles`, sets `surplusVestingPeriod = 3 days`, configures Regular, and sets
 `regularModeValidUntil = config.initialRegularModeValidUntil`. The initial deadline must be
 strictly in the future and no more than `MAX_REGULAR_MODE_VALIDITY` after initialization,
-so `marketMode()` begins as effective Regular. It preserves the existing
-`DEFAULT_ADMIN_ROLE` holders and hard-pause state.
+so `marketMode()` begins as effective Regular.
+
+Within that same reinitializer, the vault calls
+`config.executionPolicy.initialize(config.executionVehicle,
+config.executionToleranceBps, config.initialExecutionCapacity,
+config.initialExecutionRefillPerDay)`. Policy initialization is one-shot and sets
+`maximum = available = initialExecutionCapacity`,
+`refillPerDay = initialExecutionRefillPerDay`, and `lastUpdated` to the current timestamp.
+The upgrade, mirror seeding, vault configuration, policy initialization, and role grants
+are one Ethereum transaction; any failure rolls all of them back. The reinitializer
+preserves the existing `DEFAULT_ADMIN_ROLE` holders and hard-pause state.
 
 The caller does not supply the legacy mirror state. The reinitializer reads
 `strcBalance`, `vestingAmount`, `lastDistributionTimestamp`, `vestingPeriod`, and
@@ -979,14 +1141,26 @@ function setMigrationTolerance(uint16 newBps)
 governance ceiling. Completion is recorded by the fixed mirror's permanent `retired` state
 rather than a duplicate vault boolean.
 
-Step 2 measures the absolute whole-vault NAV change against pre-migration NAV and rounds
-the resulting basis-point difference upward:
+After its role, pause, deadline, nonzero-amount, and zero-STRCon-balance guards, the vault
+makes exactly one linked-library call:
+
+```solidity
+STRConTradeExecutionLogic.executeMigration(
+    strcMirrorModule,
+    strconModule,
+    executionPolicy.executionVehicle(),
+    expectedStrcon,
+    migrationToleranceBps
+);
+```
+
+`executeMigration` runs by `DELEGATECALL` in the vault context and completes the migration.
+It measures the absolute whole-vault NAV change against pre-migration NAV:
 
 ```solidity
 uint256 navBefore = totalAssets();
 require(navBefore != 0, ZeroNAV());
 
-// Require expectedStrcon != 0 and strconModule.balance() == 0.
 uint256 strconCustody = _pullExact(strcon, executionVehicle, expectedStrcon);
 strcMirrorModule.retire();
 strconModule.buy(expectedStrcon);
@@ -1018,9 +1192,11 @@ the mirror and recognizes STRCon, subject to `migrationToleranceBps`.
 
 ### 3.1 Step 1 — framework upgrade
 
-1. Deploy the new implementations, `STRCMirrorModule`, `STRConPriceOracle`, and
-   `STRConModule`. Bind `STRCMirrorModule` to the sUSDat proxy and the oracle returned by the v1
-   `getStrcOracle()`; bind `STRConModule` to the proxy, STRCon, and its new wrapper.
+1. Deploy the new implementations, `STRCMirrorModule`, `STRConPriceOracle`,
+   `STRConModule`, and `STRConExecutionPolicy`. Bind `STRCMirrorModule` to the sUSDat proxy
+   and the oracle returned by the v1 `getStrcOracle()`; bind `STRConModule` to the proxy,
+   STRCon, and its new wrapper; bind `STRConExecutionPolicy` to the proxy and that exact
+   `STRConModule`.
 2. Rehearse the exact batch against current mainnet state. A storage-layout error, an
    accounting mismatch, or any v1 queue request still marked `InProgress` blocks
    scheduling; return such requests to `Requested` first.
@@ -1029,10 +1205,12 @@ the mirror and recognizes STRCon, subject to `migrationToleranceBps`.
    unchanged and allow owners sufficient time after the upgrade to update or cancel before
    queue processing resumes.
 4. Schedule the two `upgradeToAndCall` operations through the five-day timelock. The sUSDat
-   `initializeV2(config, roles)` call defined in §2.9 installs both modules, the approved
-   nonzero `recoveryAddress`, parameters, and roles, initializes effective Regular through
-   the approved future `initialRegularModeValidUntil`, and maps the legacy vault slots into
-   the renamed `STRCMirrorModule` state:
+   `initializeV2(config, roles)` call defined in §2.9 installs both modules and the fixed
+   execution policy, installs the approved nonzero `recoveryAddress`, parameters, and roles,
+   initializes effective Regular through the approved future
+   `initialRegularModeValidUntil`, atomically initializes the policy's vehicle, tolerance,
+   capacity, and refill rate, and maps the legacy vault slots into the renamed
+   `STRCMirrorModule` state:
 
    ```solidity
    strcMirrorModule.seed({
@@ -1054,15 +1232,18 @@ the mirror and recognizes STRCon, subject to `migrationToleranceBps`.
    Regular-mode deposits and settlement permissions apply immediately; operators still
    withhold queue processing for the communicated legacy-request grace period.
 6. Confirm that pre/post `totalAssets()`, share conversion, and unvested rewards match; all
-   five seeded values, module bindings, recovery address, roles, and initial parameters are
-   correct; and `STRConModule.balance() == 0`. Any mismatch blocks the validation gate and
-   Step 2.
+   five seeded values, module and policy bindings, recovery address, roles, vault
+   parameters, and policy vehicle/tolerance/capacity values are correct; and
+   `STRConModule.balance() == 0`. Any mismatch blocks the validation gate and Step 2.
 
 ### 3.2 Validation gate (before Step 2)
 
 Run one small STRCon buy/sell round-trip through the execution vehicle. Step 2 remains
-blocked until settlement, execution tolerance, custody, and oracle behavior match §2,
-`STRCMirrorModule` state is unchanged, and `STRConModule.balance() == 0`. Use the observed
+blocked until settlement, execution tolerance and capacity consumption, custody, and oracle
+behavior match §2, `STRCMirrorModule` state is unchanged, and
+`STRConModule.balance() == 0`. Set the fixed policy's launch `executionToleranceBps`
+conservatively from actual executable quotes rather than the 500-bps ceiling, and set its
+execution capacity and refill from the approved turnover and loss budget. Use the observed
 STRCMirrorModule/STRCon oracle basis to approve `migrationToleranceBps` at or below the
 500-bps hard cap defined in §2.9.
 
@@ -1081,10 +1262,11 @@ STRCMirrorModule/STRCon oracle basis to approve `migrationToleranceBps` at or be
    `STRConModule.balance()` is nonzero, either position cannot be priced, the exact STRCon
    transfer fails, or post-migration NAV is outside the upward-rounded `migrationToleranceBps`
    comparison defined in §2.9.
-5. On success, the vault pulls and verifies the exact STRCon amount, calls
-   `STRCMirrorModule.retire()` before `STRConModule.buy(expectedStrcon)`, verifies the final
-   custody floor and NAV. The transaction is atomic; failure leaves the transfer and both
-   module positions unchanged.
+5. On success, linked `STRConTradeExecutionLogic.executeMigration`, running by `DELEGATECALL` in
+   the vault context, pulls and verifies the exact STRCon amount, calls
+   `STRCMirrorModule.retire()` before `STRConModule.buy(expectedStrcon)`, and verifies final
+   custody and NAV. The transaction is atomic; failure leaves the transfer and both module
+   positions unchanged.
 
 The timelocked call attests to disposition of the off-chain STRC, which cannot be verified
 on chain. After success, `STRCMirrorModule` remains retired at zero and returns zero without an
@@ -1096,7 +1278,7 @@ oracle read; its reward and parameter mutations reject.
 
 | # | Question | Blocks | Resolution path |
 |---|---|---|---|
-| 1 | Execution-vehicle operations: exact vault and vehicle eligibility, funding source, STRCon inventory target, allowance workflow, USDon residual handling, and reconciliation | operational readiness; none of these change vault accounting or its trading ABI | Ondo onboarding + §3.2 |
+| 1 | Execution-vehicle operations and launch values: exact vault and vehicle eligibility, funding source, STRCon inventory target, allowance workflow, USDon residual handling, reconciliation, executable-quote tolerance, and execution capacity/refill | operational readiness; none of these change vault accounting or its trading ABI | Ondo onboarding + §3.2 |
 ---
 
 ## 5. Migration and launch risks
@@ -1129,8 +1311,10 @@ asset requires a deliberate vault upgrade adding and authorizing its module.
 
 **Custody and settlement in the vault, not modules.** This avoids fragmentation, centralizes
 compliance/seizure, and prevents a NAV-authority module from also moving tokens. The vault
-handles ERC20 delivery-versus-payment and execution validation; modules adapt accounting
-and oracle prices.
+applies tracked-cash accounting, and linked `STRConTradeExecutionLogic` performs complete ERC20
+delivery-versus-payment by `DELEGATECALL` in the vault context. The fixed execution policy
+validates price and capacity through a normal call; modules adapt accounting and oracle
+prices.
 
 **`balance()` as a counter, not `balanceOf`.** Live-custody recognition would let stray
 transfers inflate NAV. STRCon's counter moves only through vault-authorized `buy`/`sell`
@@ -1173,9 +1357,22 @@ affect vehicle operations, not vault code.
 
 **Vault settlement instead of module settlement.** Letting a module perform transfers would
 require allowances and combine accounting with asset-moving authority. Deltas prove the
-amount, not the recipient. The vault therefore verifies the incoming leg and sends directly
-to the configured vehicle; the module receives only measured amounts for price validation
-and counter updates. This reduces authority and token-approval assumptions.
+amount, not the recipient. The linked library therefore verifies the incoming leg and sends
+directly to the configured vehicle while executing as the vault; the module receives only
+exact amounts for counter updates. The policy receives only trade amounts and the expected
+vehicle for validation, has no vault allowance, and cannot write vault storage. This reduces
+authority and token-approval assumptions.
+
+**One two-sided capacity bucket instead of a loss oracle.** Exact settlement and per-trade
+tolerance do not prevent repeated individually valid adverse trades. A global
+USDat-denominated bucket limits both directions, charges the greater of actual and oracle
+notional, and never refunds a reverse trade. This creates an on-chain aggregate loss bound
+without deciding whether a price movement after execution was market movement or execution
+loss. The fixed `STRConExecutionPolicy` owns capacity state, one-shot initialization,
+getter, timelocked setter authorization, and consumption. Settlement uses one complete
+linked-library call; the library normally calls the policy, then completes
+delivery-versus-payment by `DELEGATECALL` in the vault context. It receives the
+post-accounting values as arguments and does not hardcode vault storage slots.
 
 **STRCMirrorModule is not forced through the token-backed interface.** It has no ERC20 custody
 delta, and the vault's fixed `buy` and `sell` paths address only `strconModule`. It remains a

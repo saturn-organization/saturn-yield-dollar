@@ -11,7 +11,9 @@ import {StakedUSDat as StakedUSDatV1} from "../../../src/v1/StakedUSDat.sol";
 import {IStrcPriceOracle as IStrcPriceOracleV1} from "../../../src/v1/interfaces/IStrcPriceOracle.sol";
 import {IWithdrawalQueueERC721 as IWithdrawalQueueV1} from "../../../src/v1/interfaces/IWithdrawalQueueERC721.sol";
 import {StakedUSDat as StakedUSDatV2} from "../../../src/v2/StakedUSDat.sol";
+import {STRConExecutionPolicy} from "../../../src/v2/STRConExecutionPolicy.sol";
 import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
+import {ISTRConExecutionPolicy} from "../../../src/v2/interfaces/ISTRConExecutionPolicy.sol";
 import {IStrcPriceOracle} from "../../../src/v2/interfaces/oracles/IStrcPriceOracle.sol";
 import {ISTRConPriceOracle} from "../../../src/v2/interfaces/oracles/ISTRConPriceOracle.sol";
 import {IWithdrawalQueueERC721 as IWithdrawalQueueV2} from "../../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
@@ -22,6 +24,7 @@ interface IExpectedStakedUSDatV2Initializer {
     struct V2Config {
         address strcMirrorModule;
         address strconModule;
+        address executionPolicy;
         address recoveryAddress;
         address executionVehicle;
         uint16 baseRedemptionFeeBps;
@@ -29,6 +32,8 @@ interface IExpectedStakedUSDatV2Initializer {
         uint16 elevatedDepositFeeBps;
         uint16 executionToleranceBps;
         uint64 initialRegularModeValidUntil;
+        uint128 initialExecutionCapacity;
+        uint128 initialExecutionRefillPerDay;
     }
 
     struct V2Roles {
@@ -112,6 +117,7 @@ contract StakedUSDatReinitializerTest is Test {
     StakedUSDatV2 private implementationV2;
     STRCMirrorModule private mirror;
     STRConModule private strconModule;
+    ISTRConExecutionPolicy private executionPolicy;
 
     address private proxy;
     address private withdrawalQueue = makeAddr("withdrawalQueue");
@@ -148,6 +154,7 @@ contract StakedUSDatReinitializerTest is Test {
         implementationV2 = new StakedUSDatV2(IWithdrawalQueueV2(withdrawalQueue));
         mirror = new STRCMirrorModule(proxy, IStrcPriceOracle(address(legacyOracle)));
         strconModule = new STRConModule(proxy, address(strcon), strconOracle);
+        executionPolicy = new STRConExecutionPolicy(proxy, strconModule);
 
         roles = IExpectedStakedUSDatV2Initializer.V2Roles({
             parameterManager: makeAddr("parameterManager"),
@@ -207,13 +214,27 @@ contract StakedUSDatReinitializerTest is Test {
 
         assertEq(address(vaultV2.strcMirrorModule()), address(mirror));
         assertEq(address(vaultV2.strconModule()), address(strconModule));
+        ISTRConExecutionPolicy configuredPolicy = vaultV2.executionPolicy();
+        assertEq(address(configuredPolicy), address(executionPolicy));
+        assertEq(configuredPolicy.VAULT(), proxy);
+        assertEq(address(configuredPolicy.STRCON_MODULE()), address(strconModule));
         assertEq(vaultV2.recoveryAddress(), recovery);
-        assertEq(vaultV2.executionVehicle(), executionVehicle);
+        assertEq(configuredPolicy.executionVehicle(), executionVehicle);
         assertEq(vaultV2.baseRedemptionFeeBps(), 5);
         assertEq(vaultV2.elevatedRedemptionFeeBps(), 10);
         assertEq(vaultV2.elevatedDepositFeeBps(), 25);
-        assertEq(vaultV2.executionToleranceBps(), 50);
+        assertEq(configuredPolicy.executionToleranceBps(), 50);
         assertEq(vaultV2.regularModeValidUntil(), uint64(block.timestamp + 8 hours));
+        (
+            uint128 executionCapacity,
+            uint128 availableExecutionCapacity,
+            uint128 executionRefillPerDay,
+            uint64 executionCapacityLastUpdated
+        ) = configuredPolicy.executionCapacity();
+        assertEq(executionCapacity, 1_000_000e6);
+        assertEq(availableExecutionCapacity, executionCapacity);
+        assertEq(executionRefillPerDay, 100_000e6);
+        assertEq(executionCapacityLastUpdated, uint64(block.timestamp));
         assertEq(uint256(vaultV2.marketMode()), uint256(IStakedUSDat.MarketMode.Regular));
         assertEq(vaultV2.surplusVestingAmount(), 0);
         assertEq(vaultV2.surplusVestingStartTimestamp(), 0);
@@ -259,7 +280,7 @@ contract StakedUSDatReinitializerTest is Test {
         _upgrade(config);
 
         assertTrue(mirror.seeded());
-        assertEq(StakedUSDatV2(proxy).executionVehicle(), executionVehicle);
+        assertEq(StakedUSDatV2(proxy).executionPolicy().executionVehicle(), executionVehicle);
     }
 
     function test_initializeV2_InvalidRegularAuthorizationRollsBackUpgradeAndCanRetry() public {
@@ -315,13 +336,16 @@ contract StakedUSDatReinitializerTest is Test {
         config = IExpectedStakedUSDatV2Initializer.V2Config({
             strcMirrorModule: address(mirror),
             strconModule: address(strconModule),
+            executionPolicy: address(executionPolicy),
             recoveryAddress: recovery,
             executionVehicle: executionVehicle,
             baseRedemptionFeeBps: 5,
             elevatedRedemptionFeeBps: 10,
             elevatedDepositFeeBps: 25,
             executionToleranceBps: 50,
-            initialRegularModeValidUntil: uint64(block.timestamp + 8 hours)
+            initialRegularModeValidUntil: uint64(block.timestamp + 8 hours),
+            initialExecutionCapacity: 1_000_000e6,
+            initialExecutionRefillPerDay: 100_000e6
         });
     }
 

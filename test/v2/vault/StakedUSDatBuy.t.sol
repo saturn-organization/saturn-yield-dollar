@@ -12,6 +12,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {StakedUSDat} from "../../../src/v2/StakedUSDat.sol";
 import {IAccountingModule} from "../../../src/v2/interfaces/modules/IAccountingModule.sol";
 import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
+import {ISTRConExecutionPolicy} from "../../../src/v2/interfaces/ISTRConExecutionPolicy.sol";
 import {ITradableModule} from "../../../src/v2/interfaces/modules/ITradableModule.sol";
 import {IWithdrawalQueueERC721} from "../../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
 import {BoundMirrorModuleMock, V2InitializationHelper} from "../helpers/V2InitializationHelper.sol";
@@ -227,6 +228,10 @@ contract StakedUSDatBuyTest is Test {
         uint256 shareSupply;
         uint256 surplusAmount;
         uint256 surplusStart;
+        uint128 capacityMaximum;
+        uint128 capacityAvailable;
+        uint128 capacityRefillPerDay;
+        uint64 capacityLastUpdated;
     }
 
     uint256 private constant ORACLE_PRICE = 100e8;
@@ -241,6 +246,7 @@ contract StakedUSDatBuyTest is Test {
     BuyMirrorModuleMock private mirror;
     BuyTradableModuleMock private module;
     StakedUSDat private vault;
+    ISTRConExecutionPolicy private policy;
 
     address private vehicle = makeAddr("executionVehicle");
     address private unauthorized = makeAddr("unauthorized");
@@ -264,14 +270,15 @@ contract StakedUSDatBuyTest is Test {
         mirror = new BuyMirrorModuleMock(address(vault));
         module = new BuyTradableModuleMock(address(vault), address(strcon), address(usdat), ORACLE_PRICE);
         V2InitializationHelper.initialize(vault, address(mirror), address(module), 5, 10, 25);
+        policy = vault.executionPolicy();
 
         vault.grantRole(vault.OPERATOR_ROLE(), address(this));
         vault.grantRole(vault.PARAMETER_MANAGER_ROLE(), address(this));
         vault.grantRole(vault.MARKET_MODE_MANAGER_ROLE(), address(this));
         vault.grantRole(vault.PAUSER_ROLE(), address(this));
         vault.grantRole(vault.UNPAUSER_ROLE(), address(this));
-        vault.setExecutionVehicle(vehicle);
-        vault.setExecutionTolerance(500);
+        policy.setExecutionVehicle(vehicle);
+        policy.setExecutionTolerance(500);
 
         usdat.mint(address(this), CASH);
         usdat.approve(address(vault), CASH);
@@ -280,6 +287,159 @@ contract StakedUSDatBuyTest is Test {
         strcon.mint(vehicle, VEHICLE_INVENTORY);
         vm.prank(vehicle);
         strcon.approve(address(vault), VEHICLE_INVENTORY);
+    }
+
+    function test_executionCapacity_InitializesFullyAvailable() public view {
+        (uint128 maximum, uint128 available, uint128 refillPerDay, uint64 lastUpdated) = policy.executionCapacity();
+
+        assertEq(maximum, type(uint128).max);
+        assertEq(available, maximum);
+        assertEq(refillPerDay, 0);
+        assertEq(lastUpdated, uint64(block.timestamp));
+    }
+
+    function test_buy_ConsumesGreaterOfActualUSDatAndCeilOracleNotional() public {
+        policy.setExecutionCapacity(30_000e6, 0);
+
+        vault.buy(FAVORABLE_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
+        (, uint128 afterFavorable,,) = policy.executionCapacity();
+        assertEq(afterFavorable, 20_000e6);
+
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
+        (, uint128 afterAdverse,,) = policy.executionCapacity();
+        assertEq(afterAdverse, 9_500e6);
+    }
+
+    function test_buy_CeilRoundsOracleNotionalAgainstAvailableCapacity() public {
+        policy.setExecutionCapacity(200e6, 0);
+
+        vault.buy(100e6, 1e18 + 1, vehicle, block.timestamp);
+
+        (, uint128 available,,) = policy.executionCapacity();
+        assertEq(available, 99_999_999);
+    }
+
+    function test_buyAndSell_ConsumeOneSharedCapacityWithoutRefund() public {
+        policy.setExecutionCapacity(25_000e6, 0);
+
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
+        (, uint128 afterBuy,,) = policy.executionCapacity();
+        assertEq(afterBuy, 14_500e6);
+
+        vm.prank(vehicle);
+        usdat.approve(address(vault), 9_500e6);
+        vault.sell(AMOUNT_OUT, 9_500e6, vehicle, block.timestamp);
+
+        (, uint128 afterSell,,) = policy.executionCapacity();
+        assertEq(afterSell, 4_500e6);
+    }
+
+    function test_executionCapacity_RefillsLinearlyAtExactBoundary() public {
+        policy.setExecutionCapacity(uint128(BOUNDARY_AMOUNT_IN), 8_640e6);
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
+
+        (, uint128 availableAtEmpty,,) = policy.executionCapacity();
+        assertEq(availableAtEmpty, 0);
+
+        vm.warp(block.timestamp + 999);
+        Snapshot memory beforeFailure = _snapshot(vehicle);
+        vm.expectRevert(ISTRConExecutionPolicy.ExecutionCapacityExceeded.selector);
+        vault.buy(100e6, 1e18, vehicle, block.timestamp);
+        _assertUnchanged(beforeFailure, vehicle);
+
+        (, uint128 availableBeforeBoundary,,) = policy.executionCapacity();
+        assertEq(availableBeforeBoundary, 99_900_000);
+
+        vm.warp(block.timestamp + 1);
+        vault.buy(100e6, 1e18, vehicle, block.timestamp);
+
+        (, uint128 availableAfterBoundary,,) = policy.executionCapacity();
+        assertEq(availableAfterBoundary, 0);
+    }
+
+    function test_buy_InsufficientExecutionCapacityRollsBackEveryLeg() public {
+        uint128 availableBefore = uint128(BOUNDARY_AMOUNT_IN - 1);
+        policy.setExecutionCapacity(availableBefore, 0);
+        Snapshot memory beforeState = _snapshot(vehicle);
+
+        vm.expectRevert(ISTRConExecutionPolicy.ExecutionCapacityExceeded.selector);
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
+
+        _assertUnchanged(beforeState, vehicle);
+        (, uint128 availableAfter,,) = policy.executionCapacity();
+        assertEq(availableAfter, availableBefore);
+    }
+
+    function test_buy_LaterFailureRollsBackConsumedExecutionCapacity() public {
+        policy.setExecutionCapacity(uint128(BOUNDARY_AMOUNT_IN), 0);
+        usdat.configureTransferBehavior(BuyTokenMock.TransferBehavior.REVERT_TRANSFER, address(vault), 0);
+        Snapshot memory beforeState = _snapshot(vehicle);
+
+        vm.expectRevert(BuyTokenMock.ConfiguredTransferFailure.selector);
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
+
+        _assertUnchanged(beforeState, vehicle);
+        (, uint128 availableAfter,,) = policy.executionCapacity();
+        assertEq(availableAfter, BOUNDARY_AMOUNT_IN);
+    }
+
+    function test_buy_RejectsExecutionVehicleChangedAfterApproval() public {
+        address approvedVehicle = vehicle;
+        address replacementVehicle = makeAddr("replacementVehicle");
+        policy.setExecutionCapacity(uint128(BOUNDARY_AMOUNT_IN), 0);
+        policy.setExecutionVehicle(replacementVehicle);
+        Snapshot memory beforeState = _snapshot(replacementVehicle);
+
+        vm.expectRevert(ISTRConExecutionPolicy.ExecutionVehicleMismatch.selector);
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, approvedVehicle, block.timestamp);
+
+        _assertUnchanged(beforeState, replacementVehicle);
+        assertEq(policy.executionVehicle(), replacementVehicle);
+        (, uint128 availableAfter,,) = policy.executionCapacity();
+        assertEq(availableAfter, BOUNDARY_AMOUNT_IN);
+    }
+
+    function test_setExecutionCapacity_AccruesOldRateThenClampsWithoutTopUp() public {
+        policy.setExecutionCapacity(20_000e6, 8_640e6);
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
+
+        vm.warp(block.timestamp + 1 hours);
+        policy.setExecutionCapacity(15_000e6, 4_320e6);
+
+        (uint128 maximum, uint128 available, uint128 refillPerDay, uint64 lastUpdated) = policy.executionCapacity();
+        assertEq(maximum, 15_000e6);
+        assertEq(available, 9_860e6);
+        assertEq(refillPerDay, 4_320e6);
+        assertEq(lastUpdated, uint64(block.timestamp));
+
+        policy.setExecutionCapacity(25_000e6, 4_320e6);
+        (maximum, available, refillPerDay, lastUpdated) = policy.executionCapacity();
+        assertEq(maximum, 25_000e6);
+        assertEq(available, 9_860e6);
+        assertEq(refillPerDay, 4_320e6);
+        assertEq(lastUpdated, uint64(block.timestamp));
+
+        policy.setExecutionCapacity(9_000e6, 4_320e6);
+        (maximum, available, refillPerDay, lastUpdated) = policy.executionCapacity();
+        assertEq(maximum, 9_000e6);
+        assertEq(available, 9_000e6);
+        assertEq(refillPerDay, 4_320e6);
+        assertEq(lastUpdated, uint64(block.timestamp));
+    }
+
+    function test_setExecutionCapacity_ZeroDisablesTradingAndReenableDoesNotTopUp() public {
+        policy.setExecutionCapacity(0, 0);
+        Snapshot memory beforeState = _snapshot(vehicle);
+
+        vm.expectRevert(ISTRConExecutionPolicy.ExecutionCapacityExceeded.selector);
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
+        _assertUnchanged(beforeState, vehicle);
+
+        policy.setExecutionCapacity(uint128(BOUNDARY_AMOUNT_IN), 0);
+        Snapshot memory reenabledState = _snapshot(vehicle);
+        vm.expectRevert(ISTRConExecutionPolicy.ExecutionCapacityExceeded.selector);
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
+        _assertUnchanged(reenabledState, vehicle);
     }
 
     function test_buy_SettlesExactDeltasConservativelyAndEmitsAtInclusiveDeadline() public {
@@ -293,7 +453,7 @@ contract StakedUSDatBuyTest is Test {
 
         vm.expectEmit(true, true, false, true, address(vault));
         emit AssetBought(address(module), vehicle, BOUNDARY_AMOUNT_IN, AMOUNT_OUT, ORACLE_PRICE);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
 
         assertEq(usdat.balanceOf(address(vault)), beforeState.vaultUsdat - BOUNDARY_AMOUNT_IN);
         assertEq(vault.usdatBalance(), beforeState.trackedUsdat - BOUNDARY_AMOUNT_IN);
@@ -318,10 +478,10 @@ contract StakedUSDatBuyTest is Test {
     function testFuzz_buy_ValidAmountsPreserveAccountingAndCustodyInvariants(uint96 rawAmountOut) public {
         uint256 amountOut = bound(uint256(rawAmountOut), 1e18, 500e18);
         uint256 amountIn = Math.mulDiv(amountOut, ORACLE_PRICE, 1e20, Math.Rounding.Floor);
-        vault.setExecutionTolerance(0);
+        policy.setExecutionTolerance(0);
 
         Snapshot memory beforeState = _snapshot(vehicle);
-        vault.buy(amountIn, amountOut, block.timestamp);
+        vault.buy(amountIn, amountOut, vehicle, block.timestamp);
 
         assertEq(usdat.balanceOf(address(vault)), beforeState.vaultUsdat - amountIn);
         assertEq(vault.usdatBalance(), beforeState.trackedUsdat - amountIn);
@@ -334,10 +494,10 @@ contract StakedUSDatBuyTest is Test {
     }
 
     function test_buy_AllowsFavorablePriceInElevatedMode() public {
-        vault.setExecutionTolerance(0);
+        policy.setExecutionTolerance(0);
         vault.setMarketMode(IStakedUSDat.MarketMode.Elevated);
 
-        vault.buy(FAVORABLE_AMOUNT_IN, AMOUNT_OUT, block.timestamp + 1);
+        vault.buy(FAVORABLE_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp + 1);
 
         assertEq(vault.usdatBalance(), CASH - FAVORABLE_AMOUNT_IN);
         assertEq(module.balance(), AMOUNT_OUT);
@@ -346,8 +506,8 @@ contract StakedUSDatBuyTest is Test {
     function test_buy_RejectsFirstPriceUnitAboveBoundaryAndRollsBack() public {
         Snapshot memory beforeState = _snapshot(vehicle);
 
-        vm.expectRevert(IStakedUSDat.ExecutionPriceMismatch.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN + 1, AMOUNT_OUT, block.timestamp);
+        vm.expectRevert(ISTRConExecutionPolicy.ExecutionPriceMismatch.selector);
+        vault.buy(BOUNDARY_AMOUNT_IN + 1, AMOUNT_OUT, vehicle, block.timestamp);
 
         _assertUnchanged(beforeState, vehicle);
     }
@@ -357,22 +517,22 @@ contract StakedUSDatBuyTest is Test {
 
         // The exact quotient is below 105e8 + 1 but above 105e8. Floor would
         // accept it at the boundary; the required ceil must reject it.
-        vm.expectRevert(IStakedUSDat.ExecutionPriceMismatch.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN + 1, AMOUNT_OUT + 1, block.timestamp);
+        vm.expectRevert(ISTRConExecutionPolicy.ExecutionPriceMismatch.selector);
+        vault.buy(BOUNDARY_AMOUNT_IN + 1, AMOUNT_OUT + 1, vehicle, block.timestamp);
 
         _assertUnchanged(beforeState, vehicle);
     }
 
     function test_buy_FloorRoundsMaximumPriceAgainstVault() public {
         module.setPrice(ORACLE_PRICE + 1);
-        vault.setExecutionTolerance(1);
+        policy.setExecutionTolerance(1);
 
         uint256 flooredMaximum = 10_001_000_001;
-        vault.buy(flooredMaximum, AMOUNT_OUT, block.timestamp);
+        vault.buy(flooredMaximum, AMOUNT_OUT, vehicle, block.timestamp);
 
         Snapshot memory afterBoundary = _snapshot(vehicle);
-        vm.expectRevert(IStakedUSDat.ExecutionPriceMismatch.selector);
-        vault.buy(flooredMaximum + 1, AMOUNT_OUT, block.timestamp);
+        vm.expectRevert(ISTRConExecutionPolicy.ExecutionPriceMismatch.selector);
+        vault.buy(flooredMaximum + 1, AMOUNT_OUT, vehicle, block.timestamp);
         _assertUnchanged(afterBoundary, vehicle);
     }
 
@@ -384,7 +544,7 @@ contract StakedUSDatBuyTest is Test {
         Snapshot memory beforeState = _snapshot(vehicle);
 
         vm.expectRevert(IStakedUSDat.InsufficientBalance.selector);
-        vault.buy(CASH + 1, 2_000e18, block.timestamp);
+        vault.buy(CASH + 1, 2_000e18, vehicle, block.timestamp);
 
         _assertUnchanged(beforeState, vehicle);
     }
@@ -394,7 +554,7 @@ contract StakedUSDatBuyTest is Test {
         Snapshot memory beforeState = _snapshot(vehicle);
 
         vm.expectRevert(IStakedUSDat.InvalidAssetDelta.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
 
         _assertUnchanged(beforeState, vehicle);
     }
@@ -404,7 +564,7 @@ contract StakedUSDatBuyTest is Test {
         Snapshot memory beforeState = _snapshot(vehicle);
 
         vm.expectRevert(BuyTokenMock.ConfiguredTransferFailure.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
 
         _assertUnchanged(beforeState, vehicle);
         assertEq(module.lastBuyAmount(), 0);
@@ -415,7 +575,7 @@ contract StakedUSDatBuyTest is Test {
         Snapshot memory beforeState = _snapshot(vehicle);
 
         vm.expectRevert(BuyTradableModuleMock.BuyFailed.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
 
         _assertUnchanged(beforeState, vehicle);
     }
@@ -425,14 +585,14 @@ contract StakedUSDatBuyTest is Test {
         Snapshot memory beforeState = _snapshot(vehicle);
 
         vm.expectRevert(BuyTradableModuleMock.OracleFailed.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
 
         _assertUnchanged(beforeState, vehicle);
         module.setPriceFails(false);
         mirror.configure(1, true);
 
         vm.expectRevert(BuyMirrorModuleMock.PricingFailed.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
 
         _assertUnchanged(beforeState, vehicle);
     }
@@ -444,7 +604,7 @@ contract StakedUSDatBuyTest is Test {
         Snapshot memory strconShortfallState = _snapshot(vehicle);
 
         vm.expectRevert(IStakedUSDat.CustodyShortfall.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
 
         _assertUnchanged(strconShortfallState, vehicle);
 
@@ -453,7 +613,7 @@ contract StakedUSDatBuyTest is Test {
         Snapshot memory usdatShortfallState = _snapshot(vehicle);
 
         vm.expectRevert(IStakedUSDat.CustodyShortfall.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
 
         _assertUnchanged(usdatShortfallState, vehicle);
     }
@@ -467,24 +627,24 @@ contract StakedUSDatBuyTest is Test {
             )
         );
         vm.prank(unauthorized);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
 
         _assertUnchanged(beforeState, vehicle);
 
         vault.pause();
         vm.expectRevert(PausableUpgradeable.EnforcedPause.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
         vault.unpause();
         _assertUnchanged(beforeState, vehicle);
 
         vault.setMarketMode(IStakedUSDat.MarketMode.Restricted);
         vm.expectRevert(IStakedUSDat.MarketRestricted.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp);
         vault.authorizeRegularMode(uint64(block.timestamp + 8 hours));
         _assertUnchanged(beforeState, vehicle);
 
         vm.expectRevert(IStakedUSDat.DeadlineExpired.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp - 1);
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, vehicle, block.timestamp - 1);
         _assertUnchanged(beforeState, vehicle);
     }
 
@@ -492,10 +652,10 @@ contract StakedUSDatBuyTest is Test {
         Snapshot memory beforeState = _snapshot(vehicle);
 
         vm.expectRevert(IStakedUSDat.ZeroAmount.selector);
-        vault.buy(0, AMOUNT_OUT, block.timestamp);
+        vault.buy(0, AMOUNT_OUT, vehicle, block.timestamp);
 
         vm.expectRevert(IStakedUSDat.ZeroAmount.selector);
-        vault.buy(BOUNDARY_AMOUNT_IN, 0, block.timestamp);
+        vault.buy(BOUNDARY_AMOUNT_IN, 0, vehicle, block.timestamp);
 
         _assertUnchanged(beforeState, vehicle);
     }
@@ -507,19 +667,19 @@ contract StakedUSDatBuyTest is Test {
         strcon.approve(address(vault), VEHICLE_INVENTORY);
 
         module.setPrice(90e8);
-        vault.setExecutionTolerance(0);
+        policy.setExecutionTolerance(0);
 
         uint256 oldVehicleUsdat = usdat.balanceOf(vehicle);
         uint256 oldVehicleStrcon = strcon.balanceOf(vehicle);
 
-        vault.setExecutionVehicle(replacementVehicle);
+        policy.setExecutionVehicle(replacementVehicle);
         module.setPrice(ORACLE_PRICE);
-        vault.setExecutionTolerance(500);
+        policy.setExecutionTolerance(500);
 
         Snapshot memory beforeState = _snapshot(replacementVehicle);
         vm.expectEmit(true, true, false, true, address(vault));
         emit AssetBought(address(module), replacementVehicle, BOUNDARY_AMOUNT_IN, AMOUNT_OUT, ORACLE_PRICE);
-        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, block.timestamp);
+        vault.buy(BOUNDARY_AMOUNT_IN, AMOUNT_OUT, replacementVehicle, block.timestamp);
 
         assertEq(usdat.balanceOf(replacementVehicle), beforeState.vehicleUsdat + BOUNDARY_AMOUNT_IN);
         assertEq(strcon.balanceOf(replacementVehicle), beforeState.vehicleStrcon - AMOUNT_OUT);
@@ -552,6 +712,8 @@ contract StakedUSDatBuyTest is Test {
         state.shareSupply = vault.totalSupply();
         state.surplusAmount = vault.surplusVestingAmount();
         state.surplusStart = vault.surplusVestingStartTimestamp();
+        (state.capacityMaximum, state.capacityAvailable, state.capacityRefillPerDay, state.capacityLastUpdated) =
+            policy.executionCapacity();
     }
 
     function _assertUnchanged(Snapshot memory state, address currentVehicle) private view {
@@ -566,5 +728,11 @@ contract StakedUSDatBuyTest is Test {
         assertEq(vault.totalSupply(), state.shareSupply);
         assertEq(vault.surplusVestingAmount(), state.surplusAmount);
         assertEq(vault.surplusVestingStartTimestamp(), state.surplusStart);
+        (uint128 capacityMaximum, uint128 capacityAvailable, uint128 capacityRefillPerDay, uint64 capacityLastUpdated) =
+            policy.executionCapacity();
+        assertEq(capacityMaximum, state.capacityMaximum);
+        assertEq(capacityAvailable, state.capacityAvailable);
+        assertEq(capacityRefillPerDay, state.capacityRefillPerDay);
+        assertEq(capacityLastUpdated, state.capacityLastUpdated);
     }
 }

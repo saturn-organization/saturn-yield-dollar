@@ -16,9 +16,11 @@ import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
 import {IStrcPriceOracle} from "../../../src/v2/interfaces/oracles/IStrcPriceOracle.sol";
 import {ISTRCMirrorModule} from "../../../src/v2/interfaces/modules/ISTRCMirrorModule.sol";
 import {ISTRConPriceOracle} from "../../../src/v2/interfaces/oracles/ISTRConPriceOracle.sol";
+import {ISTRConExecutionPolicy} from "../../../src/v2/interfaces/ISTRConExecutionPolicy.sol";
 import {IWithdrawalQueueERC721 as IWithdrawalQueueV2} from "../../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
 import {STRCMirrorModule} from "../../../src/v2/modules/MirrorSTRC/STRCMirrorModule.sol";
 import {STRConModule} from "../../../src/v2/modules/STRCon/STRConModule.sol";
+import {STRConExecutionPolicy} from "../../../src/v2/STRConExecutionPolicy.sol";
 
 contract MigrationUSDatMock is ERC20 {
     constructor() ERC20("USDat", "USDat") {}
@@ -85,6 +87,10 @@ contract StakedUSDatMigrationTest is Test {
         uint256 shareSupply;
         uint256 holderShares;
         bool mirrorRetired;
+        uint128 capacityMaximum;
+        uint128 capacityAvailable;
+        uint128 capacityRefillPerDay;
+        uint64 capacityLastUpdated;
     }
 
     uint256 private constant ORACLE_PRICE = 100e8;
@@ -101,6 +107,7 @@ contract StakedUSDatMigrationTest is Test {
     StakedUSDatV2 private vault;
     STRCMirrorModule private mirror;
     STRConModule private strconModule;
+    ISTRConExecutionPolicy private executionPolicy;
 
     address private withdrawalQueue = makeAddr("migrationWithdrawalQueue");
     address private vehicle = makeAddr("migrationExecutionVehicle");
@@ -127,7 +134,8 @@ contract StakedUSDatMigrationTest is Test {
 
         mirror = new STRCMirrorModule(proxy, IStrcPriceOracle(address(legacyOracle)));
         strconModule = new STRConModule(proxy, address(strcon), strconOracle);
-        vault = _upgrade(vaultV1, mirror, strconModule);
+        executionPolicy = new STRConExecutionPolicy(proxy, strconModule);
+        vault = _upgrade(vaultV1, mirror, strconModule, executionPolicy);
     }
 
     function test_migrate_RequiresCompletedVestingPreservesNAVAndIsPermanentlyOneShot() public {
@@ -270,7 +278,8 @@ contract StakedUSDatMigrationTest is Test {
         address emptyProxy = address(emptyV1);
         STRCMirrorModule emptyMirror = new STRCMirrorModule(emptyProxy, IStrcPriceOracle(address(legacyOracle)));
         STRConModule emptyStrconModule = new STRConModule(emptyProxy, address(strcon), strconOracle);
-        StakedUSDatV2 emptyVault = _upgrade(emptyV1, emptyMirror, emptyStrconModule);
+        ISTRConExecutionPolicy emptyPolicy = new STRConExecutionPolicy(emptyProxy, emptyStrconModule);
+        StakedUSDatV2 emptyVault = _upgrade(emptyV1, emptyMirror, emptyStrconModule, emptyPolicy);
 
         uint256 vehicleBalanceBefore = strcon.balanceOf(vehicle);
         vm.expectRevert(IStakedUSDat.ZeroNAV.selector);
@@ -296,21 +305,26 @@ contract StakedUSDatMigrationTest is Test {
         vaultV1 = StakedUSDatV1(address(proxy));
     }
 
-    function _upgrade(StakedUSDatV1 vaultV1, STRCMirrorModule targetMirror, STRConModule targetStrconModule)
-        private
-        returns (StakedUSDatV2 vaultV2)
-    {
+    function _upgrade(
+        StakedUSDatV1 vaultV1,
+        STRCMirrorModule targetMirror,
+        STRConModule targetStrconModule,
+        ISTRConExecutionPolicy targetExecutionPolicy
+    ) private returns (StakedUSDatV2 vaultV2) {
         StakedUSDatV2 implementationV2 = new StakedUSDatV2(IWithdrawalQueueV2(withdrawalQueue));
         IStakedUSDat.V2Config memory config = IStakedUSDat.V2Config({
             strcMirrorModule: ISTRCMirrorModule(address(targetMirror)),
             strconModule: targetStrconModule,
+            executionPolicy: targetExecutionPolicy,
             recoveryAddress: recovery,
             executionVehicle: vehicle,
             baseRedemptionFeeBps: 5,
             elevatedRedemptionFeeBps: 10,
             elevatedDepositFeeBps: 25,
             executionToleranceBps: 50,
-            initialRegularModeValidUntil: uint64(block.timestamp + 8 hours)
+            initialRegularModeValidUntil: uint64(block.timestamp + 8 hours),
+            initialExecutionCapacity: type(uint128).max,
+            initialExecutionRefillPerDay: 0
         });
         IStakedUSDat.V2Roles memory roles = IStakedUSDat.V2Roles({
             parameterManager: address(this),
@@ -353,6 +367,8 @@ contract StakedUSDatMigrationTest is Test {
         state.shareSupply = vault.totalSupply();
         state.holderShares = vault.balanceOf(address(this));
         state.mirrorRetired = mirror.retired();
+        (state.capacityMaximum, state.capacityAvailable, state.capacityRefillPerDay, state.capacityLastUpdated) =
+            executionPolicy.executionCapacity();
     }
 
     function _assertUnchanged(Snapshot memory state) private view {
@@ -367,5 +383,11 @@ contract StakedUSDatMigrationTest is Test {
         assertEq(vault.totalSupply(), state.shareSupply);
         assertEq(vault.balanceOf(address(this)), state.holderShares);
         assertEq(mirror.retired(), state.mirrorRetired);
+        (uint128 capacityMaximum, uint128 capacityAvailable, uint128 capacityRefillPerDay, uint64 capacityLastUpdated) =
+            executionPolicy.executionCapacity();
+        assertEq(capacityMaximum, state.capacityMaximum);
+        assertEq(capacityAvailable, state.capacityAvailable);
+        assertEq(capacityRefillPerDay, state.capacityRefillPerDay);
+        assertEq(capacityLastUpdated, state.capacityLastUpdated);
     }
 }
