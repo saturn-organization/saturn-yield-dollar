@@ -8,8 +8,11 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
 import {StakedUSDat} from "../../../src/v2/StakedUSDat.sol";
+import {STRConExecutionPolicy} from "../../../src/v2/STRConExecutionPolicy.sol";
+import {ISTRConExecutionPolicy} from "../../../src/v2/interfaces/ISTRConExecutionPolicy.sol";
 import {IAccountingModule} from "../../../src/v2/interfaces/modules/IAccountingModule.sol";
 import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
+import {ISTRConModule} from "../../../src/v2/interfaces/modules/ISTRConModule.sol";
 import {ITradableModule} from "../../../src/v2/interfaces/modules/ITradableModule.sol";
 import {IWithdrawalQueueERC721} from "../../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
 import {BoundMirrorModuleMock, V2InitializationHelper} from "../helpers/V2InitializationHelper.sol";
@@ -136,9 +139,11 @@ contract StakedUSDatFixedModuleAccountingTest is Test {
 
         FixedAccountingModuleMock replacementMirror = new FixedAccountingModuleMock(address(vault));
         FixedTradableModuleMock replacementStrcon = new FixedTradableModuleMock(address(vault), address(usdat));
+        ISTRConExecutionPolicy replacementPolicy =
+            new STRConExecutionPolicy(address(vault), ISTRConModule(address(replacementStrcon)));
 
         vm.expectRevert(Initializable.InvalidInitialization.selector);
-        _initializeV2(vault, replacementMirror, replacementStrcon);
+        _initializeV2WithPolicy(vault, replacementMirror, replacementStrcon, replacementPolicy);
 
         assertEq(address(vault.strcMirrorModule()), address(mirror));
         assertEq(address(vault.strconModule()), address(strcon));
@@ -148,14 +153,19 @@ contract StakedUSDatFixedModuleAccountingTest is Test {
         StakedUSDat freshVault = _deployVault();
         FixedAccountingModuleMock freshMirror = new FixedAccountingModuleMock(address(freshVault));
         FixedTradableModuleMock freshStrcon = new FixedTradableModuleMock(address(freshVault), address(usdat));
+        ISTRConExecutionPolicy freshPolicy =
+            new STRConExecutionPolicy(address(freshVault), ISTRConModule(address(freshStrcon)));
 
         vm.expectRevert();
-        _initializeV2(freshVault, IAccountingModule(address(0)), freshStrcon);
+        _initializeV2WithPolicy(freshVault, IAccountingModule(address(0)), freshStrcon, freshPolicy);
 
+        ITradableModule codelessModule = ITradableModule(makeAddr("codelessModule"));
+        ISTRConExecutionPolicy codelessPolicy =
+            new STRConExecutionPolicy(address(freshVault), ISTRConModule(address(codelessModule)));
         vm.expectRevert();
-        _initializeV2(freshVault, freshMirror, ITradableModule(makeAddr("codelessModule")));
+        _initializeV2WithPolicy(freshVault, freshMirror, codelessModule, codelessPolicy);
 
-        _initializeV2(freshVault, freshMirror, freshStrcon);
+        _initializeV2WithPolicy(freshVault, freshMirror, freshStrcon, freshPolicy);
 
         assertEq(address(freshVault.strcMirrorModule()), address(freshMirror));
         assertEq(address(freshVault.strconModule()), address(freshStrcon));
@@ -200,6 +210,16 @@ contract StakedUSDatFixedModuleAccountingTest is Test {
 
         vault.setMarketMode(IStakedUSDat.MarketMode.Elevated);
 
+        assertEq(vault.maxDeposit(address(this)), type(uint256).max);
+        assertEq(vault.maxMint(address(this)), type(uint256).max);
+    }
+
+    function test_maxDepositAndMaxMint_RemainUncappedWhenRegularAuthorizationExpires() public {
+        mirror.configure(1, MIRROR_VALUE, false);
+        strcon.configure(1, STRCON_VALUE, false);
+        vm.warp(vault.regularModeValidUntil());
+
+        assertEq(uint256(vault.marketMode()), uint256(IStakedUSDat.MarketMode.Elevated));
         assertEq(vault.maxDeposit(address(this)), type(uint256).max);
         assertEq(vault.maxMint(address(this)), type(uint256).max);
     }
@@ -274,6 +294,26 @@ contract StakedUSDatFixedModuleAccountingTest is Test {
         private
     {
         V2InitializationHelper.initialize(target, address(strcMirrorModule), address(strconModule), 5, 10, 25);
+    }
+
+    function _initializeV2WithPolicy(
+        StakedUSDat target,
+        IAccountingModule strcMirrorModule,
+        ITradableModule strconModule,
+        ISTRConExecutionPolicy policy
+    ) private {
+        V2InitializationHelper.initializeWithPolicy(
+            target,
+            address(strcMirrorModule),
+            ISTRConModule(address(strconModule)),
+            policy,
+            5,
+            10,
+            25,
+            uint64(block.timestamp + 8 hours),
+            type(uint128).max,
+            0
+        );
     }
 
     function _depositCash() private {

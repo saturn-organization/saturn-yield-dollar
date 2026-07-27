@@ -2,10 +2,12 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
-import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 
 import {StakedUSDat} from "../../../src/v2/StakedUSDat.sol";
+import {STRConExecutionPolicy} from "../../../src/v2/STRConExecutionPolicy.sol";
 import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
+import {ISTRConExecutionPolicy} from "../../../src/v2/interfaces/ISTRConExecutionPolicy.sol";
+import {ISTRConModule} from "../../../src/v2/interfaces/modules/ISTRConModule.sol";
 import {IWithdrawalQueueERC721} from "../../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
 
 contract StakedUSDatExecutionConfigHarness is StakedUSDat {
@@ -18,10 +20,24 @@ contract StakedUSDatExecutionConfigHarness is StakedUSDat {
     function requireUnexpiredDeadline(uint256 deadline) external view {
         _requireUnexpiredDeadline(deadline);
     }
+
+    function bindExecutionPolicy(ISTRConExecutionPolicy policy) external {
+        executionPolicy = policy;
+    }
+}
+
+contract ExecutionConfigSTRConModuleMock {
+    address public immutable VAULT;
+
+    constructor(address vault) {
+        VAULT = vault;
+    }
 }
 
 contract StakedUSDatExecutionConfigTest is Test {
     StakedUSDatExecutionConfigHarness private vault;
+    ExecutionConfigSTRConModuleMock private strconModule;
+    ISTRConExecutionPolicy private policy;
 
     address private executionVehicle = makeAddr("executionVehicle");
     address private replacementVehicle = makeAddr("replacementVehicle");
@@ -29,116 +45,147 @@ contract StakedUSDatExecutionConfigTest is Test {
 
     event ExecutionVehicleUpdated(address indexed oldVehicle, address indexed newVehicle);
     event ExecutionToleranceUpdated(uint16 oldBps, uint16 newBps);
+    event ExecutionCapacityUpdated(uint128 maximum, uint128 refillPerDay);
 
     function setUp() public {
         vault = new StakedUSDatExecutionConfigHarness(address(this));
+        strconModule = new ExecutionConfigSTRConModuleMock(address(vault));
+        policy = new STRConExecutionPolicy(address(vault), ISTRConModule(address(strconModule)));
+        vault.bindExecutionPolicy(policy);
     }
 
     function test_executionConfig_DefaultsAndGetters() public view {
-        IStakedUSDat vaultInterface = IStakedUSDat(address(vault));
+        assertEq(policy.executionVehicle(), address(0));
+        assertEq(policy.executionToleranceBps(), 0);
+        assertEq(policy.MAX_EXECUTION_TOLERANCE_BPS(), 500);
 
-        assertEq(vaultInterface.executionVehicle(), address(0));
-        assertEq(vaultInterface.executionToleranceBps(), 0);
-        assertEq(vault.MAX_EXECUTION_TOLERANCE_BPS(), 500);
+        (uint128 maximum, uint128 available, uint128 refillPerDay, uint64 lastUpdated) = policy.executionCapacity();
+        assertEq(maximum, 0);
+        assertEq(available, 0);
+        assertEq(refillPerDay, 0);
+        assertEq(lastUpdated, 0);
     }
 
     function test_setExecutionVehicle_UpdatesAndEmits() public {
-        vm.expectEmit(true, true, false, true, address(vault));
+        vm.expectEmit(true, true, false, true, address(policy));
         emit ExecutionVehicleUpdated(address(0), executionVehicle);
-        vault.setExecutionVehicle(executionVehicle);
+        policy.setExecutionVehicle(executionVehicle);
 
-        vm.expectEmit(true, true, false, true, address(vault));
+        vm.expectEmit(true, true, false, true, address(policy));
         emit ExecutionVehicleUpdated(executionVehicle, replacementVehicle);
-        vault.setExecutionVehicle(replacementVehicle);
+        policy.setExecutionVehicle(replacementVehicle);
 
-        assertEq(vault.executionVehicle(), replacementVehicle);
+        assertEq(policy.executionVehicle(), replacementVehicle);
     }
 
     function test_setExecutionVehicle_AcceptsIdempotentUpdateAndEmits() public {
-        vault.setExecutionVehicle(executionVehicle);
+        policy.setExecutionVehicle(executionVehicle);
 
-        vm.expectEmit(true, true, false, true, address(vault));
+        vm.expectEmit(true, true, false, true, address(policy));
         emit ExecutionVehicleUpdated(executionVehicle, executionVehicle);
-        vault.setExecutionVehicle(executionVehicle);
+        policy.setExecutionVehicle(executionVehicle);
 
-        assertEq(vault.executionVehicle(), executionVehicle);
+        assertEq(policy.executionVehicle(), executionVehicle);
     }
 
     function test_setExecutionVehicle_RequiresParameterManagerRole() public {
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IAccessControl.AccessControlUnauthorizedAccount.selector, unauthorized, vault.PARAMETER_MANAGER_ROLE()
-            )
-        );
+        vm.expectRevert(ISTRConExecutionPolicy.Unauthorized.selector);
         vm.prank(unauthorized);
-        vault.setExecutionVehicle(executionVehicle);
+        policy.setExecutionVehicle(executionVehicle);
 
-        assertEq(vault.executionVehicle(), address(0));
+        assertEq(policy.executionVehicle(), address(0));
     }
 
     function test_setExecutionVehicle_RejectsZeroAddress() public {
-        vault.setExecutionVehicle(executionVehicle);
+        policy.setExecutionVehicle(executionVehicle);
 
-        vm.expectRevert(IStakedUSDat.InvalidZeroAddress.selector);
-        vault.setExecutionVehicle(address(0));
+        vm.expectRevert(ISTRConExecutionPolicy.InvalidZeroAddress.selector);
+        policy.setExecutionVehicle(address(0));
 
-        assertEq(vault.executionVehicle(), executionVehicle);
+        assertEq(policy.executionVehicle(), executionVehicle);
     }
 
     function test_setExecutionTolerance_AcceptsZeroAndCapAndEmits() public {
-        vm.expectEmit(false, false, false, true, address(vault));
+        vm.expectEmit(false, false, false, true, address(policy));
         emit ExecutionToleranceUpdated(0, 500);
-        vault.setExecutionTolerance(500);
+        policy.setExecutionTolerance(500);
 
-        vm.expectEmit(false, false, false, true, address(vault));
+        vm.expectEmit(false, false, false, true, address(policy));
         emit ExecutionToleranceUpdated(500, 0);
-        vault.setExecutionTolerance(0);
+        policy.setExecutionTolerance(0);
 
-        assertEq(vault.executionToleranceBps(), 0);
+        assertEq(policy.executionToleranceBps(), 0);
     }
 
     function test_setExecutionTolerance_AcceptsIdempotentUpdateAndEmits() public {
-        vault.setExecutionTolerance(100);
+        policy.setExecutionTolerance(100);
 
-        vm.expectEmit(false, false, false, true, address(vault));
+        vm.expectEmit(false, false, false, true, address(policy));
         emit ExecutionToleranceUpdated(100, 100);
-        vault.setExecutionTolerance(100);
+        policy.setExecutionTolerance(100);
 
-        assertEq(vault.executionToleranceBps(), 100);
+        assertEq(policy.executionToleranceBps(), 100);
     }
 
     function test_setExecutionTolerance_RequiresParameterManagerRole() public {
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IAccessControl.AccessControlUnauthorizedAccount.selector, unauthorized, vault.PARAMETER_MANAGER_ROLE()
-            )
-        );
+        vm.expectRevert(ISTRConExecutionPolicy.Unauthorized.selector);
         vm.prank(unauthorized);
-        vault.setExecutionTolerance(100);
+        policy.setExecutionTolerance(100);
 
-        assertEq(vault.executionToleranceBps(), 0);
+        assertEq(policy.executionToleranceBps(), 0);
     }
 
     function test_setExecutionTolerance_RejectsAboveCap() public {
-        vault.setExecutionTolerance(100);
+        policy.setExecutionTolerance(100);
 
-        vm.expectRevert(IStakedUSDat.InvalidExecutionTolerance.selector);
-        vault.setExecutionTolerance(501);
+        vm.expectRevert(ISTRConExecutionPolicy.InvalidExecutionTolerance.selector);
+        policy.setExecutionTolerance(501);
 
-        assertEq(vault.executionToleranceBps(), 100);
+        assertEq(policy.executionToleranceBps(), 100);
+    }
+
+    function test_setExecutionCapacity_UpdatesConfigWithoutAddingAvailableCapacity() public {
+        vm.warp(100);
+
+        vm.expectEmit(false, false, false, true, address(policy));
+        emit ExecutionCapacityUpdated(1_000e6, 100e6);
+        policy.setExecutionCapacity(1_000e6, 100e6);
+
+        (uint128 maximum, uint128 available, uint128 refillPerDay, uint64 lastUpdated) = policy.executionCapacity();
+        assertEq(maximum, 1_000e6);
+        assertEq(available, 0);
+        assertEq(refillPerDay, 100e6);
+        assertEq(lastUpdated, 100);
+    }
+
+    function test_setExecutionCapacity_RequiresParameterManagerRole() public {
+        vm.expectRevert(ISTRConExecutionPolicy.Unauthorized.selector);
+        vm.prank(unauthorized);
+        policy.setExecutionCapacity(1_000e6, 100e6);
+
+        (uint128 maximum, uint128 available, uint128 refillPerDay, uint64 lastUpdated) = policy.executionCapacity();
+        assertEq(maximum, 0);
+        assertEq(available, 0);
+        assertEq(refillPerDay, 0);
+        assertEq(lastUpdated, 0);
     }
 
     function test_executionConfig_RemainsCallableWhilePausedAndRestricted() public {
         vault.setMarketMode(IStakedUSDat.MarketMode.Restricted);
         vault.pause();
 
-        vault.setExecutionVehicle(executionVehicle);
-        vault.setExecutionTolerance(500);
+        policy.setExecutionVehicle(executionVehicle);
+        policy.setExecutionTolerance(500);
+        policy.setExecutionCapacity(1_000e6, 100e6);
 
         assertTrue(vault.paused());
         assertEq(uint256(vault.marketMode()), uint256(IStakedUSDat.MarketMode.Restricted));
-        assertEq(vault.executionVehicle(), executionVehicle);
-        assertEq(vault.executionToleranceBps(), 500);
+        assertEq(policy.executionVehicle(), executionVehicle);
+        assertEq(policy.executionToleranceBps(), 500);
+
+        (uint128 maximum,, uint128 refillPerDay,) = policy.executionCapacity();
+        assertEq(maximum, 1_000e6);
+        assertEq(refillPerDay, 100e6);
     }
 
     function test_requireUnexpiredDeadline_UsesInclusiveBoundary() public {
@@ -152,11 +199,10 @@ contract StakedUSDatExecutionConfigTest is Test {
         vault.requireUnexpiredDeadline(block.timestamp - 1);
     }
 
-    function test_executionConfig_PacksIntoAppendedSlotSixteen() public {
-        vault.setExecutionVehicle(executionVehicle);
-        vault.setExecutionTolerance(500);
-
-        uint256 expected = uint256(uint160(executionVehicle)) | (uint256(vault.executionToleranceBps()) << 160);
-        assertEq(vm.load(address(vault), bytes32(uint256(16))), bytes32(expected));
+    function test_executionPolicy_IsBoundAndStoredInAppendedSlotSixteen() public view {
+        assertEq(policy.VAULT(), address(vault));
+        assertEq(address(policy.STRCON_MODULE()), address(strconModule));
+        assertEq(address(vault.executionPolicy()), address(policy));
+        assertEq(vm.load(address(vault), bytes32(uint256(16))), bytes32(uint256(uint160(address(policy)))));
     }
 }

@@ -9,8 +9,11 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 
 import {StakedUSDat} from "../../../src/v2/StakedUSDat.sol";
+import {STRConExecutionPolicy} from "../../../src/v2/STRConExecutionPolicy.sol";
 import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
+import {ISTRConExecutionPolicy} from "../../../src/v2/interfaces/ISTRConExecutionPolicy.sol";
 import {IWithdrawalQueueERC721} from "../../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
+import {ISTRConModule} from "../../../src/v2/interfaces/modules/ISTRConModule.sol";
 import {ZeroAccountingModuleMock, ZeroTradableModuleMock} from "../helpers/FixedModuleMocks.sol";
 import {V2InitializationHelper} from "../helpers/V2InitializationHelper.sol";
 
@@ -49,7 +52,7 @@ contract DepositFeeUSDatMock is ERC20 {
 contract StakedUSDatDepositFeesTest is Test {
     uint256 private constant GROSS_ASSETS = 100e6;
     uint256 private constant NET_SHARES = 95e18;
-    uint256 private constant ELEVATED_DEPOSIT_FEE_BPS = 500;
+    uint16 private constant ELEVATED_DEPOSIT_FEE_BPS = 500;
 
     DepositFeeUSDatMock private usdat;
     StakedUSDat private vault;
@@ -69,7 +72,7 @@ contract StakedUSDatDepositFeesTest is Test {
         strconModule = new ZeroTradableModuleMock(address(vault));
 
         V2InitializationHelper.initialize(
-            vault, address(strcMirrorModule), address(strconModule), 5, 10, uint16(ELEVATED_DEPOSIT_FEE_BPS)
+            vault, address(strcMirrorModule), address(strconModule), 5, 10, ELEVATED_DEPOSIT_FEE_BPS
         );
         vault.grantRole(vault.PARAMETER_MANAGER_ROLE(), address(this));
         vault.grantRole(vault.MARKET_MODE_MANAGER_ROLE(), address(this));
@@ -82,15 +85,39 @@ contract StakedUSDatDepositFeesTest is Test {
         StakedUSDat freshVault = _deployVault();
         ZeroAccountingModuleMock freshMirror = new ZeroAccountingModuleMock(address(freshVault));
         ZeroTradableModuleMock freshStrcon = new ZeroTradableModuleMock(address(freshVault));
+        ISTRConExecutionPolicy freshPolicy =
+            new STRConExecutionPolicy(address(freshVault), ISTRConModule(address(freshStrcon)));
 
         vm.expectRevert(IStakedUSDat.InvalidFee.selector);
-        V2InitializationHelper.initialize(freshVault, address(freshMirror), address(freshStrcon), 5, 10, 501);
+        V2InitializationHelper.initializeWithPolicy(
+            freshVault,
+            address(freshMirror),
+            ISTRConModule(address(freshStrcon)),
+            freshPolicy,
+            5,
+            10,
+            501,
+            uint64(block.timestamp + 8 hours),
+            type(uint128).max,
+            0
+        );
 
         assertEq(freshVault.baseRedemptionFeeBps(), 0);
         assertEq(freshVault.elevatedRedemptionFeeBps(), 0);
         assertEq(freshVault.elevatedDepositFeeBps(), 0);
 
-        V2InitializationHelper.initialize(freshVault, address(freshMirror), address(freshStrcon), 5, 10, 250);
+        V2InitializationHelper.initializeWithPolicy(
+            freshVault,
+            address(freshMirror),
+            ISTRConModule(address(freshStrcon)),
+            freshPolicy,
+            5,
+            10,
+            250,
+            uint64(block.timestamp + 8 hours),
+            type(uint128).max,
+            0
+        );
 
         assertEq(freshVault.baseRedemptionFeeBps(), 5);
         assertEq(freshVault.elevatedRedemptionFeeBps(), 10);

@@ -67,9 +67,9 @@ contract StakedUSDatBaselineTest is Test {
         assertTrue(vaultV2.isBlacklisted(blacklisted));
         assertEq(vaultV2.usdatBalance(), uint256(legacySlots[7]));
         assertEq(vaultV2.recoveryAddress(), address(0));
-        assertEq(uint256(vaultV2.marketMode()), uint256(IStakedUSDat.MarketMode.Regular));
+        assertEq(uint256(vaultV2.marketMode()), uint256(IStakedUSDat.MarketMode.Elevated));
         assertEq(vaultV2.elevatedDepositFeeBps(), uint256(legacySlots[5]));
-        assertEq(vaultV2.depositFeeBps(), 0);
+        assertEq(vaultV2.depositFeeBps(), uint256(legacySlots[5]));
         vm.expectRevert();
         vaultV2.totalAssets();
         assertEq(vaultV2.maxDeposit(address(this)), 0);
@@ -108,5 +108,8 @@ contract StakedUSDatBaselineTest is Test {
         assertEq(vm.load(address(proxy), bytes32(uint256(13))), bytes32(0));
         assertEq(vm.load(address(proxy), bytes32(uint256(14))), bytes32(0));
         assertEq(vm.load(address(proxy), bytes32(uint256(15))), bytes32(uint256(3 days)));
+        uint256 expectedSlotSixteen =
+            uint256(uint160(address(vaultV2.executionPolicy()))) | (uint256(vaultV2.regularModeValidUntil()) << 176);
+        assertEq(vm.load(address(proxy), bytes32(uint256(16))), bytes32(expectedSlotSixteen));
     }
 }

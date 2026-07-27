@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
+import {ISTRConExecutionPolicy} from "./ISTRConExecutionPolicy.sol";
 import {ISTRCMirrorModule} from "./modules/ISTRCMirrorModule.sol";
 import {ISTRConModule} from "./modules/ISTRConModule.sol";
 
@@ -39,12 +40,16 @@ interface IStakedUSDat is IERC4626 {
     struct V2Config {
         ISTRCMirrorModule strcMirrorModule;
         ISTRConModule strconModule;
+        ISTRConExecutionPolicy executionPolicy;
         address recoveryAddress;
         address executionVehicle;
         uint16 baseRedemptionFeeBps;
         uint16 elevatedRedemptionFeeBps;
         uint16 elevatedDepositFeeBps;
         uint16 executionToleranceBps;
+        uint64 initialRegularModeValidUntil;
+        uint128 initialExecutionCapacity;
+        uint128 initialExecutionRefillPerDay;
     }
 
     struct V2Roles {
@@ -81,6 +86,11 @@ interface IStakedUSDat is IERC4626 {
     error MarketRestricted();
 
     /**
+     * @dev Thrown when Regular mode is selected without a valid bounded authorization.
+     */
+    error InvalidRegularModeAuthorization();
+
+    /**
      * @dev Thrown when attempting to un-blacklist an address that is not blacklisted.
      */
     error AddressNotBlacklisted();
@@ -111,11 +121,6 @@ interface IStakedUSDat is IERC4626 {
     error InsufficientBalance();
 
     /**
-     * @dev Thrown when a realized execution price exceeds the configured adverse tolerance.
-     */
-    error ExecutionPriceMismatch();
-
-    /**
      * @dev Thrown when redemption fee tiers are invalid.
      */
     error InvalidFee();
@@ -124,11 +129,6 @@ interface IStakedUSDat is IERC4626 {
      * @dev Thrown when a fixed module address does not contain deployed code.
      */
     error InvalidModule();
-
-    /**
-     * @dev Thrown when the execution tolerance exceeds the protocol maximum.
-     */
-    error InvalidExecutionTolerance();
 
     /**
      * @dev Thrown when the migration tolerance exceeds the protocol maximum.
@@ -210,20 +210,6 @@ interface IStakedUSDat is IERC4626 {
     event RecoveryAddressUpdated(address indexed oldAddress, address indexed newAddress);
 
     /**
-     * @dev Emitted when the execution vehicle changes.
-     * @param oldVehicle The previous execution vehicle.
-     * @param newVehicle The new execution vehicle.
-     */
-    event ExecutionVehicleUpdated(address indexed oldVehicle, address indexed newVehicle);
-
-    /**
-     * @dev Emitted when the execution tolerance changes.
-     * @param oldBps The previous tolerance in basis points.
-     * @param newBps The new tolerance in basis points.
-     */
-    event ExecutionToleranceUpdated(uint16 oldBps, uint16 newBps);
-
-    /**
      * @dev Emitted when the migration NAV tolerance changes.
      * @param oldBps The previous tolerance in basis points.
      * @param newBps The new tolerance in basis points.
@@ -264,6 +250,12 @@ interface IStakedUSDat is IERC4626 {
      * @param newMode The new market mode.
      */
     event MarketModeChanged(MarketMode oldMode, MarketMode newMode);
+
+    /**
+     * @dev Emitted when Regular mode is authorized through a new deadline.
+     * @param validUntil The exclusive timestamp through which Regular mode is authorized.
+     */
+    event RegularModeAuthorized(uint64 validUntil);
 
     /**
      * @dev Emitted when the redemption fee tiers are updated.
@@ -468,9 +460,10 @@ interface IStakedUSDat is IERC4626 {
      * The vehicle must approve the vault to pull assetReceived of the fixed module asset.
      * @param usdatPaid The exact USDat paid, in 6-decimal units.
      * @param assetReceived The exact module asset received, in its native decimals.
+     * @param expectedVehicle The execution vehicle approved for this exact trade.
      * @param deadline The inclusive execution deadline.
      */
-    function buy(uint256 usdatPaid, uint256 assetReceived, uint256 deadline) external;
+    function buy(uint256 usdatPaid, uint256 assetReceived, address expectedVehicle, uint256 deadline) external;
 
     /**
      * @notice Sells an exact amount of STRCon to the configured execution vehicle.
@@ -478,9 +471,10 @@ interface IStakedUSDat is IERC4626 {
      * The vehicle must approve the vault to pull usdatReceived USDat.
      * @param assetDelivered The exact module asset delivered to the vehicle, in its native decimals.
      * @param usdatReceived The exact USDat received, in 6-decimal units.
+     * @param expectedVehicle The execution vehicle approved for this exact trade.
      * @param deadline The inclusive execution deadline.
      */
-    function sell(uint256 assetDelivered, uint256 usdatReceived, uint256 deadline) external;
+    function sell(uint256 assetDelivered, uint256 usdatReceived, address expectedVehicle, uint256 deadline) external;
 
     // ============ Migration Functions ============
 
@@ -536,10 +530,15 @@ interface IStakedUSDat is IERC4626 {
     function recoveryAddress() external view returns (address);
 
     /**
-     * @notice Returns the current vault operating mode.
-     * @return The current market mode.
+     * @notice Returns the effective vault operating mode.
+     * @return Regular before its authorization expires, otherwise Elevated or Restricted.
      */
     function marketMode() external view returns (MarketMode);
+
+    /**
+     * @notice Returns the exclusive timestamp through which Regular mode is authorized.
+     */
+    function regularModeValidUntil() external view returns (uint64);
 
     /**
      * @notice Returns the base redemption fee in basis points.
@@ -572,14 +571,9 @@ interface IStakedUSDat is IERC4626 {
     function strconModule() external view returns (ISTRConModule);
 
     /**
-     * @notice Returns the counterparty used for STRCon settlement.
+     * @notice Returns the fixed STRCon execution policy.
      */
-    function executionVehicle() external view returns (address);
-
-    /**
-     * @notice Returns the maximum adverse STRCon execution deviation in basis points.
-     */
-    function executionToleranceBps() external view returns (uint16);
+    function executionPolicy() external view returns (ISTRConExecutionPolicy);
 
     /**
      * @notice Returns the maximum permitted whole-vault NAV change during migration.
@@ -635,21 +629,6 @@ interface IStakedUSDat is IERC4626 {
     function setRecoveryAddress(address newRecoveryAddress) external;
 
     /**
-     * @notice Updates the counterparty used for STRCon settlement.
-     * @dev Only callable by PARAMETER_MANAGER_ROLE. The vehicle cannot be zero.
-     * @param newVehicle The new execution vehicle.
-     */
-    function setExecutionVehicle(address newVehicle) external;
-
-    /**
-     * @notice Updates the maximum adverse STRCon execution deviation.
-     * @dev Only callable by PARAMETER_MANAGER_ROLE. The value cannot exceed
-     * MAX_EXECUTION_TOLERANCE_BPS.
-     * @param newBps The new tolerance in basis points.
-     */
-    function setExecutionTolerance(uint16 newBps) external;
-
-    /**
      * @notice Updates the whole-vault NAV tolerance for migration.
      * @dev Only callable by PARAMETER_MANAGER_ROLE and capped at
      * MAX_MIGRATION_TOLERANCE_BPS.
@@ -658,12 +637,20 @@ interface IStakedUSDat is IERC4626 {
     function setMigrationTolerance(uint16 newBps) external;
 
     /**
-     * @notice Sets the vault operating mode.
+     * @notice Sets the vault to Elevated or Restricted mode.
      * @dev Only callable by addresses with the MARKET_MODE_MANAGER_ROLE. This remains
-     * callable while the vault is paused.
+     * callable while the vault is paused. Regular requires authorizeRegularMode.
      * @param newMode The explicit target market mode.
      */
     function setMarketMode(MarketMode newMode) external;
+
+    /**
+     * @notice Authorizes Regular mode through a bounded future deadline.
+     * @dev Only callable by addresses with the MARKET_MODE_MANAGER_ROLE. This remains
+     * callable while the vault is paused.
+     * @param validUntil The exclusive timestamp through which Regular mode is authorized.
+     */
+    function authorizeRegularMode(uint64 validUntil) external;
 
     /**
      * @notice Updates both redemption fee tiers.

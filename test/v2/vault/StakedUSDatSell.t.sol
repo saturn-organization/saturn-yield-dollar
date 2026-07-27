@@ -13,6 +13,7 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {StakedUSDat} from "../../../src/v2/StakedUSDat.sol";
 import {IAccountingModule} from "../../../src/v2/interfaces/modules/IAccountingModule.sol";
 import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
+import {ISTRConExecutionPolicy} from "../../../src/v2/interfaces/ISTRConExecutionPolicy.sol";
 import {ITradableModule} from "../../../src/v2/interfaces/modules/ITradableModule.sol";
 import {IWithdrawalQueueERC721} from "../../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
 import {BoundMirrorModuleMock, V2InitializationHelper} from "../helpers/V2InitializationHelper.sol";
@@ -27,7 +28,7 @@ contract SellTokenMock is ERC20 {
     error ConfiguredTransferFailure();
     error ConservativeOrderViolated();
 
-    uint8 private immutable _tokenDecimals;
+    uint8 private immutable _TOKEN_DECIMALS;
     TransferBehavior private _behavior;
     address private _affectedSender;
     uint256 private _shortfall;
@@ -42,11 +43,11 @@ contract SellTokenMock is ERC20 {
     uint256 public moduleBalanceObservedAtTransfer;
 
     constructor(string memory name_, string memory symbol_, uint8 decimals_) ERC20(name_, symbol_) {
-        _tokenDecimals = decimals_;
+        _TOKEN_DECIMALS = decimals_;
     }
 
     function decimals() public view override returns (uint8) {
-        return _tokenDecimals;
+        return _TOKEN_DECIMALS;
     }
 
     function mint(address to, uint256 amount) external {
@@ -255,6 +256,10 @@ contract StakedUSDatSellTest is Test {
         uint256 shareSupply;
         uint256 surplusAmount;
         uint256 surplusStart;
+        uint128 capacityMaximum;
+        uint128 capacityAvailable;
+        uint128 capacityRefillPerDay;
+        uint64 capacityLastUpdated;
     }
 
     uint256 private constant ORACLE_PRICE = 100e8;
@@ -270,6 +275,7 @@ contract StakedUSDatSellTest is Test {
     SellMirrorModuleMock private mirror;
     SellTradableModuleMock private module;
     StakedUSDat private vault;
+    ISTRConExecutionPolicy private policy;
 
     address private vehicle = makeAddr("executionVehicle");
     address private unauthorized = makeAddr("unauthorized");
@@ -297,14 +303,15 @@ contract StakedUSDatSellTest is Test {
         mirror = new SellMirrorModuleMock(address(vault));
         module = new SellTradableModuleMock(address(vault), address(strcon), address(usdat), ORACLE_PRICE);
         V2InitializationHelper.initialize(vault, address(mirror), address(module), 5, 10, 25);
+        policy = vault.executionPolicy();
 
         vault.grantRole(vault.OPERATOR_ROLE(), address(this));
         vault.grantRole(vault.PARAMETER_MANAGER_ROLE(), address(this));
         vault.grantRole(vault.MARKET_MODE_MANAGER_ROLE(), address(this));
         vault.grantRole(vault.PAUSER_ROLE(), address(this));
         vault.grantRole(vault.UNPAUSER_ROLE(), address(this));
-        vault.setExecutionVehicle(vehicle);
-        vault.setExecutionTolerance(500);
+        policy.setExecutionVehicle(vehicle);
+        policy.setExecutionTolerance(500);
 
         usdat.mint(address(this), CASH);
         usdat.approve(address(vault), CASH);
@@ -326,7 +333,9 @@ contract StakedUSDatSellTest is Test {
         Snapshot memory beforeState = _snapshot(vehicle);
 
         module.expectConservativeOrder(
-            beforeState.trackedUsdat, beforeState.vaultUsdat + BOUNDARY_AMOUNT_OUT, beforeState.vaultStrcon
+            beforeState.trackedUsdat + BOUNDARY_AMOUNT_OUT,
+            beforeState.vaultUsdat + BOUNDARY_AMOUNT_OUT,
+            beforeState.vaultStrcon
         );
         strcon.expectOutboundOrder(
             address(vault),
@@ -354,7 +363,7 @@ contract StakedUSDatSellTest is Test {
         assertEq(usdat.balanceOf(address(vault)) - vault.usdatBalance(), activeSurplus);
 
         assertEq(module.lastSellAmount(), AMOUNT_IN);
-        assertEq(module.trackedUsdatObservedAtSell(), beforeState.trackedUsdat);
+        assertEq(module.trackedUsdatObservedAtSell(), beforeState.trackedUsdat + BOUNDARY_AMOUNT_OUT);
         assertEq(module.usdatCustodyObservedAtSell(), beforeState.vaultUsdat + BOUNDARY_AMOUNT_OUT);
         assertEq(module.assetCustodyObservedAtSell(), beforeState.vaultStrcon);
         assertEq(strcon.trackedUsdatObservedAtTransfer(), beforeState.trackedUsdat + BOUNDARY_AMOUNT_OUT);
@@ -367,7 +376,7 @@ contract StakedUSDatSellTest is Test {
     function testFuzz_sell_ValidAmountsPreserveAccountingAndCustodyInvariants(uint96 rawAmountIn) public {
         uint256 amountIn = bound(uint256(rawAmountIn), 1e18, 500e18);
         uint256 amountOut = Math.mulDiv(amountIn, ORACLE_PRICE, 1e20, Math.Rounding.Ceil);
-        vault.setExecutionTolerance(0);
+        policy.setExecutionTolerance(0);
 
         Snapshot memory beforeState = _snapshot(vehicle);
         _sell(amountIn, amountOut, block.timestamp);
@@ -385,7 +394,7 @@ contract StakedUSDatSellTest is Test {
     }
 
     function test_sell_AllowsFavorablePriceInElevatedMode() public {
-        vault.setExecutionTolerance(0);
+        policy.setExecutionTolerance(0);
         vault.setMarketMode(IStakedUSDat.MarketMode.Elevated);
 
         _sell(AMOUNT_IN, FAVORABLE_AMOUNT_OUT, block.timestamp + 1);
@@ -394,10 +403,44 @@ contract StakedUSDatSellTest is Test {
         assertEq(module.balance(), POSITION - AMOUNT_IN);
     }
 
+    function test_sell_ConsumesGreaterOfActualUSDatAndCeilOracleNotional() public {
+        policy.setExecutionCapacity(20_000e6, 0);
+
+        _sell(AMOUNT_IN, FAVORABLE_AMOUNT_OUT, block.timestamp);
+
+        (, uint128 available,,) = policy.executionCapacity();
+        assertEq(available, 9_900e6);
+    }
+
+    function test_sell_CeilRoundsOracleNotionalAgainstAvailableCapacity() public {
+        policy.setExecutionCapacity(200e6, 0);
+
+        _sell(1e18 + 1, 100e6, block.timestamp);
+
+        (, uint128 available,,) = policy.executionCapacity();
+        assertEq(available, 99_999_999);
+    }
+
+    function test_sell_RejectsExecutionVehicleChangedAfterApproval() public {
+        address approvedVehicle = vehicle;
+        address replacementVehicle = makeAddr("replacementVehicle");
+        policy.setExecutionCapacity(20_000e6, 0);
+        policy.setExecutionVehicle(replacementVehicle);
+        Snapshot memory beforeState = _snapshot(replacementVehicle);
+
+        vm.expectRevert(ISTRConExecutionPolicy.ExecutionVehicleMismatch.selector);
+        vault.sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT, approvedVehicle, block.timestamp);
+
+        _assertUnchanged(beforeState, replacementVehicle);
+        assertEq(policy.executionVehicle(), replacementVehicle);
+        (, uint128 available,,) = policy.executionCapacity();
+        assertEq(available, 20_000e6);
+    }
+
     function test_sell_RejectsFirstPriceUnitBelowBoundaryAndRollsBack() public {
         Snapshot memory beforeState = _snapshot(vehicle);
 
-        vm.expectRevert(IStakedUSDat.ExecutionPriceMismatch.selector);
+        vm.expectRevert(ISTRConExecutionPolicy.ExecutionPriceMismatch.selector);
         _sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT - 1, block.timestamp);
 
         _assertUnchanged(beforeState, vehicle);
@@ -408,7 +451,7 @@ contract StakedUSDatSellTest is Test {
 
         // The exact quotient is below 95e8 but would round up to the boundary.
         // The required floor must reject it.
-        vm.expectRevert(IStakedUSDat.ExecutionPriceMismatch.selector);
+        vm.expectRevert(ISTRConExecutionPolicy.ExecutionPriceMismatch.selector);
         _sell(AMOUNT_IN + 1, BOUNDARY_AMOUNT_OUT, block.timestamp);
 
         _assertUnchanged(beforeState, vehicle);
@@ -416,13 +459,13 @@ contract StakedUSDatSellTest is Test {
 
     function test_sell_CeilRoundsMinimumPriceAgainstVault() public {
         module.setPrice(ORACLE_PRICE + 1);
-        vault.setExecutionTolerance(1);
+        policy.setExecutionTolerance(1);
 
         uint256 roundedUpMinimum = 9_999_000_001;
         _sell(AMOUNT_IN, roundedUpMinimum, block.timestamp);
 
         Snapshot memory afterBoundary = _snapshot(vehicle);
-        vm.expectRevert(IStakedUSDat.ExecutionPriceMismatch.selector);
+        vm.expectRevert(ISTRConExecutionPolicy.ExecutionPriceMismatch.selector);
         _sell(AMOUNT_IN, roundedUpMinimum - 1, block.timestamp);
         _assertUnchanged(afterBoundary, vehicle);
     }
@@ -533,7 +576,7 @@ contract StakedUSDatSellTest is Test {
         vault.setMarketMode(IStakedUSDat.MarketMode.Restricted);
         vm.expectRevert(IStakedUSDat.MarketRestricted.selector);
         _sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT, block.timestamp);
-        vault.setMarketMode(IStakedUSDat.MarketMode.Regular);
+        vault.authorizeRegularMode(uint64(block.timestamp + 8 hours));
         _assertUnchanged(beforeState, vehicle);
 
         vm.expectRevert(IStakedUSDat.DeadlineExpired.selector);
@@ -560,19 +603,19 @@ contract StakedUSDatSellTest is Test {
         usdat.approve(address(vault), VEHICLE_CASH);
 
         module.setPrice(110e8);
-        vault.setExecutionTolerance(0);
+        policy.setExecutionTolerance(0);
 
         uint256 oldVehicleUsdat = usdat.balanceOf(vehicle);
         uint256 oldVehicleStrcon = strcon.balanceOf(vehicle);
 
-        vault.setExecutionVehicle(replacementVehicle);
+        policy.setExecutionVehicle(replacementVehicle);
         module.setPrice(ORACLE_PRICE);
-        vault.setExecutionTolerance(500);
+        policy.setExecutionTolerance(500);
 
         Snapshot memory beforeState = _snapshot(replacementVehicle);
         vm.expectEmit(true, true, false, true, address(vault));
         emit AssetSold(address(module), replacementVehicle, AMOUNT_IN, BOUNDARY_AMOUNT_OUT, ORACLE_PRICE);
-        _sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT, block.timestamp);
+        vault.sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT, replacementVehicle, block.timestamp);
 
         assertEq(usdat.balanceOf(replacementVehicle), beforeState.vehicleUsdat - BOUNDARY_AMOUNT_OUT);
         assertEq(strcon.balanceOf(replacementVehicle), beforeState.vehicleStrcon + AMOUNT_IN);
@@ -594,7 +637,7 @@ contract StakedUSDatSellTest is Test {
     }
 
     function _sell(uint256 amountIn, uint256 amountOut, uint256 deadline) private {
-        vault.sell(amountIn, amountOut, deadline);
+        vault.sell(amountIn, amountOut, vehicle, deadline);
     }
 
     function _snapshot(address currentVehicle) private view returns (Snapshot memory state) {
@@ -609,6 +652,8 @@ contract StakedUSDatSellTest is Test {
         state.shareSupply = vault.totalSupply();
         state.surplusAmount = vault.surplusVestingAmount();
         state.surplusStart = vault.surplusVestingStartTimestamp();
+        (state.capacityMaximum, state.capacityAvailable, state.capacityRefillPerDay, state.capacityLastUpdated) =
+            policy.executionCapacity();
     }
 
     function _assertUnchanged(Snapshot memory state, address currentVehicle) private view {
@@ -623,5 +668,11 @@ contract StakedUSDatSellTest is Test {
         assertEq(vault.totalSupply(), state.shareSupply);
         assertEq(vault.surplusVestingAmount(), state.surplusAmount);
         assertEq(vault.surplusVestingStartTimestamp(), state.surplusStart);
+        (uint128 capacityMaximum, uint128 capacityAvailable, uint128 capacityRefillPerDay, uint64 capacityLastUpdated) =
+            policy.executionCapacity();
+        assertEq(capacityMaximum, state.capacityMaximum);
+        assertEq(capacityAvailable, state.capacityAvailable);
+        assertEq(capacityRefillPerDay, state.capacityRefillPerDay);
+        assertEq(capacityLastUpdated, state.capacityLastUpdated);
     }
 }
