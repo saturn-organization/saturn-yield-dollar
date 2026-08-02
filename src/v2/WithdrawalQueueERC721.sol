@@ -234,15 +234,15 @@ contract WithdrawalQueueERC721 is
             Request storage req = requests[tokenId];
             require(req.status == RequestStatus.Requested, RequestNotOpen());
 
-            (IStakedUSDat.RedemptionResult result, uint256 usdat) =
+            (IStakedUSDat.RedemptionResult result, uint256 net) =
                 STAKED_USDAT.redeemQueuedShares(req.shares, req.minSharePrice);
             if (result == IStakedUSDat.RedemptionResult.BelowLimit) continue;
             if (result == IStakedUSDat.RedemptionResult.InsufficientLiquidity) continue;
 
-            req.usdatOwed = usdat;
+            req.usdatOwed = net;
             req.status = RequestStatus.Processed;
 
-            emit WithdrawalProcessed(tokenId, req.shares, usdat);
+            emit WithdrawalProcessed(tokenId, req.shares, net);
         }
     }
 

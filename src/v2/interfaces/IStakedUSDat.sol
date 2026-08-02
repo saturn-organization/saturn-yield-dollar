@@ -509,11 +509,11 @@ interface IStakedUSDat is IERC4626 {
      * @param shares The complete number of escrowed shares to redeem.
      * @param minSharePrice The minimum net USDat payout per 1e18 shares.
      * @return result Whether the request settled or why it was skipped.
-     * @return usdat The net USDat transferred to the queue when settled.
+     * @return net The net USDat transferred to the queue when settled.
      */
     function redeemQueuedShares(uint256 shares, uint256 minSharePrice)
         external
-        returns (RedemptionResult result, uint256 usdat);
+        returns (RedemptionResult result, uint256 net);
 
     // ============ View Functions ============
 

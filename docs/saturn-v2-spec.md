@@ -1010,10 +1010,11 @@ For storage compatibility, the v1 `depositFeeBps` slot stores
 The intended launch range for the redemption-fee tiers is approximately 5–10 bps; the exact
 base and elevated values remain approved launch parameters.
 
-`previewDeposit`/`previewMint` include `depositFeeBps()`. `previewRedeem` remains gross
-(`convertToAssets`); `redeem()` is disabled, and frontends apply the active redemption fee
-when presenting the net queue proceeds and `minSharePrice` described in §2.6. The fee is not
-snapshotted at request creation. Appendix F gives the permission matrix.
+`previewDeposit`/`previewMint` include `depositFeeBps()`. `previewWithdraw` returns zero because
+`withdraw()` is disabled. `previewRedeem(shares)` returns the same net payout used by
+`redeemQueuedShares`: gross `convertToAssets(shares)` less the active redemption fee rounded up.
+`redeem()` remains disabled. The fee is not snapshotted at request creation. Appendix F gives the
+permission matrix.
 
 ### 2.8 Roles
 

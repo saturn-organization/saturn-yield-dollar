@@ -182,6 +182,36 @@ contract StakedUSDatRedemptionFeesTest is Test {
         assertEq(vault.elevatedRedemptionFeeBps(), 10);
     }
 
+    function test_previewRedeem_DeductsCeilRoundedFeeAndMatchesQueuedPayout() public {
+        _initializeAndDeposit(5, 10);
+        uint256 shares = 10_000_001e12;
+        uint256 gross = vault.convertToAssets(shares);
+        uint256 fee = Math.mulDiv(gross, 5, vault.BPS_DENOMINATOR(), Math.Rounding.Ceil);
+        uint256 preview = vault.previewRedeem(shares);
+
+        (IStakedUSDat.RedemptionResult result, uint256 payout) = queue.redeemQueuedShares(vault, shares, 0);
+
+        assertEq(preview, gross - fee);
+        assertEq(uint256(result), uint256(IStakedUSDat.RedemptionResult.Settled));
+        assertEq(payout, preview);
+    }
+
+    function test_previewRedeem_UsesFeeSelectedByMarketMode() public {
+        _initializeAndDeposit(5, 500);
+        uint256 shares = 40e18;
+        uint256 gross = vault.convertToAssets(shares);
+        uint256 baseFee = Math.mulDiv(gross, 5, vault.BPS_DENOMINATOR(), Math.Rounding.Ceil);
+        uint256 elevatedFee = Math.mulDiv(gross, 500, vault.BPS_DENOMINATOR(), Math.Rounding.Ceil);
+
+        assertEq(vault.previewRedeem(shares), gross - baseFee);
+
+        vault.setMarketMode(IStakedUSDat.MarketMode.Elevated);
+        assertEq(vault.previewRedeem(shares), gross - elevatedFee);
+
+        vault.setMarketMode(IStakedUSDat.MarketMode.Restricted);
+        assertEq(vault.previewRedeem(shares), gross - elevatedFee);
+    }
+
     function test_redeemQueuedShares_CeilRoundsAndRetainsFeeInVault() public {
         _initializeAndDeposit(5, 10);
         uint256 shares = 10_000_001e12;

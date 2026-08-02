@@ -650,6 +650,20 @@ contract StakedUSDat is
     // ============ Withdrawal Functions ============
 
     /// @inheritdoc IERC4626
+    /// @dev Returns zero because exact-asset withdrawals are disabled.
+    function previewWithdraw(uint256) public pure override(ERC4626Upgradeable, IERC4626) returns (uint256) {
+        return 0;
+    }
+
+    /// @inheritdoc IERC4626
+    /// @dev Returns the net queued-redemption payout after the active fee.
+    function previewRedeem(uint256 shares) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
+        uint256 gross = convertToAssets(shares);
+        uint256 fee = Math.mulDiv(gross, redemptionFeeBps(), BPS_DENOMINATOR, Math.Rounding.Ceil);
+        return gross - fee;
+    }
+
+    /// @inheritdoc IERC4626
     /// @dev Disabled - use requestRedeem instead.
     function withdraw(uint256, address, address) public pure override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         revert OperationNotAllowed();
@@ -698,28 +712,26 @@ contract StakedUSDat is
         whenNotPaused
         whenNotRestricted
         notZero(shares)
-        returns (RedemptionResult result, uint256 usdat)
+        returns (RedemptionResult result, uint256 net)
     {
         _sweep();
 
-        uint256 gross = convertToAssets(shares);
-        uint256 fee = Math.mulDiv(gross, redemptionFeeBps(), BPS_DENOMINATOR, Math.Rounding.Ceil);
-        usdat = gross - fee;
+        net = previewRedeem(shares);
 
-        uint256 netSharePrice = Math.mulDiv(usdat, 1e18, shares, Math.Rounding.Floor);
+        uint256 netSharePrice = Math.mulDiv(net, 1e18, shares, Math.Rounding.Floor);
         if (netSharePrice < minSharePrice) {
             return (RedemptionResult.BelowLimit, 0);
         }
 
-        if (usdatBalance < usdat) {
+        if (usdatBalance < net) {
             return (RedemptionResult.InsufficientLiquidity, 0);
         }
 
-        usdatBalance -= usdat;
+        usdatBalance -= net;
         _burn(address(WITHDRAWAL_QUEUE), shares);
 
-        IERC20(asset()).safeTransfer(address(WITHDRAWAL_QUEUE), usdat);
-        return (RedemptionResult.Settled, usdat);
+        IERC20(asset()).safeTransfer(address(WITHDRAWAL_QUEUE), net);
+        return (RedemptionResult.Settled, net);
     }
 
     /// @inheritdoc IStakedUSDat

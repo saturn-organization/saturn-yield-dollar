@@ -31,6 +31,14 @@ contract StakedUSDatBaselineTest is Test {
         assertGt(address(implementation).code.length, 0);
     }
 
+    function test_previewWithdrawReturnsZeroWhenWithdrawIsUnsupported() public {
+        IStakedUSDat implementation = new StakedUSDatV2(IWithdrawalQueueV2(makeAddr("withdrawalQueue")));
+
+        assertEq(implementation.previewWithdraw(0), 0);
+        assertEq(implementation.previewWithdraw(1e6), 0);
+        assertEq(implementation.previewWithdraw(type(uint256).max), 0);
+    }
+
     function test_v1StoragePrefixSurvivesUpgradeAndV2StateAppendsAtSlotTen() public {
         BaselineUSDatMock usdat = new BaselineUSDatMock();
         address withdrawalQueue = makeAddr("withdrawalQueue");
