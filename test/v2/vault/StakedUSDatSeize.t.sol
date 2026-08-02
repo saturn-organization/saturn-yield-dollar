@@ -87,6 +87,15 @@ contract StakedUSDatSeizeTest is Test {
         _assertBalances(HOLDER_BALANCE, 0, 0);
     }
 
+    function test_seize_USDatFreezeAloneDoesNotAuthorizeSeizure() public {
+        usdat.setFrozen(holder, true);
+
+        vm.expectRevert(IStakedUSDat.AddressNotBlacklisted.selector);
+        vault.seize(holder);
+
+        _assertBalances(HOLDER_BALANCE, 0, 0);
+    }
+
     function test_seize_RequiresPositiveBalance() public {
         address emptyHolder = makeAddr("emptyHolder");
         vault.addToBlacklist(emptyHolder);

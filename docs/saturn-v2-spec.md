@@ -1044,6 +1044,12 @@ that no key can re-point or widen.
 Deliberate separations: **freeze ≠ seize** (a compromised blacklister can freeze, never
 move funds) and **pause ≠ unpause** (a compromised pauser can grief, not un-halt).
 
+For ordinary vault activity, an account is restricted when it is either on the canonical
+sUSDat blacklist or frozen on USDat. Deposits, share transfers, and redemption requests
+reject restricted callers, owners, senders, and receivers. `isBlacklisted(account)` reports
+only the local sUSDat list; `isRestricted(account)` reports the union of both systems.
+Removing the local blacklist does not override an active USDat freeze.
+
 The execution policy's parameter setters are not vault forwarding functions. The authorized
 timelock calls the fixed policy directly, and the policy verifies the caller with
 `IAccessControl(VAULT).hasRole(PARAMETER_MANAGER_ROLE, msg.sender)`.
