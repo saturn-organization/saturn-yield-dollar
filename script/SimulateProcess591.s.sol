@@ -23,11 +23,11 @@ contract SimulateProcess591 is Script {
 
         // uint256 usdatAmount = (positionUsdat * (10000 - feeBps)) / 10000;
         // uint256 strcAmount = (positionStrc * (10000 - feeBps)) / 10000;
-        uint256 usdatAmount = uint256(409000000000);
-        uint256 strcAmount = uint256(4636136930);
+        uint256 usdatAmount = uint256(67798000000);
+        uint256 strcAmount = uint256(767719500);
 
-        uint256 strcPrice = uint256(8822000000);
-        uint256 tokenId = 606;
+        uint256 strcPrice = uint256(8831090000);
+        uint256 tokenId = 854;
 
         IWithdrawalQueueERC721.Request memory req = WQ.getRequest(tokenId);
         console2.log("BEFORE  usdatAmount:", usdatAmount);
