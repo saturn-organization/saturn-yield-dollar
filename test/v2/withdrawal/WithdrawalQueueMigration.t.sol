@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {WithdrawalQueueERC721 as WithdrawalQueueV1} from "../../../src/v1/WithdrawalQueueERC721.sol";
@@ -63,6 +64,8 @@ contract WithdrawalQueueMigrationTest is Test {
     address private compliance = makeAddr("v1Compliance");
     address private alice = makeAddr("alice");
     address private bob = makeAddr("bob");
+
+    event LegacyInProgressRequestReset(uint256 indexed tokenId);
 
     function setUp() public {
         usdat = new QueueUSDatMock();
@@ -165,6 +168,75 @@ contract WithdrawalQueueMigrationTest is Test {
         _upgradeToV2();
 
         assertEq(queueV2.nextTokenId(), type(uint256).max);
+    }
+
+    function test_resetLegacyInProgressRequest_ChangesOnlyStatusAndWorksWhilePaused() public {
+        uint256 tokenId = _createV1Request(alice, 11e18, 101e6);
+        _setRequestState(tokenId, 0, IWithdrawalQueueV2.RequestStatus.InProgress);
+
+        vm.prank(alice);
+        queueV1.approve(bob, tokenId);
+        vm.prank(compliance);
+        queueV1.pause();
+
+        bytes32[5] memory requestBefore = _rawRequest(tokenId);
+        _upgradeToV2();
+
+        vm.expectEmit(true, false, false, true, address(queueV2));
+        emit LegacyInProgressRequestReset(tokenId);
+        queueV2.resetLegacyInProgressRequest(tokenId);
+
+        _assertOnlyStatusChanged(tokenId, requestBefore, IWithdrawalQueueV2.RequestStatus.Requested);
+        assertEq(queueV2.ownerOf(tokenId), alice);
+        assertEq(queueV2.getApproved(tokenId), bob);
+        assertTrue(queueV2.paused());
+
+        vm.prank(unpauser);
+        queueV2.unpause();
+        uint256[] memory tokenIds = new uint256[](1);
+        tokenIds[0] = tokenId;
+        vm.prank(operator);
+        queueV2.processRequests(tokenIds);
+
+        (,,,, IWithdrawalQueueV2.RequestStatus status) = queueV2.requests(tokenId);
+        assertEq(uint256(status), uint256(IWithdrawalQueueV2.RequestStatus.Processed));
+    }
+
+    function test_resetLegacyInProgressRequest_RequiresAdminAndInProgressStatus() public {
+        uint256 inProgressId = _createV1Request(alice, 11e18, 101e6);
+        uint256 requestedId = _createV1Request(bob, 12e18, 102e6);
+        _setRequestState(inProgressId, 0, IWithdrawalQueueV2.RequestStatus.InProgress);
+        _upgradeToV2();
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector, operator, queueV2.DEFAULT_ADMIN_ROLE()
+            )
+        );
+        vm.prank(operator);
+        queueV2.resetLegacyInProgressRequest(inProgressId);
+
+        vm.expectRevert(IWithdrawalQueueV2.RequestNotInProgress.selector);
+        queueV2.resetLegacyInProgressRequest(requestedId);
+
+        (,,,, IWithdrawalQueueV2.RequestStatus status) = queueV2.requests(inProgressId);
+        assertEq(uint256(status), uint256(IWithdrawalQueueV2.RequestStatus.InProgress));
+    }
+
+    function test_resetLegacyInProgressRequest_CanRecoverMissedIdInLaterCall() public {
+        uint256 firstId = _createV1Request(alice, 11e18, 101e6);
+        uint256 secondId = _createV1Request(bob, 12e18, 102e6);
+        _setRequestState(firstId, 0, IWithdrawalQueueV2.RequestStatus.InProgress);
+        _setRequestState(secondId, 0, IWithdrawalQueueV2.RequestStatus.InProgress);
+        _upgradeToV2();
+
+        queueV2.resetLegacyInProgressRequest(firstId);
+        queueV2.resetLegacyInProgressRequest(secondId);
+
+        (,,,, IWithdrawalQueueV2.RequestStatus firstStatus) = queueV2.requests(firstId);
+        (,,,, IWithdrawalQueueV2.RequestStatus secondStatus) = queueV2.requests(secondId);
+        assertEq(uint256(firstStatus), uint256(IWithdrawalQueueV2.RequestStatus.Requested));
+        assertEq(uint256(secondStatus), uint256(IWithdrawalQueueV2.RequestStatus.Requested));
     }
 
     function test_addRequest_StoresRequestedStatusAndUnchangedLimit() public {
@@ -278,6 +350,18 @@ contract WithdrawalQueueMigrationTest is Test {
         for (uint256 i = 0; i < expected.length; i++) {
             assertEq(vm.load(proxy, _offset(base, i)), expected[i]);
         }
+    }
+
+    function _assertOnlyStatusChanged(
+        uint256 tokenId,
+        bytes32[5] memory beforeValues,
+        IWithdrawalQueueV2.RequestStatus expectedStatus
+    ) private view {
+        bytes32 base = _requestBaseSlot(tokenId);
+        for (uint256 i = 0; i < beforeValues.length - 1; i++) {
+            assertEq(vm.load(proxy, _offset(base, i)), beforeValues[i]);
+        }
+        assertEq(vm.load(proxy, _offset(base, 4)), bytes32(uint256(expectedStatus)));
     }
 
     function _requestBaseSlot(uint256 tokenId) private pure returns (bytes32) {

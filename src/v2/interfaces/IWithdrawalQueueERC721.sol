@@ -71,6 +71,11 @@ interface IWithdrawalQueueERC721 {
     error RequestNotOpen();
 
     /**
+     * @dev Thrown when legacy recovery is attempted for a request that is not InProgress.
+     */
+    error RequestNotInProgress();
+
+    /**
      * @dev Thrown when an operation requires a Processed request.
      */
     error RequestNotProcessed();
@@ -133,6 +138,12 @@ interface IWithdrawalQueueERC721 {
     event RequestCancelled(uint256 indexed tokenId, address indexed user, uint256 shares);
 
     /**
+     * @dev Emitted when a legacy InProgress request is returned to Requested.
+     * @param tokenId The request ID reset by the admin.
+     */
+    event LegacyInProgressRequestReset(uint256 indexed tokenId);
+
+    /**
      * @dev Emitted when a processed request's complete payout is seized.
      * @param tokenId The NFT token ID of the seized request.
      * @param user The restricted user whose funds were seized.
@@ -162,6 +173,14 @@ interface IWithdrawalQueueERC721 {
      * @dev Only callable by addresses with the UNPAUSER_ROLE.
      */
     function unpause() external;
+
+    /**
+     * @notice Returns a legacy InProgress request to the Requested state.
+     * @dev Only callable by DEFAULT_ADMIN_ROLE, including while paused. The request
+     * must currently be InProgress.
+     * @param tokenId Legacy request ID to reset.
+     */
+    function resetLegacyInProgressRequest(uint256 tokenId) external;
 
     // ============ Request Creation ============
 
