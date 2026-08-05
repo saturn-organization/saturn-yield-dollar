@@ -169,6 +169,9 @@ contract StakedUSDat is
     /// @inheritdoc IStakedUSDat
     uint64 public override regularModeValidUntil;
 
+    /// @dev Portion of the active surplus tranche already folded into usdatBalance.
+    uint256 private _surplusSwept;
+
     modifier notZero(uint256 amount) {
         _notZero(amount);
         _;
@@ -351,7 +354,7 @@ contract StakedUSDat is
     /// @dev Adds cash, vested surplus, and both fixed module values.
     /// Module pricing failures deliberately propagate.
     function totalAssets() public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
-        uint256 vestedSurplus = surplusVestingAmount - getUnvestedSurplus();
+        uint256 vestedSurplus = _unsweptSurplus() - getUnvestedSurplus();
         return usdatBalance + vestedSurplus + strcMirrorModule.recognizedValue() + strconModule.recognizedValue();
     }
 
@@ -452,15 +455,31 @@ contract StakedUSDat is
         _sweep();
     }
 
-    /// @dev Moves a fully vested surplus tranche into the spendable USDat balance.
+    /// @dev Moves newly vested surplus into the spendable USDat balance.
     function _sweep() private {
         uint256 amount = surplusVestingAmount;
-        if (amount == 0 || getUnvestedSurplus() != 0) return;
+        if (amount == 0) return;
 
-        surplusVestingAmount = 0;
-        usdatBalance += amount;
+        uint256 unvested = getUnvestedSurplus();
+        uint256 vested = amount - unvested;
+        uint256 releasable = vested - _surplusSwept;
 
-        emit SurplusSwept(amount);
+        if (releasable != 0) {
+            _surplusSwept = vested;
+            usdatBalance += releasable;
+
+            emit SurplusSwept(releasable);
+        }
+
+        if (unvested == 0) {
+            surplusVestingAmount = 0;
+            _surplusSwept = 0;
+        }
+    }
+
+    /// @dev Returns the portion of the active tranche not yet folded into usdatBalance.
+    function _unsweptSurplus() private view returns (uint256) {
+        return surplusVestingAmount - _surplusSwept;
     }
 
     // ============ Migration Functions ============
@@ -508,7 +527,7 @@ contract StakedUSDat is
             usdatPaid,
             assetReceived,
             usdatBalance,
-            surplusVestingAmount
+            _unsweptSurplus()
         );
     }
 
@@ -537,7 +556,7 @@ contract StakedUSDat is
             assetDelivered,
             usdatReceived,
             usdatBalance,
-            surplusVestingAmount
+            _unsweptSurplus()
         );
     }
 
@@ -774,7 +793,7 @@ contract StakedUSDat is
 
         uint256 protectedBalance;
         if (token == asset()) {
-            protectedBalance = usdatBalance + surplusVestingAmount;
+            protectedBalance = usdatBalance + _unsweptSurplus();
         }
 
         ISTRConModule module = strconModule;
