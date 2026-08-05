@@ -176,7 +176,7 @@ interface IWithdrawalQueueERC721 {
 
     /**
      * @notice Returns a legacy InProgress request to the Requested state.
-     * @dev Only callable by DEFAULT_ADMIN_ROLE, including while paused. The request
+     * @dev Only callable by OPERATOR_ROLE, including while paused. The request
      * must currently be InProgress.
      * @param tokenId Legacy request ID to reset.
      */

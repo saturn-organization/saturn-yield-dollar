@@ -140,7 +140,7 @@ contract WithdrawalQueueERC721 is
     }
 
     /// @inheritdoc IWithdrawalQueueERC721
-    function resetLegacyInProgressRequest(uint256 tokenId) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function resetLegacyInProgressRequest(uint256 tokenId) external onlyRole(OPERATOR_ROLE) {
         Request storage req = requests[tokenId];
         require(req.status == RequestStatus.InProgress, RequestNotInProgress());
         req.status = RequestStatus.Requested;

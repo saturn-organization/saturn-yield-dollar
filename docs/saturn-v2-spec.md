@@ -52,7 +52,7 @@ sUSDat mutations; queue-local pause separately gates queue-only actions (§2.6).
 | `processRequests(tokenIds, totalUsdatReceived, totalStrcSold, executionPrice)` — batch pro-rata against an attested STRC sale | `processRequests(tokenIds)` — whole-request settlement at current NAV from the vault's USDat buffer (§2.6) |
 | `claim` + `claimBatch`/`claimAll`/`claimBatchFor`/`claimAllFor` | single `claim(tokenId)` (§2.6) |
 | `_validateTotals`, `_isWithinTolerance`, `_validateAmount`, oracle/asset-sale reads | dropped — the queue never knows which backing asset funds the buffer; settlement pricing and fees live in the vault |
-| `lockRequests` / `unlockRequests`, `InProgress` | operational locking dropped — settlement is atomic at the validated mark; `resetLegacyInProgressRequest` remains only as an admin recovery path for an inherited `InProgress` request |
+| `lockRequests` / `unlockRequests`, `InProgress` | operational locking dropped — settlement is atomic at the validated mark; `resetLegacyInProgressRequest` remains only as an operator recovery path for an inherited `InProgress` request |
 | `minUsdatReceived` (absolute payout bound) | `minSharePrice` (6-decimal minimum net USDat payout per `1e18` shares after the active redemption fee, §2.6); the same storage slot is reinterpreted without conversion and legacy owners receive a grace period to update or cancel (§3.1) |
 | dust flow (`approve` + `collectDust`) | dropped |
 | `SlippageExceeded` revert on unmet limit | below-limit requests are skipped, not reverted |
@@ -752,7 +752,7 @@ struct Request {
 ```
 
 Lifecycle is `Requested → Processed → Claimed` or `Requested → Cancelled`. `InProgress`
-only preserves v1 numbering and v2 never creates it. `DEFAULT_ADMIN_ROLE` may atomically
+only preserves v1 numbering and v2 never creates it. `OPERATOR_ROLE` may atomically
 return an explicitly selected legacy `InProgress` request to `Requested`, including while
 the queue is paused; the selected request must have that exact status.
 Processed USDat stays in the queue until claimed. There are no partial fills: the stored
@@ -1026,10 +1026,10 @@ Capability-named (`keccak256("<NAME>_ROLE")`):
 
 | Role | Definition | Scope | Permitted co-location | Timelocked |
 |---|---|---|---|---|
-| `DEFAULT_ADMIN_ROLE` | Grant/revoke roles; authorize UUPS upgrades; execute `migrate`; reset inherited queue requests from `InProgress` to `Requested` | StakedUSDat and queue, with separate grants | No other role | Yes |
+| `DEFAULT_ADMIN_ROLE` | Grant/revoke roles; authorize UUPS upgrades; execute `migrate` | StakedUSDat and queue, with separate grants | No other role | Yes |
 | `PARAMETER_MANAGER_ROLE` | Set vault fees, vesting/reward limits, migration parameters and `recoveryAddress`; directly set the fixed policy's execution vehicle, tolerance and capacity; set the active STRCon oracle wrapper | Vault role registry, including direct authorization reads by the fixed policy, bound modules, and wrapper | No other role | Yes |
 | `MARKET_MODE_MANAGER_ROLE` | Set Elevated or Restricted and grant expiring Regular authorization for at most eight hours; cannot set fee amounts or clear hard pause | StakedUSDat | `OPERATOR_ROLE` only | No |
-| `OPERATOR_ROLE` | Execute `buy`/`sell`, transfer surplus and STRCMirrorModule rewards, and select/order queue requests for processing | StakedUSDat and queue, with separate grants | `MARKET_MODE_MANAGER_ROLE` only | No |
+| `OPERATOR_ROLE` | Execute `buy`/`sell`, transfer surplus and STRCMirrorModule rewards, select/order queue requests for processing, and reset inherited queue requests from `InProgress` to `Requested` | StakedUSDat and queue, with separate grants | `MARKET_MODE_MANAGER_ROLE` only | No |
 | `BLACKLISTER_ROLE` | Add/remove the canonical sUSDat blacklist; cannot move or destroy positions | StakedUSDat | No other role | No |
 | `ENFORCER_ROLE` | Seize blacklisted positions and rescue untracked vault excess; cannot blacklist | StakedUSDat and queue, with separate grants | No other role | Yes |
 | `PAUSER_ROLE` | Invoke vault hard pause or queue-local pause; cannot unpause | StakedUSDat and queue, with separate grants | No other role | No |
@@ -1206,8 +1206,8 @@ the mirror and recognizes STRCon, subject to `migrationToleranceBps`.
    `STRConModule`.
 2. Rehearse the exact batch against current mainnet state. A storage-layout error or an
    accounting mismatch blocks scheduling. Record every v1 queue request still marked
-   `InProgress`; either unlock it in v1 before the upgrade or prepare an approved
-   post-upgrade `resetLegacyInProgressRequest` call for each ID.
+   `InProgress`; either unlock it in v1 before the upgrade or prepare an operator
+   `resetLegacyInProgressRequest` call for each ID after the upgrade.
 3. Announce that each legacy `minUsdatReceived` value will become a 6-decimal minimum net
    `minSharePrice` per `1e18` shares after the active redemption fee. Leave requests
    unchanged and allow owners sufficient time after the upgrade to update or cancel before
@@ -1250,9 +1250,9 @@ the mirror and recognizes STRCon, subject to `migrationToleranceBps`.
    `migrationToleranceBps` remains conservative and sufficient. Any approved adjustment
    must be active before scheduling Step 2 and remain at or below the 500-bps hard cap
    defined in §2.9.
-3. While queue processing remains paused, call `resetLegacyInProgressRequest` once for each
-   inherited `InProgress` ID and rescan the complete inventory. Do not resume processing
-   until none remain.
+3. Call `resetLegacyInProgressRequest` once for each inherited `InProgress` ID and rescan
+   the complete inventory. The selector preserves the queue's current pause state; do not
+   process requests until no `InProgress` entries remain.
 
 ### 3.3 Step 2 — `migrate()`
 
@@ -1435,7 +1435,7 @@ buffer covers the whole request. This narrow, one-way trust replaces v1
 
 **Locks removed.** `lockRequests`/`InProgress` protected an in-flight off-chain execution
 window (lock → sell STRC over hours → settle at attested price). Atomic settlement at the
-validated mark has no such window. V2 never creates `InProgress`; the admin-only,
+validated mark has no such window. V2 never creates `InProgress`; the operator-only,
 pause-independent `resetLegacyInProgressRequest` selector exists solely to recover any
 inherited request omitted from pre-upgrade cleanup.
 
