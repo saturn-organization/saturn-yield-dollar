@@ -220,7 +220,7 @@ contract WithdrawalQueueSettlementTest is Test {
         assertEq(usdat.balanceOf(address(queue)), 0);
     }
 
-    function testFuzz_processRequests_SettledDuplicateAlwaysRevertsAndRollsBackSettlement(
+    function testFuzz_processRequests_SettledDuplicateSettlesOnlyOnce(
         uint128 rawShares,
         uint96 rawPayout,
         uint256 limit
@@ -232,34 +232,37 @@ contract WithdrawalQueueSettlementTest is Test {
         tokenIds[0] = tokenId;
         tokenIds[1] = tokenId;
 
-        vm.expectRevert(IWithdrawalQueueERC721.RequestNotOpen.selector);
         queue.processRequests(tokenIds);
 
-        assertEq(stakedUsdat.callCount(), 0);
-        _assertRequest(tokenId, shares, 0, limit, IWithdrawalQueueERC721.RequestStatus.Requested);
+        assertEq(stakedUsdat.callCount(), 1);
+        assertEq(stakedUsdat.callShares(0), shares);
+        assertEq(stakedUsdat.callLimits(0), limit);
+        _assertRequest(tokenId, shares, payout, limit, IWithdrawalQueueERC721.RequestStatus.Processed);
         assertEq(queue.ownerOf(tokenId), alice);
         assertEq(queue.totalSupply(), 1);
-        assertEq(stakedUsdat.balanceOf(address(queue)), shares);
-        assertEq(usdat.balanceOf(address(queue)), 0);
+        assertEq(stakedUsdat.balanceOf(address(queue)), 0);
+        assertEq(usdat.balanceOf(address(queue)), payout);
     }
 
-    function test_processRequests_LaterInvalidStatusRollsBackWholeBatch() public {
+    function test_processRequests_FrontRunCancellationDoesNotBlockOtherRequests() public {
         uint256 validId = _configuredRequest(12e18, 101, IStakedUSDat.RedemptionResult.Settled, 9e6);
         uint256 cancelledId = _configuredRequest(13e18, 102, IStakedUSDat.RedemptionResult.Settled, 10e6);
         vm.prank(alice);
         queue.cancelRequest(cancelledId);
 
         uint256[] memory tokenIds = new uint256[](2);
-        tokenIds[0] = validId;
-        tokenIds[1] = cancelledId;
+        tokenIds[0] = cancelledId;
+        tokenIds[1] = validId;
 
-        vm.expectRevert(IWithdrawalQueueERC721.RequestNotOpen.selector);
         queue.processRequests(tokenIds);
 
-        assertEq(stakedUsdat.callCount(), 0);
-        _assertRequest(validId, 12e18, 0, 101, IWithdrawalQueueERC721.RequestStatus.Requested);
-        assertEq(stakedUsdat.balanceOf(address(queue)), 12e18);
-        assertEq(usdat.balanceOf(address(queue)), 0);
+        assertEq(stakedUsdat.callCount(), 1);
+        assertEq(stakedUsdat.callShares(0), 12e18);
+        assertEq(stakedUsdat.callLimits(0), 101);
+        _assertRequest(validId, 12e18, 9e6, 101, IWithdrawalQueueERC721.RequestStatus.Processed);
+        _assertRequest(cancelledId, 13e18, 0, 102, IWithdrawalQueueERC721.RequestStatus.Cancelled);
+        assertEq(stakedUsdat.balanceOf(address(queue)), 0);
+        assertEq(usdat.balanceOf(address(queue)), 9e6);
     }
 
     function test_processRequests_QueuePauseBlocksBeforeCallingVault() public {
@@ -502,7 +505,7 @@ contract WithdrawalQueueRealSettlementIntegrationTest is Test {
         assertEq(usdat.balanceOf(address(vault)), 100e6);
     }
 
-    function test_processRequests_RealVaultSettledDuplicateRollsBackAcrossBothContracts() public {
+    function test_processRequests_RealVaultSettledDuplicateSettlesOnlyOnceAcrossBothContracts() public {
         vm.prank(alice);
         uint256 tokenId = vault.requestRedeem(20e18, 0);
 
@@ -510,21 +513,20 @@ contract WithdrawalQueueRealSettlementIntegrationTest is Test {
         tokenIds[0] = tokenId;
         tokenIds[1] = tokenId;
 
-        vm.expectRevert(IWithdrawalQueueERC721.RequestNotOpen.selector);
         queue.processRequests(tokenIds);
 
         (uint256 shares, uint256 owed,,, IWithdrawalQueueERC721.RequestStatus status) = queue.requests(tokenId);
         assertEq(shares, 20e18);
-        assertEq(owed, 0);
-        assertEq(uint256(status), uint256(IWithdrawalQueueERC721.RequestStatus.Requested));
+        assertEq(owed, 20e6);
+        assertEq(uint256(status), uint256(IWithdrawalQueueERC721.RequestStatus.Processed));
         assertEq(queue.ownerOf(tokenId), alice);
 
         assertEq(vault.balanceOf(alice), 80e18);
-        assertEq(vault.balanceOf(address(queue)), 20e18);
-        assertEq(vault.totalSupply(), 100e18);
-        assertEq(vault.usdatBalance(), 100e6);
-        assertEq(usdat.balanceOf(address(queue)), 0);
-        assertEq(usdat.balanceOf(address(vault)), 100e6);
+        assertEq(vault.balanceOf(address(queue)), 0);
+        assertEq(vault.totalSupply(), 80e18);
+        assertEq(vault.usdatBalance(), 80e6);
+        assertEq(usdat.balanceOf(address(queue)), 20e6);
+        assertEq(usdat.balanceOf(address(vault)), 80e6);
     }
 
     function test_processRequests_RealVaultKeepsBelowLimitOpenWhileSettlingEligibleRequest() public {

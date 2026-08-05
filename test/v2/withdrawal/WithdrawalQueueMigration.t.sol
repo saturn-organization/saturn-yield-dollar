@@ -198,7 +198,7 @@ contract WithdrawalQueueMigrationTest is Test {
         assertEq(uint256(status), uint256(IWithdrawalQueueV2.RequestStatus.Processed));
     }
 
-    function test_processRequests_RejectsLegacyProcessedRequestWithShares() public {
+    function test_processRequests_SkipsLegacyProcessedRequestWithShares() public {
         uint256 tokenId = _createV1Request(alice, 13e18, 103e6);
         _setRequestState(tokenId, 97e6, IWithdrawalQueueV2.RequestStatus.Processed);
 
@@ -208,7 +208,6 @@ contract WithdrawalQueueMigrationTest is Test {
         tokenIds[0] = tokenId;
 
         vm.prank(operator);
-        vm.expectRevert(IWithdrawalQueueV2.RequestNotOpen.selector);
         queueV2.processRequests(tokenIds);
 
         (uint256 shares, uint256 usdatOwed,,, IWithdrawalQueueV2.RequestStatus status) = queueV2.requests(tokenId);

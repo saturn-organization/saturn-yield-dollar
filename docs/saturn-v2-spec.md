@@ -783,7 +783,7 @@ enum RedemptionResult { Settled, BelowLimit, InsufficientLiquidity }
 // WithdrawalQueueERC721: OPERATOR_ROLE, nonReentrant, queue-local whenNotPaused
 processRequests(uint256[] tokenIds)
   for each request in caller-supplied order:
-    require(request.status == RequestStatus.Requested, RequestNotOpen());
+    if request.status != Requested → continue           // stale, cancelled, or duplicate ID
     (result, usdat) = vault.redeemQueuedShares(request.shares, request.minSharePrice)
     if result == BelowLimit → continue                 // request stays open
     if result == InsufficientLiquidity → continue      // a later smaller request may fit
@@ -795,10 +795,10 @@ The queue does not inspect `marketMode()`. `redeemQueuedShares` owns the Restric
 gate, so a non-empty batch reverts atomically in Restricted mode; an empty batch remains a
 no-op.
 
-Duplicate IDs need no separate validation. A skipped request may be retried later in the
-same caller-supplied sequence. Once an occurrence settles, its status becomes `Processed`,
-so any later duplicate fails the `Requested` check and atomically rolls back the complete
-transaction. A duplicate therefore cannot burn shares or fund an obligation twice.
+Duplicate IDs need no separate validation. A below-limit or insufficient-liquidity request
+may be retried later in the same caller-supplied sequence. Once an occurrence settles, its
+status becomes `Processed`, so any later duplicate is skipped without another vault call.
+A duplicate therefore cannot burn shares or fund an obligation twice.
 
 ```solidity
 // StakedUSDat — queue-only; price, check, burn, and transfer atomically
@@ -816,9 +816,11 @@ function redeemQueuedShares(uint256 shares, uint256 minSharePrice)
 // transfer net USDat to the queue, and return Settled
 ```
 
-Expected no-settlement outcomes return a result without reverting the batch; invalid IDs or
-states revert as operator errors. An insufficient request is skipped so a later smaller one
-may settle. The operator selects and orders IDs; there is no FIFO guarantee.
+Expected no-settlement outcomes return a result without reverting the batch. IDs that are no
+longer `Requested` are skipped so stale operator input or a front-run cancellation cannot
+block unrelated settlements. Unexpected vault failures still revert atomically. An
+insufficient request is skipped so a later smaller one may settle. The operator selects and
+orders IDs; there is no FIFO guarantee.
 
 Each successful settlement reprices the next request at the then-current NAV. When the
 redemption fee is nonzero, only the net payout leaves the vault, so the retained fee accrues
@@ -834,9 +836,10 @@ enabled. Backing-asset and liquidity-path changes do not touch the queue.
 
 **Cancellation.** While active, the current NFT owner may call `cancelRequest(tokenId)` on
 an open request. It is nonReentrant, returns all shares to that owner, marks `Cancelled`,
-and burns the NFT without a fee. Restricted owners cannot cancel; enforcement handles
-their positions. Queue pause blocks cancellation. Vault pause also causes cancellation to
-revert when the queue attempts to return the escrowed sUSDat.
+and burns the NFT without a fee. A cancelled ID in an operator batch is skipped without
+blocking other requests. Restricted owners cannot cancel; enforcement handles their
+positions. Queue pause blocks cancellation. Vault pause also causes cancellation to revert
+when the queue attempts to return the escrowed sUSDat.
 
 **Claiming.** `claim(tokenId)` is the only claim function. While active, the current owner
 of a `Processed` request receives all `usdatOwed`; the request becomes `Claimed` and the NFT
