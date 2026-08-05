@@ -269,14 +269,19 @@ contract STRConModuleTest is Test {
         new STRConModule(address(vault), ASSET_ADDRESS, ISTRConPriceOracle(address(dirtyDecimals)));
     }
 
-    function test_constructorValidatesDecimalsWithoutReadingPrice() public {
-        initialOracle.setPriceReadFails(true);
-
-        STRConModule freshModule = new STRConModule(address(vault), ASSET_ADDRESS, initialOracle);
-        assertEq(address(freshModule.oracle()), address(initialOracle));
+    function test_constructorRejectsOracleWhosePriceReadReverts() public {
+        STRConModuleOracleMock revertingPrice = new STRConModuleOracleMock(8, INITIAL_PRICE);
+        revertingPrice.setPriceReadFails(true);
 
         vm.expectRevert(STRConModuleOracleMock.PriceReadFailed.selector);
-        freshModule.getPrice();
+        new STRConModule(address(vault), ASSET_ADDRESS, revertingPrice);
+    }
+
+    function test_constructorRejectsZeroPriceOracle() public {
+        STRConModuleOracleMock zeroPrice = new STRConModuleOracleMock(8, 0);
+
+        vm.expectRevert(STRConModule.InvalidOracle.selector);
+        new STRConModule(address(vault), ASSET_ADDRESS, zeroPrice);
     }
 
     function test_getPriceForwardsCurrentOracleAndPropagatesFailure() public {
@@ -317,15 +322,35 @@ contract STRConModuleTest is Test {
         assertEq(module.balance(), 0);
     }
 
-    function test_setOracleDoesNotRequireCandidatePriceAvailability() public {
+    function test_setOracleRejectsRevertingPriceAndPreservesCurrentOracle() public {
         STRConModuleOracleMock replacement = new STRConModuleOracleMock(8, 102e8);
         replacement.setPriceReadFails(true);
 
-        module.setOracle(address(replacement));
-        assertEq(address(module.oracle()), address(replacement));
-
         vm.expectRevert(STRConModuleOracleMock.PriceReadFailed.selector);
-        module.getPrice();
+        module.setOracle(address(replacement));
+
+        assertEq(address(module.oracle()), address(initialOracle));
+        assertEq(module.getPrice(), INITIAL_PRICE);
+    }
+
+    function test_setOracleRejectsZeroPriceAndPreservesCurrentOracle() public {
+        STRConModuleOracleMock replacement = new STRConModuleOracleMock(8, 0);
+
+        vm.expectRevert(STRConModule.InvalidOracle.selector);
+        module.setOracle(address(replacement));
+
+        assertEq(address(module.oracle()), address(initialOracle));
+        assertEq(module.getPrice(), INITIAL_PRICE);
+    }
+
+    function test_setOracleCanRecoverFromFailingCurrentOracle() public {
+        initialOracle.setPriceReadFails(true);
+        STRConModuleOracleMock replacement = new STRConModuleOracleMock(8, 102e8);
+
+        module.setOracle(address(replacement));
+
+        assertEq(address(module.oracle()), address(replacement));
+        assertEq(module.getPrice(), 102e8);
     }
 
     function test_setOracleRejectsInvalidCandidatesWithoutChangingBinding() public {

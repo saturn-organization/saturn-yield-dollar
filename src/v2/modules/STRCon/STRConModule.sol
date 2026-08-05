@@ -102,6 +102,9 @@ contract STRConModule is ISTRConModule {
         if (newPriceOracle.decimals() != ORACLE_DECIMALS) {
             revert InvalidOracle();
         }
+        if (newPriceOracle.getPrice() == 0) {
+            revert InvalidOracle();
+        }
 
         oracle = newPriceOracle;
     }

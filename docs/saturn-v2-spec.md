@@ -203,7 +203,8 @@ entrypoints are hardwired to the fixed `strconModule` and accept no module param
 `STRConModule` stores the active STRCon oracle and immutable `VAULT` and `ASSET` addresses.
 It has no local role administration; oracle rotation is authorized against the vault's role
 registry. The module's valuation and execution math use a fixed 8-decimal price unit, so its
-constructor and every oracle rotation require `oracle.decimals() == 8`:
+constructor and every oracle rotation require `oracle.decimals() == 8` and a currently
+callable `oracle.getPrice()` that returns a nonzero price:
 
 ```solidity
 interface ISTRConPriceOracle {
@@ -241,22 +242,33 @@ function setOracle(address newOracle)
     external
     onlyVaultRole(PARAMETER_MANAGER_ROLE)
 {
-    require(newOracle != address(0) && newOracle.code.length != 0, InvalidOracle());
-    require(
-        ISTRConPriceOracle(newOracle).decimals() == ORACLE_DECIMALS,
-        InvalidOracle()
-    );
     address oldOracle = address(oracle);
-    oracle = ISTRConPriceOracle(newOracle);
+    _setOracle(newOracle);
     emit OracleUpdated(oldOracle, newOracle);
+}
+
+function _setOracle(address newOracle) private {
+    require(newOracle != address(0) && newOracle.code.length != 0, InvalidOracle());
+
+    ISTRConPriceOracle newPriceOracle = ISTRConPriceOracle(newOracle);
+    require(newPriceOracle.decimals() == ORACLE_DECIMALS, InvalidOracle());
+    require(newPriceOracle.getPrice() != 0, InvalidOracle());
+
+    oracle = newPriceOracle;
 }
 ```
 
-The constructor applies the same nonzero, code, and 8-decimal validation when it sets the
-initial oracle. A failed or malformed `decimals()` read is an invalid oracle. `setOracle`
-changes only the oracle used by `recognizedValue()` and `getPrice()`, not the module, asset,
-vault, or recognized balance. The public typed state variable provides the canonical
-`oracle()` getter; there is no redundant `getOracle()` function.
+The constructor calls the same `_setOracle` helper when it sets the initial oracle. A failed
+or malformed `decimals()` or `getPrice()` read, or a zero returned price, is an invalid
+oracle. Failed construction or rotation reverts atomically; a failed rotation leaves the
+existing oracle binding unchanged. Installation does not compare the candidate price with
+the current oracle, so a broken current oracle cannot prevent rotation to a healthy
+replacement and a deliberately different recovery-value oracle remains possible. The smoke
+test proves only that the candidate is readable and nonzero during installation; it does not
+guarantee future liveness, and existing read-time fail-closed behavior applies if a later read
+reverts. `setOracle` changes only the oracle used by `recognizedValue()` and `getPrice()`, not
+the module, asset, vault, or recognized balance. The public typed state variable provides the
+canonical `oracle()` getter; there is no redundant `getOracle()` function.
 
 **Failure semantics — fail closed.** If a module cannot price, `recognizedValue()` reverts
 through `totalAssets()`, halting every value-sensitive path, including mints, queue
