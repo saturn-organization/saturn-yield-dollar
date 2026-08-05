@@ -405,15 +405,15 @@ contract StakedUSDat is
 
     /// @inheritdoc IERC4626
     /// @dev Returns 0 when paused, deposits are restricted, or NAV cannot be priced.
-    function maxDeposit(address) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
-        if (paused() || marketMode() == MarketMode.Restricted) return 0;
+    function maxDeposit(address receiver) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
+        if (isRestricted(receiver) || paused() || marketMode() == MarketMode.Restricted) return 0;
         return _canPriceTotalAssets() ? type(uint256).max : 0;
     }
 
     /// @inheritdoc IERC4626
     /// @dev Returns 0 when paused, mints are restricted, or NAV cannot be priced.
-    function maxMint(address) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
-        if (paused() || marketMode() == MarketMode.Restricted) return 0;
+    function maxMint(address receiver) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
+        if (isRestricted(receiver) || paused() || marketMode() == MarketMode.Restricted) return 0;
         return _canPriceTotalAssets() ? type(uint256).max : 0;
     }
 
