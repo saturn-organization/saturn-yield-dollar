@@ -341,13 +341,13 @@ contract WithdrawalQueueERC721 is
         return super._update(to, tokenId, auth);
     }
 
-    /// @dev Override required by Solidity for multiple inheritance.
+    /// @dev Advertises the protocol interface in addition to inherited ERC-165 support.
     function supportsInterface(bytes4 interfaceId)
         public
         view
         override(ERC721EnumerableUpgradeable, AccessControlUpgradeable)
         returns (bool)
     {
-        return super.supportsInterface(interfaceId);
+        return interfaceId == type(IWithdrawalQueueERC721).interfaceId || super.supportsInterface(interfaceId);
     }
 }

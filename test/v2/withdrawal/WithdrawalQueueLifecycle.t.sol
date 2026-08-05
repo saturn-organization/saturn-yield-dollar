@@ -2,8 +2,13 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
+import {IERC721Enumerable} from "@openzeppelin/contracts/token/ERC721/extensions/IERC721Enumerable.sol";
+import {IERC721Metadata} from "@openzeppelin/contracts/token/ERC721/extensions/IERC721Metadata.sol";
+import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
 import {WithdrawalQueueERC721} from "../../../src/v2/WithdrawalQueueERC721.sol";
 import {IWithdrawalQueueERC721} from "../../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
@@ -144,6 +149,18 @@ contract WithdrawalQueueLifecycleTest is Test {
         queue = WithdrawalQueueERC721(address(proxy));
         queue.initializeV2(address(this), address(this), address(this), address(this));
         stakedUsdat.setRecoveryAddress(bob);
+    }
+
+    function test_supportsInterface_AdvertisesQueueAndInheritedInterfaces() public view {
+        bytes4 queueInterfaceId = type(IWithdrawalQueueERC721).interfaceId;
+        assertEq(queueInterfaceId, bytes4(0xcf58cc7c));
+        assertTrue(queue.supportsInterface(queueInterfaceId));
+        assertTrue(queue.supportsInterface(type(IERC165).interfaceId));
+        assertTrue(queue.supportsInterface(type(IERC721).interfaceId));
+        assertTrue(queue.supportsInterface(type(IERC721Metadata).interfaceId));
+        assertTrue(queue.supportsInterface(type(IERC721Enumerable).interfaceId));
+        assertTrue(queue.supportsInterface(type(IAccessControl).interfaceId));
+        assertFalse(queue.supportsInterface(0xffffffff));
     }
 
     function test_addRequest_RejectsRestrictedUserByEitherToken() public {
