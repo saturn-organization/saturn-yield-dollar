@@ -345,6 +345,7 @@ contract StakedUSDat is
         override(ERC20Upgradeable, IERC20)
         returns (bool)
     {
+        _requireNotRestricted(msg.sender);
         _requireNotRestricted(from);
         _requireNotRestricted(to);
         return super.transferFrom(from, to, amount);

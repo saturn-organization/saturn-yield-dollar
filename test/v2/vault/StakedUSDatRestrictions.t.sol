@@ -99,6 +99,64 @@ contract StakedUSDatRestrictionsTest is Test {
         vault.transferFrom(alice, bob, 1e18);
     }
 
+    function test_transferFrom_RejectsLocallyBlacklistedOperatorAndPreservesState() public {
+        uint256 allowance = 2e18;
+        uint256 amount = 1e18;
+        vm.prank(alice);
+        vault.approve(spender, allowance);
+        vault.addToBlacklist(spender);
+
+        uint256 aliceBalanceBefore = vault.balanceOf(alice);
+        uint256 bobBalanceBefore = vault.balanceOf(bob);
+
+        vm.expectRevert(IStakedUSDat.AddressBlacklisted.selector);
+        vm.prank(spender);
+        // Return value is unreachable because the call must revert.
+        // forge-lint: disable-next-line(erc20-unchecked-transfer)
+        vault.transferFrom(alice, bob, amount);
+
+        assertEq(vault.allowance(alice, spender), allowance);
+        assertEq(vault.balanceOf(alice), aliceBalanceBefore);
+        assertEq(vault.balanceOf(bob), bobBalanceBefore);
+    }
+
+    function test_transferFrom_RejectsUSDatFrozenOperatorAndPreservesState() public {
+        uint256 allowance = 2e18;
+        uint256 amount = 1e18;
+        vm.prank(alice);
+        vault.approve(spender, allowance);
+        usdat.setFrozen(spender, true);
+
+        uint256 aliceBalanceBefore = vault.balanceOf(alice);
+        uint256 bobBalanceBefore = vault.balanceOf(bob);
+
+        vm.expectRevert(IStakedUSDat.AddressBlacklisted.selector);
+        vm.prank(spender);
+        // Return value is unreachable because the call must revert.
+        // forge-lint: disable-next-line(erc20-unchecked-transfer)
+        vault.transferFrom(alice, bob, amount);
+
+        assertEq(vault.allowance(alice, spender), allowance);
+        assertEq(vault.balanceOf(alice), aliceBalanceBefore);
+        assertEq(vault.balanceOf(bob), bobBalanceBefore);
+    }
+
+    function test_transferFrom_AllowsUnrestrictedApprovedOperator() public {
+        uint256 allowance = 2e18;
+        uint256 amount = 1e18;
+        vm.prank(alice);
+        vault.approve(spender, allowance);
+
+        uint256 aliceBalanceBefore = vault.balanceOf(alice);
+
+        vm.prank(spender);
+        assertTrue(vault.transferFrom(alice, bob, amount));
+
+        assertEq(vault.allowance(alice, spender), allowance - amount);
+        assertEq(vault.balanceOf(alice), aliceBalanceBefore - amount);
+        assertEq(vault.balanceOf(bob), amount);
+    }
+
     function test_deposit_RejectsUSDatFrozenCaller() public {
         usdat.setFrozen(alice, true);
 

@@ -865,7 +865,7 @@ a revert rolls back both pause-state changes and their events.
 sUSDat blacklist or the USDat freeze list as a queue restriction:
 
 ```solidity
-function _requireNotBlacklisted(address account) internal view {
+function _requireNotRestricted(address account) internal view {
     require(!STAKED_USDAT.isBlacklisted(account), AddressBlacklisted());
     require(!USDAT.isFrozen(account), AddressBlacklisted());
 }
@@ -878,7 +878,9 @@ function _requireBlacklisted(address account) internal view {
 }
 ```
 
-A restricted owner cannot transfer the NFT, update its limit, cancel, or claim.
+A restricted owner cannot update its limit, cancel, or claim. Every ordinary request-NFT
+transfer, including both `safeTransferFrom` overloads, requires the caller/operator, `from`,
+and `to` to be unrestricted. This does not apply to enforcement transfers.
 `seizeRequest(tokenId)` transfers an open NFT from that owner to
 `StakedUSDat.recoveryAddress()`; `seize(tokenId)` pays a processed request's `usdatOwed`
 there, marks it claimed, and burns the NFT. Neither accepts a destination. Both are
@@ -1045,9 +1047,11 @@ Deliberate separations: **freeze ≠ seize** (a compromised blacklister can free
 move funds) and **pause ≠ unpause** (a compromised pauser can grief, not un-halt).
 
 For ordinary vault activity, an account is restricted when it is either on the canonical
-sUSDat blacklist or frozen on USDat. Deposits, share transfers, and redemption requests
-reject restricted callers, owners, senders, and receivers. `isBlacklisted(account)` reports
-only the local sUSDat list; `isRestricted(account)` reports the union of both systems.
+sUSDat blacklist or frozen on USDat. Deposits, share transfers, request-NFT transfers, and
+redemption requests reject restricted callers, owners, senders, and receivers. In every
+delegated sUSDat or request-NFT transfer, the caller/operator is checked independently from
+`from` and `to`. `isBlacklisted(account)` reports only the local sUSDat list;
+`isRestricted(account)` reports the union of both systems.
 Removing the local blacklist does not override an active USDat freeze.
 
 The execution policy's parameter setters are not vault forwarding functions. The authorized
