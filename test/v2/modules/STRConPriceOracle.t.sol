@@ -122,7 +122,7 @@ contract STRConPriceOracleTest is Test {
     uint256 private constant START = 100 days;
     uint256 private constant PRIMARY_PRICE = 100e8 + 1;
     uint256 private constant INITIAL_DEVIATION_BPS = 50;
-    uint256 private constant MAX_DEVIATION_BPS = 500;
+    uint256 private constant MAX_DEVIATION_BPS = 1_000;
     address private constant STRCON = address(0x1234);
 
     STRConOracleVaultMock private vault;
@@ -142,9 +142,7 @@ contract STRConPriceOracleTest is Test {
         _setPrices(PRIMARY_PRICE, PRIMARY_PRICE);
         sharesOracle.setSValue(1e18, false);
 
-        oracle = _deployOracle(
-            address(vault), STRCON, sharesOracle, primary, referenceFeedMock, INITIAL_DEVIATION_BPS, MAX_DEVIATION_BPS
-        );
+        oracle = _deployOracle(address(vault), STRCON, sharesOracle, primary, referenceFeedMock, INITIAL_DEVIATION_BPS);
         vault.setRole(oracle.PARAMETER_MANAGER_ROLE(), address(this), true);
     }
 
@@ -164,20 +162,10 @@ contract STRConPriceOracleTest is Test {
 
     function test_constructorRejectsEveryZeroBinding() public {
         vm.expectRevert(STRConPriceOracle.InvalidZeroAddress.selector);
-        _deployOracle(
-            address(0), STRCON, sharesOracle, primary, referenceFeedMock, INITIAL_DEVIATION_BPS, MAX_DEVIATION_BPS
-        );
+        _deployOracle(address(0), STRCON, sharesOracle, primary, referenceFeedMock, INITIAL_DEVIATION_BPS);
 
         vm.expectRevert(STRConPriceOracle.InvalidZeroAddress.selector);
-        _deployOracle(
-            address(vault),
-            address(0),
-            sharesOracle,
-            primary,
-            referenceFeedMock,
-            INITIAL_DEVIATION_BPS,
-            MAX_DEVIATION_BPS
-        );
+        _deployOracle(address(vault), address(0), sharesOracle, primary, referenceFeedMock, INITIAL_DEVIATION_BPS);
 
         vm.expectRevert(STRConPriceOracle.InvalidZeroAddress.selector);
         _deployOracle(
@@ -186,65 +174,52 @@ contract STRConPriceOracleTest is Test {
             ISyntheticSharesOracle(address(0)),
             primary,
             referenceFeedMock,
-            INITIAL_DEVIATION_BPS,
-            MAX_DEVIATION_BPS
+            INITIAL_DEVIATION_BPS
         );
 
         vm.expectRevert(STRConPriceOracle.InvalidZeroAddress.selector);
         _deployOracle(
-            address(vault),
-            STRCON,
-            sharesOracle,
-            IPriceOracle(address(0)),
-            referenceFeedMock,
-            INITIAL_DEVIATION_BPS,
-            MAX_DEVIATION_BPS
+            address(vault), STRCON, sharesOracle, IPriceOracle(address(0)), referenceFeedMock, INITIAL_DEVIATION_BPS
         );
 
         vm.expectRevert(STRConPriceOracle.InvalidZeroAddress.selector);
-        _deployOracle(
-            address(vault),
-            STRCON,
-            sharesOracle,
-            primary,
-            IPriceOracle(address(0)),
-            INITIAL_DEVIATION_BPS,
-            MAX_DEVIATION_BPS
-        );
+        _deployOracle(address(vault), STRCON, sharesOracle, primary, IPriceOracle(address(0)), INITIAL_DEVIATION_BPS);
     }
 
     function test_constructorRejectsEitherNonEightDecimalFeed() public {
         primary.setDecimals(7);
         vm.expectRevert(STRConPriceOracle.InvalidFeedDecimals.selector);
-        _deployOracle(
-            address(vault), STRCON, sharesOracle, primary, referenceFeedMock, INITIAL_DEVIATION_BPS, MAX_DEVIATION_BPS
-        );
+        _deployOracle(address(vault), STRCON, sharesOracle, primary, referenceFeedMock, INITIAL_DEVIATION_BPS);
 
         primary.setDecimals(8);
         referenceFeedMock.setDecimals(9);
         vm.expectRevert(STRConPriceOracle.InvalidFeedDecimals.selector);
-        _deployOracle(
-            address(vault), STRCON, sharesOracle, primary, referenceFeedMock, INITIAL_DEVIATION_BPS, MAX_DEVIATION_BPS
-        );
+        _deployOracle(address(vault), STRCON, sharesOracle, primary, referenceFeedMock, INITIAL_DEVIATION_BPS);
     }
 
     function test_constructorFailsClosedWhenFeedDecimalsCannotBeRead() public {
         primary.setDecimalsReadFails(true);
 
         vm.expectRevert(STRConChainlinkFeedMock.DecimalsReadFailed.selector);
-        _deployOracle(
-            address(vault), STRCON, sharesOracle, primary, referenceFeedMock, INITIAL_DEVIATION_BPS, MAX_DEVIATION_BPS
-        );
+        _deployOracle(address(vault), STRCON, sharesOracle, primary, referenceFeedMock, INITIAL_DEVIATION_BPS);
     }
 
-    function test_constructorRejectsInitialDeviationAboveImmutableCap() public {
+    function test_constructorRejectsZeroDeviationAndInitialDeviationAboveFixedCap() public {
         vm.expectRevert(STRConPriceOracle.InvalidDeviation.selector);
-        _deployOracle(address(vault), STRCON, sharesOracle, primary, referenceFeedMock, 501, 500);
+        _deployOracle(address(vault), STRCON, sharesOracle, primary, referenceFeedMock, 0);
+
+        vm.expectRevert(STRConPriceOracle.InvalidDeviation.selector);
+        _deployOracle(address(vault), STRCON, sharesOracle, primary, referenceFeedMock, 1_001);
+
+        STRConPriceOracle minimumPositive =
+            _deployOracle(address(vault), STRCON, sharesOracle, primary, referenceFeedMock, 1);
+        assertEq(minimumPositive.deviationBps(), 1);
+        assertEq(minimumPositive.MAX_DEVIATION_BPS(), 1_000);
 
         STRConPriceOracle exactCap =
-            _deployOracle(address(vault), STRCON, sharesOracle, primary, referenceFeedMock, 500, 500);
-        assertEq(exactCap.deviationBps(), 500);
-        assertEq(exactCap.MAX_DEVIATION_BPS(), 500);
+            _deployOracle(address(vault), STRCON, sharesOracle, primary, referenceFeedMock, 1_000);
+        assertEq(exactCap.deviationBps(), 1_000);
+        assertEq(exactCap.MAX_DEVIATION_BPS(), 1_000);
     }
 
     function test_getPriceReturnsOnlyPrimaryAndRecomputesLatestRounds() public {
@@ -379,17 +354,16 @@ contract STRConPriceOracleTest is Test {
         oracle.getPrice();
     }
 
-    function test_zeroDeviationRequiresExactAgreementAndOneBpsAcceptsOneUnit() public {
-        oracle.setDeviationBps(0);
-        _setPrices(PRIMARY_PRICE, PRIMARY_PRICE);
+    function test_oneBpsAcceptsBoundaryAndRejectsFirstUnitAbove() public {
+        oracle.setDeviationBps(1);
+
+        uint256 maximumDifference = Math.mulDiv(PRIMARY_PRICE, 1, 10_000);
+        _setPrices(PRIMARY_PRICE, PRIMARY_PRICE + maximumDifference);
         assertEq(oracle.getPrice(), PRIMARY_PRICE);
 
-        _setPrices(PRIMARY_PRICE, PRIMARY_PRICE + 1);
+        _setPrices(PRIMARY_PRICE, PRIMARY_PRICE + maximumDifference + 1);
         vm.expectRevert(STRConPriceOracle.FeedDeviation.selector);
         oracle.getPrice();
-
-        oracle.setDeviationBps(1);
-        assertEq(oracle.getPrice(), PRIMARY_PRICE);
     }
 
     function test_configurationSettersRequireVaultParameterManagerRole() public {
@@ -426,34 +400,48 @@ contract STRConPriceOracleTest is Test {
         assertEq(oracle.maxPrice(), 200e8);
     }
 
-    function test_setMaxApiStalenessAllowsZeroAndHardCapThenRejectsFirstSecondAbove() public {
+    function test_setMaxApiStalenessRejectsZeroAndAboveCapWithoutChangingStateThenAcceptsBounds() public {
+        uint256 initialStaleness = oracle.maxApiStaleness();
+
+        vm.expectRevert(STRConPriceOracle.InvalidStaleness.selector);
+        oracle.setMaxApiStaleness(0);
+        assertEq(oracle.maxApiStaleness(), initialStaleness);
+
         vm.expectRevert(STRConPriceOracle.InvalidStaleness.selector);
         oracle.setMaxApiStaleness(36 hours + 1);
+        assertEq(oracle.maxApiStaleness(), initialStaleness);
+
+        vm.expectEmit(false, false, false, true, address(oracle));
+        emit MaxApiStalenessUpdated(1);
+        oracle.setMaxApiStaleness(1);
+        assertEq(oracle.maxApiStaleness(), 1);
 
         vm.expectEmit(false, false, false, true, address(oracle));
         emit MaxApiStalenessUpdated(36 hours);
         oracle.setMaxApiStaleness(36 hours);
         assertEq(oracle.maxApiStaleness(), 36 hours);
-
-        vm.expectEmit(false, false, false, true, address(oracle));
-        emit MaxApiStalenessUpdated(0);
-        oracle.setMaxApiStaleness(0);
-        assertEq(oracle.maxApiStaleness(), 0);
     }
 
-    function test_setDeviationBpsAllowsZeroAndImmutableCapThenRejectsFirstUnitAbove() public {
+    function test_setDeviationBpsRejectsZeroAndAboveCapWithoutChangingStateThenAcceptsBounds() public {
+        uint256 initialDeviation = oracle.deviationBps();
+
+        vm.expectRevert(STRConPriceOracle.InvalidDeviation.selector);
+        oracle.setDeviationBps(0);
+        assertEq(oracle.deviationBps(), initialDeviation);
+
         vm.expectRevert(STRConPriceOracle.InvalidDeviation.selector);
         oracle.setDeviationBps(MAX_DEVIATION_BPS + 1);
+        assertEq(oracle.deviationBps(), initialDeviation);
+
+        vm.expectEmit(false, false, false, true, address(oracle));
+        emit DeviationBpsUpdated(1);
+        oracle.setDeviationBps(1);
+        assertEq(oracle.deviationBps(), 1);
 
         vm.expectEmit(false, false, false, true, address(oracle));
         emit DeviationBpsUpdated(MAX_DEVIATION_BPS);
         oracle.setDeviationBps(MAX_DEVIATION_BPS);
         assertEq(oracle.deviationBps(), MAX_DEVIATION_BPS);
-
-        vm.expectEmit(false, false, false, true, address(oracle));
-        emit DeviationBpsUpdated(0);
-        oracle.setDeviationBps(0);
-        assertEq(oracle.deviationBps(), 0);
     }
 
     function test_configurationSettersRemainAvailableWhileVaultPaused() public {
@@ -525,7 +513,7 @@ contract STRConPriceOracleTest is Test {
         bool referenceAbove
     ) public {
         uint256 primaryPrice = bound(uint256(rawPrimaryPrice), 20e8, 150e8);
-        uint256 configuredDeviation = bound(uint256(rawDeviationBps), 0, MAX_DEVIATION_BPS);
+        uint256 configuredDeviation = bound(uint256(rawDeviationBps), 1, MAX_DEVIATION_BPS);
         uint256 maximumDifference = Math.mulDiv(primaryPrice, configuredDeviation, 10_000);
 
         oracle.setDeviationBps(configuredDeviation);
@@ -605,11 +593,8 @@ contract STRConPriceOracleTest is Test {
         ISyntheticSharesOracle sharesOracle_,
         IPriceOracle primary_,
         IPriceOracle reference_,
-        uint256 initialDeviationBps,
-        uint256 maxDeviationBps
+        uint256 initialDeviationBps
     ) private returns (STRConPriceOracle) {
-        return new STRConPriceOracle(
-            vault_, strcon_, sharesOracle_, primary_, reference_, initialDeviationBps, maxDeviationBps
-        );
+        return new STRConPriceOracle(vault_, strcon_, sharesOracle_, primary_, reference_, initialDeviationBps);
     }
 }

@@ -385,7 +385,8 @@ value `8`, matching the scalar price returned by `getPrice()`:
 1. Both feed calls succeed and each round has `roundId != 0`, `answer > 0`,
    `updatedAt != 0`, `updatedAt <= block.timestamp`, and `answeredInRound >= roundId`.
 2. `block.timestamp - reference.updatedAt <= maxApiStaleness`. Initial
-   `maxApiStaleness` is 26 hours (24-hour heartbeat plus grace), capped at 36 hours.
+   `maxApiStaleness` is 26 hours (24-hour heartbeat plus grace), and
+   `setMaxApiStaleness` enforces `0 < maxApiStaleness <= 36 hours`.
 3. Ondo's per-asset pause flag is clear and `sValue` is nonzero.
 4. `underlyingPrice = Math.mulDiv(primaryPrice, 1e18, sValue, Math.Rounding.Floor)` is
    within `[minPrice, maxPrice]` (default $20–$150). `primaryPrice`, `underlyingPrice`,
@@ -403,16 +404,26 @@ value `8`, matching the scalar price returned by `getPrice()`:
    ```
 
 `getPrice()` returns the validated 8-decimal `primaryPrice`. Each read recomputes
-validity, so pricing recovers when all checks pass. The constructor receives the
-deployment-approved initial `deviationBps` and immutable maximum deviation; ENG-25 supplies
-both before audit freeze. Deleted prototype values are not defaults.
+validity, so pricing recovers when all checks pass.
+
+```solidity
+uint256 public constant MAX_DEVIATION_BPS = 1_000; // 10%
+```
+
+The constructor receives the deployment-approved initial `deviationBps` and requires
+`0 < initialDeviationBps <= MAX_DEVIATION_BPS`. The maximum is a fixed protocol constant,
+not constructor-selected, and has no storage slot or setter. The production deployment
+manifest records the initial `deviationBps`; ENG-25 supplies that value before audit
+freeze. Deleted prototype values are not defaults.
 
 Each `STRConPriceOracle` constructor permanently binds `primaryFeed` and `referenceFeed` and
 rejects feeds not reporting 8 decimals. Replacing either feed requires a new wrapper and
 `STRConModule.setOracle(newOracle)`, which independently rejects a wrapper unless its
 `decimals()` value is 8. Numeric setters use
 `onlyVaultRole(PARAMETER_MANAGER_ROLE)` against immutable `VAULT` and emit configuration
-events. STRCMirrorModule keeps the deployed v1 `StrcPriceOracle`.
+events. `setDeviationBps` enforces
+`0 < deviationBps <= MAX_DEVIATION_BPS` (1,000 bps).
+STRCMirrorModule keeps the deployed v1 `StrcPriceOracle`.
 
 #### STRCon operations
 
@@ -1121,8 +1132,9 @@ preserves the existing `DEFAULT_ADMIN_ROLE` holders and hard-pause state.
 The caller does not supply the legacy mirror state. The reinitializer reads
 `strcBalance`, `vestingAmount`, `lastDistributionTimestamp`, `vestingPeriod`, and
 `maxRewardsBps` directly from their preserved proxy slots and passes those exact values to
-`STRCMirrorModule.seed`. Oracle-wrapper parameters remain properties of the separately deployed
-wrapper rather than initializer calldata.
+`STRCMirrorModule.seed`. Oracle-wrapper configuration, including its deployment-manifest
+initial `deviationBps`, remains a property of the separately deployed wrapper rather than
+initializer calldata; `MAX_DEVIATION_BPS` is fixed in wrapper code rather than configured.
 
 Migration tolerance is a reviewed Step 1 initializer argument:
 
@@ -1198,7 +1210,9 @@ the mirror and recognizes STRCon, subject to `migrationToleranceBps`.
    `STRConModule`, and `STRConExecutionPolicy`. Bind `STRCMirrorModule` to the sUSDat proxy
    and the oracle returned by the v1 `getStrcOracle()`; bind `STRConModule` to the proxy,
    STRCon, and its new wrapper; bind `STRConExecutionPolicy` to the proxy and that exact
-   `STRConModule`.
+   `STRConModule`. Initialize the wrapper with the deployment-manifest `deviationBps`,
+   which must be nonzero and no greater than its fixed 1,000-bps cap; the manifest supplies
+   no maximum-deviation constructor value.
 2. Rehearse the exact batch against current mainnet state. A storage-layout error, an
    accounting mismatch, or any v1 queue request still marked `InProgress` blocks
    scheduling; return such requests to `Requested` first.
@@ -1234,8 +1248,9 @@ the mirror and recognizes STRCon, subject to `migrationToleranceBps`.
    withhold queue processing for the communicated legacy-request grace period.
 6. Confirm that pre/post `totalAssets()`, share conversion, and unvested rewards match; all
    five seeded values, module and policy bindings, recovery address, roles, vault
-   parameters, and policy vehicle/tolerance/capacity values are correct; and
-   `STRConModule.balance() == 0`. Any mismatch blocks the validation gate and Step 2.
+   parameters, wrapper feed/staleness/bounds/initial-deviation values, and policy
+   vehicle/tolerance/capacity values are correct; and `STRConModule.balance() == 0`. Any
+   mismatch blocks the validation gate and Step 2.
 
 ### 3.2 Validation gate (before Step 2)
 

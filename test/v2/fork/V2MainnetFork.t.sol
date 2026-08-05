@@ -230,9 +230,7 @@ contract V2MockMainnetForkTest is Test {
         _migrationBuilder = new BuildV2Migration();
 
         DeployV2Dependencies.Deployments memory deployed = _dependencyDeployer.deployForFork(
-            DeployV2Dependencies.OracleConfig({
-                initialDeviationBps: ORACLE_DEVIATION_BPS, maxDeviationBps: ORACLE_DEVIATION_BPS
-            })
+            DeployV2Dependencies.OracleConfig({initialDeviationBps: ORACLE_DEVIATION_BPS})
         );
 
         _tradeExecutionLogic = deployed.tradeExecutionLogic;
@@ -266,6 +264,8 @@ contract V2MockMainnetForkTest is Test {
         assertEq(address(_priceOracle.primaryFeed()), PRIMARY_FEED);
         assertEq(address(_priceOracle.referenceFeed()), REFERENCE_FEED);
         assertEq(_priceOracle.decimals(), 8);
+        assertEq(_priceOracle.MAX_DEVIATION_BPS(), 1_000);
+        assertEq(_priceOracle.deviationBps(), ORACLE_DEVIATION_BPS);
         assertGt(_priceOracle.getPrice(), 0);
 
         assertEq(_mirror.VAULT(), STAKED_USDAT_PROXY);

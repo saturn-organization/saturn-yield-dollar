@@ -42,6 +42,7 @@ contract STRConPriceOracle is ISTRConPriceOracle {
     bytes32 public constant PARAMETER_MANAGER_ROLE = keccak256("PARAMETER_MANAGER_ROLE");
     uint256 public constant BPS_DENOMINATOR = 10_000;
     uint256 public constant MAX_API_STALENESS = 36 hours;
+    uint256 public constant MAX_DEVIATION_BPS = 1_000;
     uint8 private constant FEED_DECIMALS = 8;
 
     // ============ Immutables ============
@@ -54,7 +55,6 @@ contract STRConPriceOracle is ISTRConPriceOracle {
     IPriceOracle public immutable primaryFeed;
     // forge-lint: disable-next-line(screaming-snake-case-immutable)
     IPriceOracle public immutable referenceFeed;
-    uint256 public immutable MAX_DEVIATION_BPS;
 
     // ============ Storage ============
 
@@ -76,8 +76,7 @@ contract STRConPriceOracle is ISTRConPriceOracle {
         ISyntheticSharesOracle syntheticSharesOracle_,
         IPriceOracle primaryFeed_,
         IPriceOracle referenceFeed_,
-        uint256 initialDeviationBps,
-        uint256 maxDeviationBps
+        uint256 initialDeviationBps
     ) {
         if (
             vault == address(0) || strcon == address(0) || address(syntheticSharesOracle_) == address(0)
@@ -88,14 +87,13 @@ contract STRConPriceOracle is ISTRConPriceOracle {
         if (primaryFeed_.decimals() != FEED_DECIMALS || referenceFeed_.decimals() != FEED_DECIMALS) {
             revert InvalidFeedDecimals();
         }
-        if (initialDeviationBps > maxDeviationBps) revert InvalidDeviation();
+        if (initialDeviationBps == 0 || initialDeviationBps > MAX_DEVIATION_BPS) revert InvalidDeviation();
 
         VAULT = vault;
         STRCON = strcon;
         syntheticSharesOracle = syntheticSharesOracle_;
         primaryFeed = primaryFeed_;
         referenceFeed = referenceFeed_;
-        MAX_DEVIATION_BPS = maxDeviationBps;
 
         maxApiStaleness = 26 hours;
         deviationBps = initialDeviationBps;
@@ -144,7 +142,7 @@ contract STRConPriceOracle is ISTRConPriceOracle {
     }
 
     function setMaxApiStaleness(uint256 newStaleness) external onlyVaultRole(PARAMETER_MANAGER_ROLE) {
-        if (newStaleness > MAX_API_STALENESS) revert InvalidStaleness();
+        if (newStaleness == 0 || newStaleness > MAX_API_STALENESS) revert InvalidStaleness();
 
         maxApiStaleness = newStaleness;
 
@@ -152,7 +150,7 @@ contract STRConPriceOracle is ISTRConPriceOracle {
     }
 
     function setDeviationBps(uint256 newDeviationBps) external onlyVaultRole(PARAMETER_MANAGER_ROLE) {
-        if (newDeviationBps > MAX_DEVIATION_BPS) revert InvalidDeviation();
+        if (newDeviationBps == 0 || newDeviationBps > MAX_DEVIATION_BPS) revert InvalidDeviation();
 
         deviationBps = newDeviationBps;
 
