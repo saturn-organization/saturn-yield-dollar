@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {StakedUSDat} from "../../../src/v2/StakedUSDat.sol";
@@ -162,15 +163,29 @@ contract StakedUSDatRestrictionsTest is Test {
 
         vm.expectRevert(IStakedUSDat.AddressBlacklisted.selector);
         vm.prank(alice);
-        vault.deposit(1e6, alice);
+        vault.deposit(1e6, bob);
     }
 
     function test_deposit_RejectsUSDatFrozenReceiver() public {
         usdat.setFrozen(bob, true);
 
-        vm.expectRevert(IStakedUSDat.AddressBlacklisted.selector);
+        vm.expectRevert(abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxDeposit.selector, bob, 1e6, 0));
         vm.prank(alice);
         vault.deposit(1e6, bob);
+    }
+
+    function test_maxDepositAndMaxMint_ReturnZeroForRestrictedReceiver() public {
+        assertEq(vault.maxDeposit(bob), type(uint256).max);
+        assertEq(vault.maxMint(bob), type(uint256).max);
+
+        vault.addToBlacklist(bob);
+        assertEq(vault.maxDeposit(bob), 0);
+        assertEq(vault.maxMint(bob), 0);
+
+        vault.removeFromBlacklist(bob);
+        usdat.setFrozen(bob, true);
+        assertEq(vault.maxDeposit(bob), 0);
+        assertEq(vault.maxMint(bob), 0);
     }
 
     function test_requestRedeem_RejectsUSDatFrozenOwner() public {
