@@ -325,9 +325,9 @@ contract StakedUSDat is
         emit UnBlacklisted(target);
     }
 
-    /// @dev Reverts if the given account is blacklisted.
-    function _requireNotBlacklisted(address account) internal view {
-        require(!_blacklisted[account], AddressBlacklisted());
+    /// @dev Reverts if the given account is blacklisted on sUSDat or frozen on USDat.
+    function _requireNotRestricted(address account) internal view {
+        require(!isRestricted(account), AddressBlacklisted());
     }
 
     /// @inheritdoc IStakedUSDat
@@ -335,10 +335,15 @@ contract StakedUSDat is
         return _blacklisted[account];
     }
 
+    /// @inheritdoc IStakedUSDat
+    function isRestricted(address account) public view returns (bool) {
+        return _blacklisted[account] || IUSDat(asset()).isFrozen(account);
+    }
+
     /// @inheritdoc IERC20
     function transfer(address to, uint256 amount) public override(ERC20Upgradeable, IERC20) returns (bool) {
-        _requireNotBlacklisted(msg.sender);
-        _requireNotBlacklisted(to);
+        _requireNotRestricted(msg.sender);
+        _requireNotRestricted(to);
         return super.transfer(to, amount);
     }
 
@@ -348,8 +353,9 @@ contract StakedUSDat is
         override(ERC20Upgradeable, IERC20)
         returns (bool)
     {
-        _requireNotBlacklisted(from);
-        _requireNotBlacklisted(to);
+        _requireNotRestricted(msg.sender);
+        _requireNotRestricted(from);
+        _requireNotRestricted(to);
         return super.transferFrom(from, to, amount);
     }
 
@@ -407,15 +413,15 @@ contract StakedUSDat is
 
     /// @inheritdoc IERC4626
     /// @dev Returns 0 when paused, deposits are restricted, or NAV cannot be priced.
-    function maxDeposit(address) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
-        if (paused() || marketMode() == MarketMode.Restricted) return 0;
+    function maxDeposit(address receiver) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
+        if (isRestricted(receiver) || paused() || marketMode() == MarketMode.Restricted) return 0;
         return _canPriceTotalAssets() ? type(uint256).max : 0;
     }
 
     /// @inheritdoc IERC4626
     /// @dev Returns 0 when paused, mints are restricted, or NAV cannot be priced.
-    function maxMint(address) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
-        if (paused() || marketMode() == MarketMode.Restricted) return 0;
+    function maxMint(address receiver) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
+        if (isRestricted(receiver) || paused() || marketMode() == MarketMode.Restricted) return 0;
         return _canPriceTotalAssets() ? type(uint256).max : 0;
     }
 
@@ -551,7 +557,7 @@ contract StakedUSDat is
 
     // ============ Deposit Functions ============
 
-    /// @dev Deposit/mint common workflow with blacklist checks.
+    /// @dev Deposit/mint common workflow with account-restriction checks.
     function _deposit(address caller, address receiver, uint256 assets, uint256 shares)
         internal
         override
@@ -560,8 +566,8 @@ contract StakedUSDat is
         notZero(assets)
         notZero(shares)
     {
-        _requireNotBlacklisted(caller);
-        _requireNotBlacklisted(receiver);
+        _requireNotRestricted(caller);
+        _requireNotRestricted(receiver);
 
         _sweep();
         usdatBalance += assets;
@@ -698,8 +704,8 @@ contract StakedUSDat is
         nonReentrant
         returns (uint256 requestId)
     {
-        _requireNotBlacklisted(caller);
-        _requireNotBlacklisted(owner);
+        _requireNotRestricted(caller);
+        _requireNotRestricted(owner);
         require(shares >= MIN_REQUEST_SHARES, WithdrawalTooSmall());
 
         _transfer(owner, address(WITHDRAWAL_QUEUE), shares);
@@ -781,8 +787,9 @@ contract StakedUSDat is
     // ========== Enforcer Functions ==========
 
     /// @inheritdoc IStakedUSDat
-    /// @dev Moves shares, no burn, no liquidity needed — value-preserving enforcement
-    /// (e.g. court-directed recovery).
+    /// @dev Moves shares from a locally blacklisted holder, no burn, no liquidity needed —
+    /// value-preserving enforcement (e.g. court-directed recovery). A USDat freeze alone
+    /// does not authorize seizure.
     function seize(address from) external nonReentrant onlyRole(ENFORCER_ROLE) whileUnpaused {
         require(_blacklisted[from], AddressNotBlacklisted());
 
@@ -941,8 +948,7 @@ contract StakedUSDat is
     /// @dev Reverts unless an address is a valid seizure destination now.
     function _requireValidRecoveryAddress(address account) internal view {
         require(account != address(0), InvalidZeroAddress());
-        _requireNotBlacklisted(account);
-        require(!IUSDat(asset()).isFrozen(account), AddressBlacklisted());
+        _requireNotRestricted(account);
     }
 
     /// @inheritdoc IStakedUSDat

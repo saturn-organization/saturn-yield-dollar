@@ -868,7 +868,7 @@ a revert rolls back both pause-state changes and their events.
 sUSDat blacklist or the USDat freeze list as a queue restriction:
 
 ```solidity
-function _requireNotBlacklisted(address account) internal view {
+function _requireNotRestricted(address account) internal view {
     require(!STAKED_USDAT.isBlacklisted(account), AddressBlacklisted());
     require(!USDAT.isFrozen(account), AddressBlacklisted());
 }
@@ -881,11 +881,18 @@ function _requireBlacklisted(address account) internal view {
 }
 ```
 
-A restricted owner cannot transfer the NFT, update its limit, cancel, or claim.
+A restricted owner cannot update its limit, cancel, or claim. Every ordinary request-NFT
+transfer, including both `safeTransferFrom` overloads, requires the caller/operator, `from`,
+and `to` to be unrestricted. This does not apply to enforcement transfers.
 `seizeRequest(tokenId)` transfers an open NFT from that owner to
 `StakedUSDat.recoveryAddress()`; `seize(tokenId)` pays a processed request's `usdatOwed`
 there, marks it claimed, and burns the NFT. Neither accepts a destination. Both are
-single-token `ENFORCER_ROLE` operations (§2.8).
+single-token `ENFORCER_ROLE` operations (§2.8). For these queue seizures, either a local
+sUSDat blacklist or a USDat freeze establishes eligibility because the NFT represents a
+claim through the USDat redemption path. This is intentionally broader than seizure of
+directly held sUSDat, which requires an explicit local sUSDat blacklist; a USDat freeze
+alone restricts the holder's ordinary vault activity but does not authorize seizure of its
+directly held shares.
 
 Invariants:
 - A request is settled completely or not at all; v2 never partially burns its shares.
@@ -1031,7 +1038,7 @@ Capability-named (`keccak256("<NAME>_ROLE")`):
 | `OPERATOR_ROLE` | Execute `buy`/`sell`, transfer STRCMirrorModule rewards, and select/order queue requests for processing | StakedUSDat and queue, with separate grants | `MARKET_MODE_MANAGER_ROLE` only | No |
 | `SURPLUS_MANAGER_ROLE` | Start a capped surplus tranche from the configured `surplusSource`; cannot select the source or destination | StakedUSDat | No other role | No |
 | `BLACKLISTER_ROLE` | Add/remove the canonical sUSDat blacklist; cannot move or destroy positions | StakedUSDat | No other role | No |
-| `ENFORCER_ROLE` | Seize blacklisted positions and rescue untracked vault excess; cannot blacklist | StakedUSDat and queue, with separate grants | No other role | Yes |
+| `ENFORCER_ROLE` | Seize locally blacklisted sUSDat positions, seize queue claims eligible under the sUSDat blacklist or USDat freeze list, and rescue untracked vault excess; cannot blacklist or freeze | StakedUSDat and queue, with separate grants | No other role | Yes |
 | `PAUSER_ROLE` | Invoke vault hard pause or queue-local pause; cannot unpause | StakedUSDat and queue, with separate grants | No other role | No |
 | `UNPAUSER_ROLE` | Unpause the vault or queue after recovery approval; cannot pause | StakedUSDat and queue, with separate grants | No other role | Yes |
 
@@ -1046,8 +1053,18 @@ Contract-to-contract gates are not roles: `redeemQueuedShares` uses
 `onlyWithdrawalQueue`; `addRequest` uses `onlySUSDAT`. Each is an immutable address check
 that no key can re-point or widen.
 
-Deliberate separations: **freeze ≠ seize** (a compromised blacklister can freeze, never
-move funds) and **pause ≠ unpause** (a compromised pauser can grief, not un-halt).
+Deliberate separations: for directly held sUSDat, **USDat freeze ≠ sUSDat seizure** (only
+the local sUSDat blacklist authorizes seizure of shares), and **pause ≠ unpause** (a
+compromised pauser can grief, not un-halt). Queue claims are the deliberate exception:
+either restriction list authorizes their seizure because they resolve through USDat.
+
+For ordinary vault activity, an account is restricted when it is either on the canonical
+sUSDat blacklist or frozen on USDat. Deposits, share transfers, request-NFT transfers, and
+redemption requests reject restricted callers, owners, senders, and receivers. In every
+delegated sUSDat or request-NFT transfer, the caller/operator is checked independently from
+`from` and `to`. `isBlacklisted(account)` reports only the local sUSDat list;
+`isRestricted(account)` reports the union of both systems.
+Removing the local blacklist does not override an active USDat freeze.
 
 The execution policy's parameter setters are not vault forwarding functions. The authorized
 timelock calls the fixed policy directly, and the policy verifies the caller with
