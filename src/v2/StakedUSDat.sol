@@ -657,10 +657,8 @@ contract StakedUSDat is
 
     /// @inheritdoc IERC4626
     /// @dev Returns the net queued-redemption payout after the active fee.
-    function previewRedeem(uint256 shares) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
-        uint256 gross = convertToAssets(shares);
-        uint256 fee = Math.mulDiv(gross, redemptionFeeBps(), BPS_DENOMINATOR, Math.Rounding.Ceil);
-        return gross - fee;
+    function previewRedeem(uint256 shares) public view override(ERC4626Upgradeable, IERC4626) returns (uint256 net) {
+        (, net,) = _quoteQueuedRedemption(shares);
     }
 
     /// @inheritdoc IERC4626
@@ -716,7 +714,7 @@ contract StakedUSDat is
     {
         _sweep();
 
-        net = previewRedeem(shares);
+        (, net,) = _quoteQueuedRedemption(shares);
 
         uint256 netSharePrice = Math.mulDiv(net, 1e18, shares, Math.Rounding.Floor);
         if (netSharePrice < minSharePrice) {
@@ -732,6 +730,13 @@ contract StakedUSDat is
 
         IERC20(asset()).safeTransfer(address(WITHDRAWAL_QUEUE), net);
         return (RedemptionResult.Settled, net);
+    }
+
+    /// @dev Returns the gross value, residual net payout, and ceil-rounded fee such that net + fee == gross.
+    function _quoteQueuedRedemption(uint256 shares) private view returns (uint256 gross, uint256 net, uint256 fee) {
+        gross = convertToAssets(shares);
+        fee = Math.mulDiv(gross, redemptionFeeBps(), BPS_DENOMINATOR, Math.Rounding.Ceil);
+        net = gross - fee;
     }
 
     /// @inheritdoc IStakedUSDat

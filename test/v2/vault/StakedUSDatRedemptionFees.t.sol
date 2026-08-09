@@ -192,6 +192,7 @@ contract StakedUSDatRedemptionFeesTest is Test {
         (IStakedUSDat.RedemptionResult result, uint256 payout) = queue.redeemQueuedShares(vault, shares, 0);
 
         assertEq(preview, gross - fee);
+        assertEq(preview + fee, gross);
         assertEq(uint256(result), uint256(IStakedUSDat.RedemptionResult.Settled));
         assertEq(payout, preview);
     }
