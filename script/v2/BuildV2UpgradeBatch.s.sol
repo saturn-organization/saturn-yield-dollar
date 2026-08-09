@@ -80,7 +80,7 @@ contract BuildV2UpgradeBatch is Script {
     // =========================================================================
 
     address public constant RECOVERY_ADDRESS = address(0);
-    // Dedicated USDat wallet that preapproves the vault for surplus transfers.
+    // Dedicated USDat wallet that receives redemption fees and preapproves surplus transfers.
     address public constant SURPLUS_SOURCE = address(0);
     address public constant EXECUTION_VEHICLE = address(0);
 

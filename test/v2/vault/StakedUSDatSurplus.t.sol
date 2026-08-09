@@ -16,6 +16,8 @@ import {ZeroTradableModuleMock} from "../helpers/FixedModuleMocks.sol";
 import {BoundMirrorModuleMock, V2InitializationHelper} from "../helpers/V2InitializationHelper.sol";
 
 contract SurplusUSDatMock is ERC20 {
+    mapping(address account => bool frozen) private _frozen;
+
     constructor() ERC20("USDat", "USDat") {}
 
     function decimals() public pure override returns (uint8) {
@@ -26,8 +28,12 @@ contract SurplusUSDatMock is ERC20 {
         _mint(to, amount);
     }
 
-    function isFrozen(address) external pure returns (bool) {
-        return false;
+    function setFrozen(address account, bool frozen) external {
+        _frozen[account] = frozen;
+    }
+
+    function isFrozen(address account) external view returns (bool) {
+        return _frozen[account];
     }
 }
 
@@ -86,6 +92,7 @@ contract StakedUSDatSurplusTest is Test {
 
     event SurplusReceived(uint256 amount);
     event SurplusSwept(uint256 amount);
+    event SurplusSourceUpdated(address indexed oldSource, address indexed newSource);
     event SurplusVestingPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
 
     function setUp() public {
@@ -134,6 +141,57 @@ contract StakedUSDatSurplusTest is Test {
         assertEq(vault.surplusVestingStartTimestamp(), block.timestamp);
         assertEq(vault.getUnvestedSurplus(), MAX_SURPLUS);
         assertEq(vault.totalAssets(), INITIAL_CASH);
+    }
+
+    function test_setSurplusSource_RequiresParameterManagerAndRejectsInvalidSources() public {
+        address candidate = makeAddr("candidate");
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector, unauthorized, vault.PARAMETER_MANAGER_ROLE()
+            )
+        );
+        vm.prank(unauthorized);
+        vault.setSurplusSource(candidate);
+
+        vm.expectRevert(IStakedUSDat.InvalidZeroAddress.selector);
+        vault.setSurplusSource(address(0));
+
+        vm.expectRevert(IStakedUSDat.InvalidSurplusSource.selector);
+        vault.setSurplusSource(address(vault));
+
+        vm.expectRevert(IStakedUSDat.InvalidSurplusSource.selector);
+        vault.setSurplusSource(address(queue));
+
+        address blacklisted = makeAddr("blacklisted");
+        vault.addToBlacklist(blacklisted);
+        vm.expectRevert(IStakedUSDat.AddressBlacklisted.selector);
+        vault.setSurplusSource(blacklisted);
+
+        address frozen = makeAddr("frozen");
+        usdat.setFrozen(frozen, true);
+        vm.expectRevert(IStakedUSDat.AddressBlacklisted.selector);
+        vault.setSurplusSource(frozen);
+
+        assertEq(vault.surplusSource(), address(this));
+    }
+
+    function test_setSurplusSource_UpdatesEmitsAndWorksWhilePaused() public {
+        address firstSource = makeAddr("firstSource");
+        vm.expectEmit(true, true, false, true, address(vault));
+        emit SurplusSourceUpdated(address(this), firstSource);
+        vault.setSurplusSource(firstSource);
+
+        assertEq(vault.surplusSource(), firstSource);
+
+        vault.pause();
+        address secondSource = makeAddr("secondSource");
+        vm.expectEmit(true, true, false, true, address(vault));
+        emit SurplusSourceUpdated(firstSource, secondSource);
+        vault.setSurplusSource(secondSource);
+
+        assertTrue(vault.paused());
+        assertEq(vault.surplusSource(), secondSource);
     }
 
     function test_transferInSurplus_PullsFromConfiguredSourceNotManager() public {
@@ -359,7 +417,9 @@ contract StakedUSDatSurplusTest is Test {
         vault.authorizeRegularMode(uint64(block.timestamp + 8 hours));
 
         uint256 gross = vault.convertToAssets(shares);
-        uint256 expectedPayout = gross - Math.mulDiv(gross, 5, 10_000, Math.Rounding.Ceil);
+        uint256 fee = Math.mulDiv(gross, 5, 10_000, Math.Rounding.Ceil);
+        uint256 expectedPayout = gross - fee;
+        uint256 surplusSourceBalanceBefore = usdat.balanceOf(vault.surplusSource());
         assertGt(expectedPayout, INITIAL_CASH);
 
         (IStakedUSDat.RedemptionResult result, uint256 payout) = queue.redeemQueuedShares(vault, shares);
@@ -367,8 +427,9 @@ contract StakedUSDatSurplusTest is Test {
         assertEq(uint256(result), uint256(IStakedUSDat.RedemptionResult.Settled));
         assertEq(payout, expectedPayout);
         assertEq(usdat.balanceOf(address(queue)), expectedPayout);
+        assertEq(usdat.balanceOf(vault.surplusSource()), surplusSourceBalanceBefore + fee);
         assertEq(vault.surplusVestingAmount(), 0);
-        assertEq(vault.usdatBalance(), INITIAL_CASH + MAX_SURPLUS - expectedPayout);
+        assertEq(vault.usdatBalance(), INITIAL_CASH + MAX_SURPLUS - gross);
     }
 
     function _deployVault() private returns (StakedUSDat deployedVault) {

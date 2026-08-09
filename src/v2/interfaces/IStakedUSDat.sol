@@ -168,6 +168,11 @@ interface IStakedUSDat is IERC4626 {
     error SurplusExceedsMax();
 
     /**
+     * @dev Thrown when the surplus source is the vault or withdrawal queue.
+     */
+    error InvalidSurplusSource();
+
+    /**
      * @dev Thrown when a measured token or module balance delta is not exact.
      */
     error InvalidAssetDelta();
@@ -210,6 +215,13 @@ interface IStakedUSDat is IERC4626 {
      * @param newAddress The new recovery address.
      */
     event RecoveryAddressUpdated(address indexed oldAddress, address indexed newAddress);
+
+    /**
+     * @dev Emitted when the redemption-fee destination and surplus source is updated.
+     * @param oldSource The previous source.
+     * @param newSource The new source.
+     */
+    event SurplusSourceUpdated(address indexed oldSource, address indexed newSource);
 
     /**
      * @dev Emitted when the migration NAV tolerance changes.
@@ -506,8 +518,8 @@ interface IStakedUSDat is IERC4626 {
     /**
      * @notice Attempts to redeem a complete queued request against the cash buffer.
      * @dev Only callable by the withdrawal queue (immutable address check). Prices,
-     * deducts the active fee, checks the net payout limit and liquidity, then burns
-     * and transfers atomically.
+     * deducts the active fee, checks the net payout limit and gross liquidity, then burns
+     * and atomically transfers the net payout to the queue and fee to surplusSource.
      * @param shares The complete number of escrowed shares to redeem.
      * @param minSharePrice The minimum net USDat payout per 1e18 shares.
      * @return result Whether the request settled or why it was skipped.
@@ -532,7 +544,7 @@ interface IStakedUSDat is IERC4626 {
     function recoveryAddress() external view returns (address);
 
     /**
-     * @notice Returns the configured source of USDat surplus tranches.
+     * @notice Returns the configured redemption-fee destination and source of USDat surplus tranches.
      */
     function surplusSource() external view returns (address);
 
@@ -634,6 +646,14 @@ interface IStakedUSDat is IERC4626 {
      * @param newRecoveryAddress The new recovery address.
      */
     function setRecoveryAddress(address newRecoveryAddress) external;
+
+    /**
+     * @notice Updates the redemption-fee destination and source of future surplus tranches.
+     * @dev Only callable by PARAMETER_MANAGER_ROLE, including while paused. The source cannot
+     * be zero, the vault, the withdrawal queue, blacklisted in StakedUSDat, or frozen in USDat.
+     * @param newSource The new surplus source.
+     */
+    function setSurplusSource(address newSource) external;
 
     /**
      * @notice Updates the whole-vault NAV tolerance for migration.

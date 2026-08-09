@@ -292,6 +292,14 @@ contract StakedUSDatReinitializerTest is Test {
         assertEq(vaultV1.getStrcOracle(), address(legacyOracle));
         assertFalse(mirror.seeded());
 
+        config.surplusSource = withdrawalQueue;
+
+        vm.expectRevert(IStakedUSDat.InvalidSurplusSource.selector);
+        _upgrade(config);
+
+        assertEq(vaultV1.getStrcOracle(), address(legacyOracle));
+        assertFalse(mirror.seeded());
+
         config.surplusSource = surplusSource;
         config.executionVehicle = address(0);
 

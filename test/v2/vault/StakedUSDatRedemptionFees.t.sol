@@ -213,11 +213,12 @@ contract StakedUSDatRedemptionFeesTest is Test {
         assertEq(vault.previewRedeem(shares), gross - elevatedFee);
     }
 
-    function test_redeemQueuedShares_CeilRoundsAndRetainsFeeInVault() public {
+    function test_redeemQueuedShares_RoutesNetToQueueAndCeilRoundedFeeToSurplusSource() public {
         _initializeAndDeposit(5, 10);
         uint256 shares = 10_000_001e12;
         uint256 gross = vault.convertToAssets(shares);
         uint256 fee = Math.mulDiv(gross, 5, vault.BPS_DENOMINATOR(), Math.Rounding.Ceil);
+        uint256 surplusSourceBalanceBefore = usdat.balanceOf(vault.surplusSource());
 
         (IStakedUSDat.RedemptionResult result, uint256 payout) = queue.redeemQueuedShares(vault, shares, 0);
 
@@ -225,9 +226,11 @@ contract StakedUSDatRedemptionFeesTest is Test {
         assertEq(gross, 10_000_001);
         assertEq(fee, 5_001);
         assertEq(payout, gross - fee);
-        assertEq(vault.usdatBalance(), DEPOSIT - payout);
-        assertEq(usdat.balanceOf(address(vault)), DEPOSIT - payout);
+        assertEq(payout + fee, gross);
+        assertEq(vault.usdatBalance(), DEPOSIT - gross);
+        assertEq(usdat.balanceOf(address(vault)), DEPOSIT - gross);
         assertEq(usdat.balanceOf(address(queue)), payout);
+        assertEq(usdat.balanceOf(vault.surplusSource()), surplusSourceBalanceBefore + fee);
     }
 
     function test_redeemQueuedShares_ExactNetSharePriceSettles() public {
@@ -256,6 +259,7 @@ contract StakedUSDatRedemptionFeesTest is Test {
         uint256 usdatBalanceBefore = vault.usdatBalance();
         uint256 vaultAssetsBefore = usdat.balanceOf(address(vault));
         uint256 queueAssetsBefore = usdat.balanceOf(address(queue));
+        uint256 surplusSourceAssetsBefore = usdat.balanceOf(vault.surplusSource());
 
         (IStakedUSDat.RedemptionResult result, uint256 payout) =
             queue.redeemQueuedShares(vault, shares, netSharePrice + 1);
@@ -267,6 +271,7 @@ contract StakedUSDatRedemptionFeesTest is Test {
         assertEq(vault.usdatBalance(), usdatBalanceBefore);
         assertEq(usdat.balanceOf(address(vault)), vaultAssetsBefore);
         assertEq(usdat.balanceOf(address(queue)), queueAssetsBefore);
+        assertEq(usdat.balanceOf(vault.surplusSource()), surplusSourceAssetsBefore);
     }
 
     function test_redeemQueuedShares_ElevatedFeeCanMoveNetPriceBelowOtherwiseAcceptableLimit() public {
@@ -291,10 +296,11 @@ contract StakedUSDatRedemptionFeesTest is Test {
         assertEq(vault.totalSupply(), DEPOSIT * 1e12);
     }
 
-    function test_redeemQueuedShares_SequentialFeeRetentionRaisesGrossSharePrice() public {
+    function test_redeemQueuedShares_FeeRoutingDoesNotRaiseNextGrossSharePrice() public {
         _initializeAndDeposit(500, 500);
         uint256 shares = 40e18;
         uint256 firstGross = vault.convertToAssets(shares);
+        uint256 expectedFee = Math.mulDiv(firstGross, 500, vault.BPS_DENOMINATOR(), Math.Rounding.Ceil);
 
         (IStakedUSDat.RedemptionResult firstResult, uint256 firstPayout) = queue.redeemQueuedShares(vault, shares, 0);
         uint256 secondGross = vault.convertToAssets(shares);
@@ -302,7 +308,8 @@ contract StakedUSDatRedemptionFeesTest is Test {
         assertEq(uint256(firstResult), uint256(IStakedUSDat.RedemptionResult.Settled));
         assertEq(firstGross, 40e6);
         assertEq(firstPayout, 38e6);
-        assertGt(secondGross, firstGross);
+        assertEq(usdat.balanceOf(vault.surplusSource()), expectedFee);
+        assertEq(secondGross, firstGross);
     }
 
     function test_redeemQueuedShares_InsufficientLiquiditySkipsWithoutMutation() public {
@@ -321,20 +328,27 @@ contract StakedUSDatRedemptionFeesTest is Test {
         assertEq(usdat.balanceOf(address(queue)), 0);
     }
 
-    function test_redeemQueuedShares_UsesNetAmountForLiquidityCheck() public {
+    function test_redeemQueuedShares_RequiresGrossAmountForLiquidityCheck() public {
         _initializeAndDeposit(500, 500);
         vault.setMockSharePrice(2_100_000);
         uint256 shares = 50e18;
         uint256 gross = vault.convertToAssets(shares);
         uint256 fee = Math.mulDiv(gross, 500, vault.BPS_DENOMINATOR(), Math.Rounding.Ceil);
+        uint256 net = gross - fee;
 
         (IStakedUSDat.RedemptionResult result, uint256 payout) = queue.redeemQueuedShares(vault, shares, 0);
 
         assertEq(gross, 105e6);
         assertGt(gross, DEPOSIT);
-        assertEq(payout, gross - fee);
-        assertLe(payout, DEPOSIT);
-        assertEq(uint256(result), uint256(IStakedUSDat.RedemptionResult.Settled));
+        assertLe(net, DEPOSIT);
+        assertEq(uint256(result), uint256(IStakedUSDat.RedemptionResult.InsufficientLiquidity));
+        assertEq(payout, 0);
+        assertEq(vault.balanceOf(address(queue)), 100e18);
+        assertEq(vault.totalSupply(), 100e18);
+        assertEq(vault.usdatBalance(), DEPOSIT);
+        assertEq(usdat.balanceOf(address(vault)), DEPOSIT);
+        assertEq(usdat.balanceOf(address(queue)), 0);
+        assertEq(usdat.balanceOf(vault.surplusSource()), 0);
     }
 
     function test_redeemQueuedShares_RestrictedModeRevertsWithoutMutation() public {

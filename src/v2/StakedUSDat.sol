@@ -250,7 +250,6 @@ contract StakedUSDat is
         onlyRole(DEFAULT_ADMIN_ROLE)
         reinitializer(2)
     {
-        require(config.surplusSource != address(0), InvalidZeroAddress());
         _validateV2Modules(config);
 
         config.strcMirrorModule
@@ -265,7 +264,7 @@ contract StakedUSDat is
         strcMirrorModule = config.strcMirrorModule;
         strconModule = config.strconModule;
         executionPolicy = config.executionPolicy;
-        surplusSource = config.surplusSource;
+        _setSurplusSource(config.surplusSource);
         _setRecoveryAddress(config.recoveryAddress);
         _setRedemptionFees(config.baseRedemptionFeeBps, config.elevatedRedemptionFeeBps);
         _setElevatedDepositFee(config.elevatedDepositFeeBps);
@@ -711,7 +710,7 @@ contract StakedUSDat is
     /// @inheritdoc IStakedUSDat
     /// @dev The queue's single settlement primitive: price, deduct the fee, validate
     /// the net payout per share, burn, and transfer a complete request in one call.
-    /// The fee stays in the vault and accrues to remaining shares.
+    /// The net payout goes to the queue and the fee goes to the configured surplus source.
     function redeemQueuedShares(uint256 shares, uint256 minSharePrice)
         external
         nonReentrant
@@ -723,21 +722,26 @@ contract StakedUSDat is
     {
         _sweep();
 
-        (, net,) = _quoteQueuedRedemption(shares);
+        uint256 gross;
+        uint256 fee;
+        (gross, net, fee) = _quoteQueuedRedemption(shares);
 
         uint256 netSharePrice = Math.mulDiv(net, 1e18, shares, Math.Rounding.Floor);
         if (netSharePrice < minSharePrice) {
             return (RedemptionResult.BelowLimit, 0);
         }
 
-        if (usdatBalance < net) {
+        if (usdatBalance < gross) {
             return (RedemptionResult.InsufficientLiquidity, 0);
         }
 
-        usdatBalance -= net;
+        usdatBalance -= gross;
         _burn(address(WITHDRAWAL_QUEUE), shares);
 
-        IERC20(asset()).safeTransfer(address(WITHDRAWAL_QUEUE), net);
+        IERC20 usdat = IERC20(asset());
+        usdat.safeTransfer(address(WITHDRAWAL_QUEUE), net);
+        if (fee != 0) usdat.safeTransfer(surplusSource, fee);
+
         return (RedemptionResult.Settled, net);
     }
 
@@ -820,6 +824,11 @@ contract StakedUSDat is
     /// @inheritdoc IStakedUSDat
     function setRecoveryAddress(address newRecoveryAddress) external onlyRole(PARAMETER_MANAGER_ROLE) {
         _setRecoveryAddress(newRecoveryAddress);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function setSurplusSource(address newSource) external onlyRole(PARAMETER_MANAGER_ROLE) {
+        _setSurplusSource(newSource);
     }
 
     /// @inheritdoc IStakedUSDat
@@ -913,6 +922,20 @@ contract StakedUSDat is
         recoveryAddress = newRecoveryAddress;
 
         emit RecoveryAddressUpdated(oldRecoveryAddress, newRecoveryAddress);
+    }
+
+    /// @dev Validates and updates the redemption-fee destination and surplus source.
+    function _setSurplusSource(address newSource) private {
+        require(newSource != address(0), InvalidZeroAddress());
+        require(newSource != address(this), InvalidSurplusSource());
+        require(newSource != address(WITHDRAWAL_QUEUE), InvalidSurplusSource());
+        _requireNotBlacklisted(newSource);
+        require(!IUSDat(asset()).isFrozen(newSource), AddressBlacklisted());
+
+        address oldSource = surplusSource;
+        surplusSource = newSource;
+
+        emit SurplusSourceUpdated(oldSource, newSource);
     }
 
     /// @dev Reverts unless an address is a valid seizure destination now.
