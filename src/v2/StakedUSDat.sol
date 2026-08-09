@@ -936,8 +936,7 @@ contract StakedUSDat is
         require(newSource != address(0), InvalidZeroAddress());
         require(newSource != address(this), InvalidSurplusSource());
         require(newSource != address(WITHDRAWAL_QUEUE), InvalidSurplusSource());
-        _requireNotBlacklisted(newSource);
-        require(!IUSDat(asset()).isFrozen(newSource), AddressBlacklisted());
+        _requireNotRestricted(newSource);
 
         address oldSource = surplusSource;
         surplusSource = newSource;
