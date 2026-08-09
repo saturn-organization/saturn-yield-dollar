@@ -15,7 +15,7 @@ contract StakedUSDatMarketModeHarness is StakedUSDat {
         _grantRole(PAUSER_ROLE, manager);
     }
 
-    function guardedOperation() external view whenNotRestricted returns (bool) {
+    function guardedOperation() external view whenNotRestrictedMarketMode returns (bool) {
         return true;
     }
 }
