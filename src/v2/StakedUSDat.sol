@@ -180,8 +180,8 @@ contract StakedUSDat is
         _;
     }
 
-    modifier whenNotRestricted() {
-        _requireNotRestricted();
+    modifier whenNotRestrictedMarketMode() {
+        _requireNotRestrictedMarketMode();
         _;
     }
 
@@ -207,7 +207,7 @@ contract StakedUSDat is
         require(amount != 0, ZeroAmount());
     }
 
-    function _requireNotRestricted() internal view {
+    function _requireNotRestrictedMarketMode() internal view {
         require(marketMode() != MarketMode.Restricted, MarketRestricted());
     }
 
@@ -501,7 +501,7 @@ contract StakedUSDat is
         external
         nonReentrant
         whenNotPaused
-        whenNotRestricted
+        whenNotRestrictedMarketMode
         onlyRole(OPERATOR_ROLE)
         notZero(usdatPaid)
         notZero(assetReceived)
@@ -531,7 +531,7 @@ contract StakedUSDat is
         external
         nonReentrant
         whenNotPaused
-        whenNotRestricted
+        whenNotRestrictedMarketMode
         onlyRole(OPERATOR_ROLE)
         notZero(assetDelivered)
         notZero(usdatReceived)
@@ -562,7 +562,7 @@ contract StakedUSDat is
         internal
         override
         nonReentrant
-        whenNotRestricted
+        whenNotRestrictedMarketMode
         notZero(assets)
         notZero(shares)
     {
@@ -722,7 +722,7 @@ contract StakedUSDat is
         nonReentrant
         onlyWithdrawalQueue
         whenNotPaused
-        whenNotRestricted
+        whenNotRestrictedMarketMode
         notZero(shares)
         returns (RedemptionResult result, uint256 net)
     {

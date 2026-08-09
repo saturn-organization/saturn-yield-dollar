@@ -457,7 +457,7 @@ Deposits are atomic, 24/7 when enabled, and enter the cash buffer at validated N
 charges no fee; Elevated charges `elevatedDepositFeeBps`; Restricted disables deposits and
 mints (`maxDeposit`/`maxMint` return 0, as under hard pause). The anti-dilution fee remains
 in `usdatBalance`, never goes to legacy `feeRecipient`. Every deposit/mint variant adds
-`whenNotRestricted` to its hard-pause guard and prices against pre-deposit NAV:
+`whenNotRestrictedMarketMode` to its hard-pause guard and prices against pre-deposit NAV:
 
 ```
 deposit(grossAssets):
@@ -670,7 +670,7 @@ event AssetSold(
 These two settlement events are declared by the linked library but, because it runs by
 `DELEGATECALL`, are emitted from the vault address.
 
-Both functions are `whenNotPaused`, `whenNotRestricted`, and `nonReentrant`; reject zero
+Both functions are `whenNotPaused`, `whenNotRestrictedMarketMode`, and `nonReentrant`; reject zero
 amounts and an expired deadline; use the fixed `strconModule` and `executionPolicy`; and
 accept no module parameter, USDC amount, Ondo quote or separate signature, route, target,
 arbitrary calldata, or vehicle-reported result.
@@ -807,7 +807,7 @@ transaction. A duplicate therefore cannot burn shares or fund an obligation twic
 ```solidity
 // StakedUSDat — queue-only; price, check, burn, and transfer atomically
 function redeemQueuedShares(uint256 shares, uint256 minSharePrice)
-    external onlyWithdrawalQueue whenNotPaused whenNotRestricted
+    external onlyWithdrawalQueue whenNotPaused whenNotRestrictedMarketMode
     returns (RedemptionResult result, uint256 usdat);
 // gross = convertToAssets(shares), floor-rounded and priced before the burn
 // fee = Math.mulDiv(gross, redemptionFeeBps(), 10_000, Math.Rounding.Ceil)
@@ -923,7 +923,7 @@ function marketMode() public view returns (MarketMode);
 event MarketModeChanged(MarketMode oldMode, MarketMode newMode);
 event RegularModeAuthorized(uint64 validUntil);
 
-modifier whenNotRestricted() {
+modifier whenNotRestrictedMarketMode() {
     require(marketMode() != MarketMode.Restricted, MarketRestricted());
     _;
 }
