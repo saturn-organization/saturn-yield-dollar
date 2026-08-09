@@ -96,7 +96,7 @@ interface IStakedUSDat is IERC4626 {
     error AddressNotBlacklisted();
 
     /**
-     * @dev Thrown when an operation involves a blacklisted address.
+     * @dev Thrown when an operation involves an sUSDat-blacklisted or USDat-frozen address.
      */
     error AddressBlacklisted();
 
@@ -319,10 +319,18 @@ interface IStakedUSDat is IERC4626 {
     function isBlacklisted(address account) external view returns (bool);
 
     /**
-     * @notice Transfers a blacklisted holder's full sUSDat balance to a recovery address.
+     * @notice Checks whether an address is restricted by either compliance system.
+     * @dev A USDat freeze alone does not authorize StakedUSDat.seize.
+     * @param account The address to check.
+     * @return True if the address is blacklisted on sUSDat or frozen on USDat.
+     */
+    function isRestricted(address account) external view returns (bool);
+
+    /**
+     * @notice Transfers a locally blacklisted holder's full sUSDat balance to a recovery address.
      * @dev Only callable by addresses with the ENFORCER_ROLE. Moves shares, no burn,
      * no liquidity needed. Resolves the current valid recoveryAddress internally.
-     * @param from The blacklisted address to seize from.
+     * @param from The locally blacklisted address to seize from.
      */
     function seize(address from) external;
 
