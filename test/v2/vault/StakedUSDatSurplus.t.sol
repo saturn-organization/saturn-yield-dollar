@@ -98,7 +98,7 @@ contract StakedUSDatSurplusTest is Test {
         strconModule = new ZeroTradableModuleMock(address(vault));
 
         V2InitializationHelper.initialize(vault, address(strcMirrorModule), address(strconModule), 5, 10, 25);
-        vault.grantRole(vault.OPERATOR_ROLE(), address(this));
+        vault.grantRole(vault.SURPLUS_MANAGER_ROLE(), address(this));
         vault.grantRole(vault.PARAMETER_MANAGER_ROLE(), address(this));
         vault.grantRole(vault.PAUSER_ROLE(), address(this));
 
@@ -113,6 +113,7 @@ contract StakedUSDatSurplusTest is Test {
         assertEq(vault.MAX_SURPLUS_VESTING_PERIOD(), 7 days);
         assertEq(vault.surplusVestingAmount(), 0);
         assertEq(vault.surplusVestingStartTimestamp(), 0);
+        assertEq(vault.surplusSource(), address(this));
     }
 
     function test_transferInSurplus_PullsUSDatAndStartsFullyUnvested() public {
@@ -135,13 +136,42 @@ contract StakedUSDatSurplusTest is Test {
         assertEq(vault.totalAssets(), INITIAL_CASH);
     }
 
-    function test_transferInSurplus_RequiresOperatorNonzeroAndUnpaused() public {
+    function test_transferInSurplus_PullsFromConfiguredSourceNotManager() public {
+        address manager = makeAddr("manager");
+        vault.grantRole(vault.SURPLUS_MANAGER_ROLE(), manager);
+
+        usdat.mint(manager, SMALL_SURPLUS);
+        vm.prank(manager);
+        usdat.approve(address(vault), SMALL_SURPLUS);
+
+        uint256 sourceBalanceBefore = usdat.balanceOf(address(this));
+        uint256 managerBalanceBefore = usdat.balanceOf(manager);
+
+        vm.prank(manager);
+        vault.transferInSurplus(SMALL_SURPLUS);
+
+        assertEq(usdat.balanceOf(address(this)), sourceBalanceBefore - SMALL_SURPLUS);
+        assertEq(usdat.balanceOf(manager), managerBalanceBefore);
+        assertEq(vault.surplusVestingAmount(), SMALL_SURPLUS);
+    }
+
+    function test_transferInSurplus_RequiresSurplusManagerNonzeroAndUnpaused() public {
         vm.expectRevert(
             abi.encodeWithSelector(
-                IAccessControl.AccessControlUnauthorizedAccount.selector, unauthorized, vault.OPERATOR_ROLE()
+                IAccessControl.AccessControlUnauthorizedAccount.selector, unauthorized, vault.SURPLUS_MANAGER_ROLE()
             )
         );
         vm.prank(unauthorized);
+        vault.transferInSurplus(SMALL_SURPLUS);
+
+        address operator = makeAddr("operator");
+        vault.grantRole(vault.OPERATOR_ROLE(), operator);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector, operator, vault.SURPLUS_MANAGER_ROLE()
+            )
+        );
+        vm.prank(operator);
         vault.transferInSurplus(SMALL_SURPLUS);
 
         vm.expectRevert(IStakedUSDat.ZeroAmount.selector);

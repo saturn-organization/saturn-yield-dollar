@@ -26,6 +26,7 @@ interface IExpectedStakedUSDatV2Initializer {
         address strconModule;
         address executionPolicy;
         address recoveryAddress;
+        address surplusSource;
         address executionVehicle;
         uint16 baseRedemptionFeeBps;
         uint16 elevatedRedemptionFeeBps;
@@ -40,6 +41,7 @@ interface IExpectedStakedUSDatV2Initializer {
         address parameterManager;
         address marketModeManager;
         address operator;
+        address surplusManager;
         address blacklister;
         address enforcer;
         address pauser;
@@ -128,6 +130,7 @@ contract StakedUSDatReinitializerTest is Test {
     address private spender = makeAddr("spender");
     address private blacklisted = makeAddr("blacklisted");
     address private recovery = makeAddr("recovery");
+    address private surplusSource = makeAddr("surplusSource");
     address private executionVehicle = makeAddr("executionVehicle");
 
     IExpectedStakedUSDatV2Initializer.V2Roles private roles;
@@ -160,6 +163,7 @@ contract StakedUSDatReinitializerTest is Test {
             parameterManager: makeAddr("parameterManager"),
             marketModeManager: makeAddr("marketModeManager"),
             operator: makeAddr("operator"),
+            surplusManager: makeAddr("surplusManager"),
             blacklister: makeAddr("blacklister"),
             enforcer: makeAddr("enforcer"),
             pauser: makeAddr("pauser"),
@@ -219,6 +223,7 @@ contract StakedUSDatReinitializerTest is Test {
         assertEq(configuredPolicy.VAULT(), proxy);
         assertEq(address(configuredPolicy.STRCON_MODULE()), address(strconModule));
         assertEq(vaultV2.recoveryAddress(), recovery);
+        assertEq(vaultV2.surplusSource(), surplusSource);
         assertEq(configuredPolicy.executionVehicle(), executionVehicle);
         assertEq(vaultV2.baseRedemptionFeeBps(), 5);
         assertEq(vaultV2.elevatedRedemptionFeeBps(), 10);
@@ -255,6 +260,7 @@ contract StakedUSDatReinitializerTest is Test {
         assertTrue(vaultV2.hasRole(vaultV2.PARAMETER_MANAGER_ROLE(), roles.parameterManager));
         assertTrue(vaultV2.hasRole(vaultV2.MARKET_MODE_MANAGER_ROLE(), roles.marketModeManager));
         assertTrue(vaultV2.hasRole(vaultV2.OPERATOR_ROLE(), roles.operator));
+        assertTrue(vaultV2.hasRole(vaultV2.SURPLUS_MANAGER_ROLE(), roles.surplusManager));
         assertTrue(vaultV2.hasRole(vaultV2.BLACKLISTER_ROLE(), roles.blacklister));
         assertTrue(vaultV2.hasRole(vaultV2.ENFORCER_ROLE(), roles.enforcer));
         assertTrue(vaultV2.hasRole(vaultV2.PAUSER_ROLE(), roles.pauser));
@@ -278,6 +284,15 @@ contract StakedUSDatReinitializerTest is Test {
         assertFalse(mirror.seeded());
 
         config.migrationToleranceBps = 50;
+        config.surplusSource = address(0);
+
+        vm.expectRevert(IStakedUSDat.InvalidZeroAddress.selector);
+        _upgrade(config);
+
+        assertEq(vaultV1.getStrcOracle(), address(legacyOracle));
+        assertFalse(mirror.seeded());
+
+        config.surplusSource = surplusSource;
         config.executionVehicle = address(0);
 
         vm.expectRevert(IStakedUSDat.InvalidZeroAddress.selector);
@@ -339,6 +354,7 @@ contract StakedUSDatReinitializerTest is Test {
             strconModule: address(strconModule),
             executionPolicy: address(executionPolicy),
             recoveryAddress: recovery,
+            surplusSource: surplusSource,
             executionVehicle: executionVehicle,
             baseRedemptionFeeBps: 5,
             elevatedRedemptionFeeBps: 10,

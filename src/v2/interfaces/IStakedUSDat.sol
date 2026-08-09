@@ -42,6 +42,7 @@ interface IStakedUSDat is IERC4626 {
         ISTRConModule strconModule;
         ISTRConExecutionPolicy executionPolicy;
         address recoveryAddress;
+        address surplusSource;
         address executionVehicle;
         uint16 baseRedemptionFeeBps;
         uint16 elevatedRedemptionFeeBps;
@@ -56,6 +57,7 @@ interface IStakedUSDat is IERC4626 {
         address parameterManager;
         address marketModeManager;
         address operator;
+        address surplusManager;
         address blacklister;
         address enforcer;
         address pauser;
@@ -434,8 +436,8 @@ interface IStakedUSDat is IERC4626 {
 
     /**
      * @notice Transfers a USDat surplus tranche into the vault for linear vesting.
-     * @dev Only callable by OPERATOR_ROLE while unpaused. The function pulls only the
-     * configured ERC4626 asset and requires the exact requested custody increase.
+     * @dev Only callable by SURPLUS_MANAGER_ROLE while unpaused. The function pulls only the
+     * configured ERC4626 asset from surplusSource.
      * @param amount The USDat amount to transfer, in 6-decimal asset units.
      */
     function transferInSurplus(uint256 amount) external;
@@ -528,6 +530,11 @@ interface IStakedUSDat is IERC4626 {
      * @return The recovery address.
      */
     function recoveryAddress() external view returns (address);
+
+    /**
+     * @notice Returns the configured source of USDat surplus tranches.
+     */
+    function surplusSource() external view returns (address);
 
     /**
      * @notice Returns the effective vault operating mode.

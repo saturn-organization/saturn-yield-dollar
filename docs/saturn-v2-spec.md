@@ -103,7 +103,7 @@ totalAssets() = usdatBalance
 a USDat/USD depeg. `usdatBalance` is idle USDat: the deposit inlet, redemption outlet, and
 source/sink of rotations.
 
-**Surplus inlet.** `transferInSurplus(amount)` (OPERATOR_ROLE) accepts discretionary USDat
+**Surplus inlet.** `transferInSurplus(amount)` (`SURPLUS_MANAGER_ROLE`) accepts discretionary USDat
 surplus; no amount or schedule is owed to the vault. It enters a segregated
 `surplusVestingAmount` leg — in the vault but outside
 `usdatBalance` — and vests linearly over `surplusVestingPeriod` (default 3 days, max 7d).
@@ -117,8 +117,10 @@ Only one tranche may exist. A new transfer requires the prior tranche fully vest
 amount ≤ floor(navBefore × MAX_SURPLUS_BPS / 10_000)
 ```
 
-The vault pulls its configured USDat asset from the operator with `safeTransferFrom` before
-recognizing the tranche.
+The vault pulls its configured USDat asset from the fixed `surplusSource` with
+`safeTransferFrom` before recognizing the tranche. The authorized surplus manager selects only the
+amount; it cannot select or supply the source account. `surplusSource` is a dedicated wallet
+that holds no unrelated USDat and preapproves the vault to pull approved surplus tranches.
 
 The public `sweep()` is a permissionless, NAV-neutral poke over the private `_sweep()` helper
 and remains callable during a hard pause because it transfers no tokens and cannot accelerate
@@ -1025,7 +1027,8 @@ Capability-named (`keccak256("<NAME>_ROLE")`):
 | `DEFAULT_ADMIN_ROLE` | Grant/revoke roles; authorize UUPS upgrades; execute `migrate` | StakedUSDat and queue, with separate grants | No other role | Yes |
 | `PARAMETER_MANAGER_ROLE` | Set vault fees, vesting/reward limits, migration parameters and `recoveryAddress`; directly set the fixed policy's execution vehicle, tolerance and capacity; set the active STRCon oracle wrapper | Vault role registry, including direct authorization reads by the fixed policy, bound modules, and wrapper | No other role | Yes |
 | `MARKET_MODE_MANAGER_ROLE` | Set Elevated or Restricted and grant expiring Regular authorization for at most eight hours; cannot set fee amounts or clear hard pause | StakedUSDat | `OPERATOR_ROLE` only | No |
-| `OPERATOR_ROLE` | Execute `buy`/`sell`, transfer surplus and STRCMirrorModule rewards, and select/order queue requests for processing | StakedUSDat and queue, with separate grants | `MARKET_MODE_MANAGER_ROLE` only | No |
+| `OPERATOR_ROLE` | Execute `buy`/`sell`, transfer STRCMirrorModule rewards, and select/order queue requests for processing | StakedUSDat and queue, with separate grants | `MARKET_MODE_MANAGER_ROLE` only | No |
+| `SURPLUS_MANAGER_ROLE` | Start a capped surplus tranche from the fixed `surplusSource`; cannot select the source or destination | StakedUSDat | No other role | No |
 | `BLACKLISTER_ROLE` | Add/remove the canonical sUSDat blacklist; cannot move or destroy positions | StakedUSDat | No other role | No |
 | `ENFORCER_ROLE` | Seize blacklisted positions and rescue untracked vault excess; cannot blacklist | StakedUSDat and queue, with separate grants | No other role | Yes |
 | `PAUSER_ROLE` | Invoke vault hard pause or queue-local pause; cannot unpause | StakedUSDat and queue, with separate grants | No other role | No |
@@ -1071,6 +1074,7 @@ struct V2Config {
     ISTRConModule strconModule;
     ISTRConExecutionPolicy executionPolicy;
     address recoveryAddress;
+    address surplusSource;
     address executionVehicle;
     uint16 baseRedemptionFeeBps;
     uint16 elevatedRedemptionFeeBps;
@@ -1085,6 +1089,7 @@ struct V2Roles {
     address parameterManager;
     address marketModeManager;
     address operator;
+    address surplusManager;
     address blacklister;
     address enforcer;
     address pauser;
@@ -1098,7 +1103,8 @@ function initializeV2(V2Config calldata config, V2Roles calldata roles)
 ```
 
 `initializeV2` validates both modules' immutable `VAULT` bindings, the policy's immutable
-`VAULT` and `STRCON_MODULE` bindings, and a zero initial `STRConModule.balance()`. It
+`VAULT` and `STRCON_MODULE` bindings, a zero initial `STRConModule.balance()`, and a nonzero
+`surplusSource`. It
 permanently binds the two module slots and the execution-policy slot, installs vault-owned
 configuration through the same internal setters used after initialization, grants each role
 in `V2Roles`, sets `surplusVestingPeriod = 3 days`, configures Elevated, and sets
@@ -1209,7 +1215,7 @@ the mirror and recognizes STRCon, subject to `migrationToleranceBps`.
    queue processing resumes.
 4. Schedule the two `upgradeToAndCall` operations through the five-day timelock. The sUSDat
    `initializeV2(config, roles)` call defined in §2.9 installs both modules and the fixed
-   execution policy, installs the approved nonzero `recoveryAddress`, parameters, and roles,
+   execution policy, installs the approved nonzero `recoveryAddress` and `surplusSource`, parameters, and roles,
    initializes effective Elevated with no outstanding Regular authorization, atomically
    initializes the migration tolerance and the policy's vehicle, execution tolerance,
    capacity, and refill rate, and maps the legacy vault slots into the renamed
