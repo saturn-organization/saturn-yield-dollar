@@ -94,7 +94,7 @@ Normative. Present tense; rationale in Appendix A.
 
 ```
 totalAssets() = usdatBalance
-              + (surplusVestingAmount − getUnvestedSurplus())
+              + (surplusVestingAmount − getUnvestedSurplus() − _surplusSwept)
               + strcMirrorModule.recognizedValue()
               + strconModule.recognizedValue()
 ```
@@ -107,10 +107,12 @@ source/sink of rotations.
 surplus; no amount or schedule is owed to the vault. It enters a segregated
 `surplusVestingAmount` leg — in the vault but outside
 `usdatBalance` — and vests linearly over `surplusVestingPeriod` (default 3 days, max 7d).
+The private `_surplusSwept` checkpoint records the cumulative portion of the active tranche
+already folded into `usdatBalance`; it is not an external accounting surface.
 `MAX_SURPLUS_BPS` is a fixed 500 bps (5%) protocol constant with no storage slot or
 administrative setter.
 Only one tranche may exist. A new transfer requires the prior tranche fully vested;
-`_sweep()` folds it into `usdatBalance`, then the vault records pre-transfer
+`_sweep()` clears it, then the vault records pre-transfer
 `navBefore = totalAssets()` and requires:
 
 ```
@@ -122,9 +124,11 @@ recognizing the tranche.
 
 The public `sweep()` is a permissionless, NAV-neutral poke over the private `_sweep()` helper
 and remains callable during a hard pause because it transfers no tokens and cannot accelerate
-vesting. `_sweep()` also precedes value-sensitive entrypoints. Until
-fully vested and swept into `usdatBalance`, surplus cannot fund rotations, redemptions,
-custody-shortfall coverage, or emergency action; no pause or role accelerates or cancels it.
+vesting. `_sweep()` also precedes value-sensitive entrypoints and folds only the newly vested
+portion into `usdatBalance`. Swept surplus may fund rotations and redemptions; the remaining
+segregated amount, `surplusVestingAmount − _surplusSwept`, may not. When vesting completes,
+`_sweep()` releases the remainder and clears both tranche variables. No pause or role
+accelerates or cancels vesting.
 
 **Economic incidence.** Recognized gains and losses change per-share NAV for accounts
 exposed to sUSDat at recognition. Open requests remain exposed; processed requests are
@@ -134,14 +138,15 @@ halts pricing without a write-down; impairment enters NAV only through an approv
 recovery price or governance upgrade.
 
 **Physical USDat shortfall.** If actual USDat custody falls below
-`usdatBalance + surplusVestingAmount`, the vault must pause immediately and remain paused
-until a governance upgrade adjusts tracked USDat accounting to verified recoverable
-custody. V2 has no ordinary shortfall write-down path.
+`usdatBalance + surplusVestingAmount − _surplusSwept`, the vault must pause immediately and
+remain paused until a governance upgrade adjusts tracked USDat accounting to verified
+recoverable custody. V2 has no ordinary shortfall write-down path.
 
 Invariants:
-- `totalAssets()` counts only the vested slice of the surplus leg.
-- `usdatBalance` outflow paths never touch `surplusVestingAmount`.
-- `USDat.balanceOf(address(this)) ≥ usdatBalance + surplusVestingAmount`.
+- `totalAssets()` counts each vested unit exactly once, either as swept `usdatBalance` or as
+  vested-but-unswept surplus.
+- `_surplusSwept ≤ surplusVestingAmount − getUnvestedSurplus()` while a tranche is active.
+- `USDat.balanceOf(address(this)) ≥ usdatBalance + surplusVestingAmount − _surplusSwept`.
 
 ### 2.2 Module framework
 
@@ -268,7 +273,7 @@ follows the STRCon impairment path in Appendix G.
 
 **Rescue.** `rescueTokens(token, amount)` (`ENFORCER_ROLE`) sends only untracked
 excess to the current `recoveryAddress`; it accepts no caller-selected destination.
-Protected custody is `usdatBalance + surplusVestingAmount` for USDat and
+Protected custody is `usdatBalance + surplusVestingAmount − _surplusSwept` for USDat and
 `strconModule.balance()` for STRCon; STRCMirrorModule is tokenless. Unsolicited transfers do not
 change accounting or NAV, and only custody above the applicable protected amount is
 rescuable.
@@ -679,10 +684,11 @@ the oracle wrapper, tolerance, and capacity. The exact amounts, expected vehicle
 `deadline` are the operator's commitment; v2 adds no freshness bound beyond the deadline,
 so it must match the intended approval window.
 
-After `_sweep()`, each rotation calls `totalAssets()` before settlement so the fail-closed
-rule in §2.2 covers both fixed modules. The settlement order below begins only after that
-pricing preflight succeeds. The vault then applies its tracked-cash delta before exactly one
-linked-library call; all remaining policy validation and settlement occurs inside that call.
+After `_sweep()` releases newly vested surplus into `usdatBalance`, each rotation calls
+`totalAssets()` before settlement so the fail-closed rule in §2.2 covers both fixed modules.
+The settlement order below begins only after that pricing preflight succeeds. The vault then
+applies its tracked-cash delta before exactly one linked-library call; all remaining policy
+validation and settlement occurs inside that call.
 
 **Buy order:** require `usdatBalance ≥ usdatPaid`; decrement `usdatBalance`; call linked
 `STRConTradeExecutionLogic.executeBuy` once by `DELEGATECALL`; normally call
@@ -1421,8 +1427,8 @@ problem, handled by rotations.
 **`transferInSurplus` vault-native, not a module.** USDat is settlement, not backing;
 vesting alone does not justify cross-contract writes around frequently changed
 `usdatBalance`. A separate vesting leg avoids underflow guards on every USDat outflow. Its
-bounded size is not expected to materially change an emergency outcome, so it stays
-unavailable and needs no emergency accounting path.
+vested portion is folded incrementally into tracked cash, while the remaining segregated
+portion stays protected by the custody floor and rescue rules.
 
 **Funding ≠ processing.** A combined `fundAndProcessRedemptions(legs, tokenIds)` was
 rejected. A sale precedes processing either way, so queued shares bear its delta and exit at

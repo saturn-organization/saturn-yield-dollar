@@ -212,7 +212,7 @@ contract V2MockMainnetForkTest is Test {
         assertTrue(IAccessControl(STAKED_USDAT_PROXY).hasRole(bytes32(0), TIMELOCK));
         assertTrue(IAccessControl(WITHDRAWAL_QUEUE_PROXY).hasRole(bytes32(0), TIMELOCK));
 
-        for (uint256 slot = 10; slot <= 16; ++slot) {
+        for (uint256 slot = 10; slot <= 17; ++slot) {
             assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(slot)), bytes32(0));
         }
     }
@@ -511,6 +511,7 @@ contract V2MockMainnetForkTest is Test {
         assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(14))), bytes32(0));
         assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(15))), bytes32(uint256(3 days)));
         assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(16))), bytes32(expectedSlotSixteen));
+        assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(17))), bytes32(0));
     }
 
     function _snapshotQueueV1() private view returns (QueueSnapshot memory snapshot) {
