@@ -277,8 +277,8 @@ interface IStakedUSDat is IERC4626 {
     event SurplusReceived(uint256 amount);
 
     /**
-     * @dev Emitted when a fully vested surplus tranche is folded into the cash balance.
-     * @param amount The USDat amount moved into usdatBalance.
+     * @dev Emitted when newly vested surplus is folded into the cash balance.
+     * @param amount The incremental USDat amount moved into usdatBalance.
      */
     event SurplusSwept(uint256 amount);
 
@@ -455,8 +455,8 @@ interface IStakedUSDat is IERC4626 {
     function getUnvestedSurplus() external view returns (uint256);
 
     /**
-     * @notice Folds a fully vested surplus tranche into the spendable USDat balance.
-     * @dev Permissionless and a no-op when no tranche exists or vesting is incomplete.
+     * @notice Folds newly vested surplus into the spendable USDat balance.
+     * @dev Permissionless and a no-op when no newly vested amount is available.
      */
     function sweep() external;
 
@@ -600,7 +600,8 @@ interface IStakedUSDat is IERC4626 {
     function usdatBalance() external view returns (uint256);
 
     /**
-     * @notice Returns the full amount of the current segregated surplus tranche.
+     * @notice Returns the original amount of the active surplus tranche.
+     * @dev Returns zero after the tranche is fully vested and swept.
      */
     function surplusVestingAmount() external view returns (uint256);
 
