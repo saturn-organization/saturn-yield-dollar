@@ -424,7 +424,7 @@ contract StakedUSDat is
     }
 
     /// @inheritdoc IERC4626
-    /// @dev Returns 0 when paused per ERC4626 spec.
+    /// @dev Returns 0 when the owner is restricted or the vault is paused per ERC4626 spec.
     function maxRedeem(address owner) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         return (isRestricted(owner) || paused()) ? 0 : balanceOf(owner);
     }

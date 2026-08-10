@@ -734,7 +734,9 @@ sale data.
 
 **Request.** Vault `requestRedeem(shares, minSharePrice)` escrows shares in the queue and
 mints an NFT. `MIN_REQUEST_SHARES` is 10 shares, not assets, because the function never
-prices (§2.2; v1's 10-USDat minimum required `previewRedeem`):
+prices (§2.2; v1's 10-USDat minimum required `previewRedeem`). `maxRedeem(owner)` returns
+zero when the vault is paused or the owner is restricted, and otherwise returns the owner's
+raw share balance; `requestRedeem` enforces that limit before escrowing shares:
 
 ```solidity
 enum RequestStatus { NULL, Requested, InProgress, Processed, Claimed, Cancelled }
