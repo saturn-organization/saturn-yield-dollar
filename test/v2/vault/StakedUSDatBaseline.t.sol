@@ -121,5 +121,6 @@ contract StakedUSDatBaselineTest is Test {
         uint256 expectedSlotSeventeen =
             uint256(uint160(address(vaultV2.executionPolicy()))) | (uint256(vaultV2.regularModeValidUntil()) << 176);
         assertEq(vm.load(address(proxy), bytes32(uint256(17))), bytes32(expectedSlotSeventeen));
+        assertEq(vm.load(address(proxy), bytes32(uint256(18))), bytes32(0));
     }
 }

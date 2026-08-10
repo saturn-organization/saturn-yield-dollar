@@ -340,6 +340,62 @@ contract StakedUSDatSurplusTest is Test {
         assertEq(vault.totalAssets(), navBefore);
     }
 
+    function test_sweep_ReleasesIncrementallyIsIdempotentAndClearsExactlyAtMaturity() public {
+        vault.transferInSurplus(MAX_SURPLUS);
+        uint256 startedAt = block.timestamp;
+
+        vm.warp(startedAt + DEFAULT_VESTING_PERIOD / 3);
+        uint256 firstUnvested = vault.getUnvestedSurplus();
+        uint256 firstRelease = MAX_SURPLUS - firstUnvested;
+        uint256 firstNav = vault.totalAssets();
+
+        vm.expectEmit(false, false, false, true, address(vault));
+        emit SurplusSwept(firstRelease);
+        vm.prank(permissionlessCaller);
+        vault.sweep();
+
+        assertEq(vault.usdatBalance(), INITIAL_CASH + firstRelease);
+        assertEq(vault.surplusVestingAmount(), MAX_SURPLUS);
+        assertEq(vault.getUnvestedSurplus(), firstUnvested);
+        assertEq(vault.totalAssets(), firstNav);
+
+        vm.warp(startedAt + (DEFAULT_VESTING_PERIOD * 2) / 3);
+        uint256 secondUnvested = vault.getUnvestedSurplus();
+        uint256 totalReleased = MAX_SURPLUS - secondUnvested;
+        uint256 secondRelease = totalReleased - firstRelease;
+        uint256 secondNav = vault.totalAssets();
+
+        vm.expectEmit(false, false, false, true, address(vault));
+        emit SurplusSwept(secondRelease);
+        vm.prank(permissionlessCaller);
+        vault.sweep();
+
+        assertEq(vault.usdatBalance(), INITIAL_CASH + totalReleased);
+        assertEq(vault.totalAssets(), secondNav);
+
+        vm.recordLogs();
+        vm.prank(permissionlessCaller);
+        vault.sweep();
+
+        assertEq(vm.getRecordedLogs().length, 0);
+        assertEq(vault.usdatBalance(), INITIAL_CASH + totalReleased);
+        assertEq(vault.totalAssets(), secondNav);
+
+        vm.warp(startedAt + DEFAULT_VESTING_PERIOD);
+        uint256 finalRelease = MAX_SURPLUS - totalReleased;
+        uint256 finalNav = vault.totalAssets();
+
+        vm.expectEmit(false, false, false, true, address(vault));
+        emit SurplusSwept(finalRelease);
+        vm.prank(permissionlessCaller);
+        vault.sweep();
+
+        assertEq(vault.usdatBalance(), INITIAL_CASH + MAX_SURPLUS);
+        assertEq(vault.surplusVestingAmount(), 0);
+        assertEq(vault.getUnvestedSurplus(), 0);
+        assertEq(vault.totalAssets(), finalNav);
+    }
+
     function test_sweep_DoesNotRequireModulePricing() public {
         vault.transferInSurplus(MAX_SURPLUS);
         vm.warp(block.timestamp + DEFAULT_VESTING_PERIOD);
@@ -430,6 +486,34 @@ contract StakedUSDatSurplusTest is Test {
         assertEq(usdat.balanceOf(vault.surplusSource()), surplusSourceBalanceBefore + fee);
         assertEq(vault.surplusVestingAmount(), 0);
         assertEq(vault.usdatBalance(), INITIAL_CASH + MAX_SURPLUS - gross);
+    }
+
+    function test_redeemQueuedShares_UsesPartiallyVestedSurplusAsLiquidity() public {
+        vault.transferInSurplus(MAX_SURPLUS);
+        uint256 startedAt = block.timestamp;
+        uint256 shares = vault.balanceOf(address(this));
+        assertTrue(vault.transfer(address(queue), shares));
+
+        vm.warp(startedAt + (DEFAULT_VESTING_PERIOD * 9) / 10);
+        vault.authorizeRegularMode(uint64(block.timestamp + 8 hours));
+
+        uint256 unvested = vault.getUnvestedSurplus();
+        uint256 vested = MAX_SURPLUS - unvested;
+        uint256 gross = vault.convertToAssets(shares);
+        uint256 expectedPayout =
+            gross - Math.mulDiv(gross, vault.redemptionFeeBps(), vault.BPS_DENOMINATOR(), Math.Rounding.Ceil);
+
+        assertGt(expectedPayout, INITIAL_CASH);
+        assertLe(gross, INITIAL_CASH + vested);
+
+        (IStakedUSDat.RedemptionResult result, uint256 payout) = queue.redeemQueuedShares(vault, shares);
+
+        assertEq(uint256(result), uint256(IStakedUSDat.RedemptionResult.Settled));
+        assertEq(payout, expectedPayout);
+        assertEq(vault.usdatBalance(), INITIAL_CASH + vested - gross);
+        assertEq(vault.surplusVestingAmount(), MAX_SURPLUS);
+        assertEq(usdat.balanceOf(address(vault)), vault.usdatBalance() + unvested);
+        assertEq(usdat.balanceOf(address(queue)), expectedPayout);
     }
 
     function _deployVault() private returns (StakedUSDat deployedVault) {

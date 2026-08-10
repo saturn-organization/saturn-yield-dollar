@@ -271,6 +271,7 @@ contract StakedUSDatReinitializerTest is Test {
             assertEq(vm.load(proxy, bytes32(slot)), legacySlots[slot]);
         }
         assertEq(vm.load(proxy, bytes32(uint256(5))), bytes32(uint256(25)));
+        assertEq(vm.load(proxy, bytes32(uint256(18))), bytes32(0));
     }
 
     function test_initializeV2_InvalidInputRollsBackUpgradeAndCanRetry() public {
