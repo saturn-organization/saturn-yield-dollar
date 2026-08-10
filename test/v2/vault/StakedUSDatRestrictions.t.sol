@@ -188,11 +188,22 @@ contract StakedUSDatRestrictionsTest is Test {
         assertEq(vault.maxMint(bob), 0);
     }
 
+    function test_maxRedeem_ReturnsZeroForRestrictedOwner() public {
+        assertEq(vault.maxRedeem(alice), vault.balanceOf(alice));
+
+        vault.addToBlacklist(alice);
+        assertEq(vault.maxRedeem(alice), 0);
+
+        vault.removeFromBlacklist(alice);
+        usdat.setFrozen(alice, true);
+        assertEq(vault.maxRedeem(alice), 0);
+    }
+
     function test_requestRedeem_RejectsUSDatFrozenOwner() public {
         uint256 shares = vault.MIN_REQUEST_SHARES();
         usdat.setFrozen(alice, true);
 
-        vm.expectRevert(IStakedUSDat.AddressBlacklisted.selector);
+        vm.expectRevert(abi.encodeWithSelector(ERC4626Upgradeable.ERC4626ExceededMaxRedeem.selector, alice, shares, 0));
         vm.prank(alice);
         vault.requestRedeem(shares, 0);
     }
