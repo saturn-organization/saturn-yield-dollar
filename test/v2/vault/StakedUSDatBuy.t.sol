@@ -241,7 +241,7 @@ contract StakedUSDatBuyTest is Test {
     uint256 private constant AMOUNT_OUT = 100e18;
     uint128 private constant BOUNDARY_AMOUNT_IN = 10_500_000_000;
     uint256 private constant FAVORABLE_AMOUNT_IN = 9_900_000_000;
-    uint256 private constant SURPLUS_SWEPT_SLOT = 18;
+    uint256 private constant SURPLUS_SWEPT_SLOT = 17;
 
     BuyTokenMock private usdat;
     BuyTokenMock private strcon;

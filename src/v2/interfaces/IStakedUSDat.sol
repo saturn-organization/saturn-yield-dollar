@@ -42,7 +42,6 @@ interface IStakedUSDat is IERC4626 {
         ISTRConModule strconModule;
         ISTRConExecutionPolicy executionPolicy;
         address recoveryAddress;
-        address surplusSource;
         address executionVehicle;
         uint16 baseRedemptionFeeBps;
         uint16 elevatedRedemptionFeeBps;
@@ -57,7 +56,6 @@ interface IStakedUSDat is IERC4626 {
         address parameterManager;
         address marketModeManager;
         address operator;
-        address surplusManager;
         address blacklister;
         address enforcer;
         address pauser;
@@ -168,11 +166,6 @@ interface IStakedUSDat is IERC4626 {
     error SurplusExceedsMax();
 
     /**
-     * @dev Thrown when the surplus source is the vault or withdrawal queue.
-     */
-    error InvalidSurplusSource();
-
-    /**
      * @dev Thrown when a queued redemption is attempted outside an active batch or
      * a batch boundary is otherwise invalid.
      */
@@ -221,13 +214,6 @@ interface IStakedUSDat is IERC4626 {
      * @param newAddress The new recovery address.
      */
     event RecoveryAddressUpdated(address indexed oldAddress, address indexed newAddress);
-
-    /**
-     * @dev Emitted when the surplus source is updated.
-     * @param oldSource The previous source.
-     * @param newSource The new source.
-     */
-    event SurplusSourceUpdated(address indexed oldSource, address indexed newSource);
 
     /**
      * @dev Emitted when the migration NAV tolerance changes.
@@ -462,8 +448,8 @@ interface IStakedUSDat is IERC4626 {
 
     /**
      * @notice Transfers a USDat surplus tranche into the vault for linear vesting.
-     * @dev Only callable by SURPLUS_MANAGER_ROLE while unpaused. The function pulls only the
-     * configured ERC4626 asset from surplusSource.
+     * @dev Only callable by OPERATOR_ROLE while unpaused. The function pulls only the
+     * configured ERC4626 asset from the operator.
      * @param amount The USDat amount to transfer, in 6-decimal asset units.
      */
     function transferInSurplus(uint256 amount) external;
@@ -571,11 +557,6 @@ interface IStakedUSDat is IERC4626 {
     function recoveryAddress() external view returns (address);
 
     /**
-     * @notice Returns the configured source of USDat surplus tranches.
-     */
-    function surplusSource() external view returns (address);
-
-    /**
      * @notice Returns the effective vault operating mode.
      * @return Regular before its authorization expires, otherwise Elevated or Restricted.
      */
@@ -674,14 +655,6 @@ interface IStakedUSDat is IERC4626 {
      * @param newRecoveryAddress The new recovery address.
      */
     function setRecoveryAddress(address newRecoveryAddress) external;
-
-    /**
-     * @notice Updates the source of future USDat surplus tranches.
-     * @dev Only callable by PARAMETER_MANAGER_ROLE, including while paused. The source cannot
-     * be zero, the vault, the withdrawal queue, blacklisted in StakedUSDat, or frozen in USDat.
-     * @param newSource The new surplus source.
-     */
-    function setSurplusSource(address newSource) external;
 
     /**
      * @notice Updates the whole-vault NAV tolerance for migration.
