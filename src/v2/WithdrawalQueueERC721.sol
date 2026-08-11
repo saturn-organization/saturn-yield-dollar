@@ -223,16 +223,18 @@ contract WithdrawalQueueERC721 is
     // ============ Processing Functions ============
 
     /// @inheritdoc IWithdrawalQueueERC721
-    /// @dev Each request settles completely or remains unchanged. Expected limit and
-    /// liquidity failures do not stop the batch; any invalid entry reverts the whole
-    /// transaction, including earlier settlements.
+    /// @dev Missing, closed, below-limit, and illiquid requests do not stop the batch.
+    /// Unexpected vault failures revert the whole transaction, including earlier settlements.
     function processRequests(uint256[] calldata tokenIds) external nonReentrant whenNotPaused onlyRole(OPERATOR_ROLE) {
         uint256 count = tokenIds.length;
+        if (count == 0) return;
+
+        STAKED_USDAT.beginRedemptionBatch();
 
         for (uint256 i = 0; i < count; i++) {
             uint256 tokenId = tokenIds[i];
             Request storage req = requests[tokenId];
-            require(req.status == RequestStatus.Requested, RequestNotOpen());
+            if (_ownerOf(tokenId) == address(0) || req.status != RequestStatus.Requested) continue;
 
             (IStakedUSDat.RedemptionResult result, uint256 net) =
                 STAKED_USDAT.redeemQueuedShares(req.shares, req.minSharePrice);
@@ -244,6 +246,8 @@ contract WithdrawalQueueERC721 is
 
             emit WithdrawalProcessed(tokenId, req.shares, net);
         }
+
+        STAKED_USDAT.endRedemptionBatch();
     }
 
     // ============ Claiming Functions ============

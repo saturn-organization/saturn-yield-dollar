@@ -2,8 +2,10 @@
 src = "src"
 out = "out"
 libs = ["lib"]
+solc = "0.8.36"
 optimizer = true
 optimizer_runs = 150
+evm_version = "cancun"
 remappings = [
     "solady/=lib/solady/src/",
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",

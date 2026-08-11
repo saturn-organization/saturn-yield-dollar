@@ -10,7 +10,7 @@ pragma solidity ^0.8.20;
  * their shares are escrowed, and they receive an NFT representing their claim.
  * The queue is a limit-order book against the vault-calculated net redemption
  * price: the operator processes complete requests against the vault's cash buffer
- * using live NAV and the active redemption fee. The queue never prices; its
+ * using one vault snapshot per processing batch. The queue never prices; its
  * settlement coupling is redeemQueuedShares.
  */
 interface IWithdrawalQueueERC721 {
@@ -202,12 +202,11 @@ interface IWithdrawalQueueERC721 {
 
     /**
      * @notice Attempts to settle complete withdrawal requests against the vault's cash buffer.
-     * @dev Processing follows caller order. Every encountered request must still be
-     * Requested; otherwise the complete transaction reverts. Duplicate IDs are safe:
-     * skipped requests may be retried, while a duplicate after settlement triggers the
-     * status check and atomically rolls back the batch. Below-limit and
-     * insufficient-liquidity requests remain unchanged and are skipped so later
-     * requests may settle. Only callable by addresses with the OPERATOR_ROLE.
+     * @dev Processing follows caller order at one vault-snapshotted price. Missing and
+     * non-Requested IDs are skipped, including duplicates after settlement. Below-limit
+     * and insufficient-liquidity requests remain unchanged and are also skipped so later
+     * requests may settle. Unexpected vault failures revert the complete batch. Only
+     * callable by addresses with the OPERATOR_ROLE.
      * @param tokenIds Ordered token IDs to process.
      */
     function processRequests(uint256[] calldata tokenIds) external;

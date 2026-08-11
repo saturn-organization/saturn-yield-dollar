@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.36;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -71,6 +71,10 @@ contract StakedUSDat is
 
     /// @dev The WithdrawalQueue contract (immutable, stored in implementation bytecode)
     IWithdrawalQueueERC721 private immutable WITHDRAWAL_QUEUE;
+
+    /// @dev Transaction-scoped queued-redemption price snapshot.
+    uint256 private transient _redemptionBatchAssetBasis;
+    uint256 private transient _redemptionBatchShareBasis;
 
     /// @dev Mapping of blacklisted addresses
     mapping(address account => bool isBlacklisted) private _blacklisted;
@@ -691,7 +695,7 @@ contract StakedUSDat is
     /// @inheritdoc IERC4626
     /// @dev Returns the net queued-redemption payout after the active fee.
     function previewRedeem(uint256 shares) public view override(ERC4626Upgradeable, IERC4626) returns (uint256 net) {
-        (, net,) = _quoteQueuedRedemption(shares);
+        return _quoteQueuedRedemption(shares, totalAssets() + 1, totalSupply() + 10 ** _decimalsOffset());
     }
 
     /// @inheritdoc IERC4626
@@ -717,6 +721,21 @@ contract StakedUSDat is
         requestId = _processWithdrawal(msg.sender, msg.sender, shares, minSharePrice);
     }
 
+    /// @inheritdoc IStakedUSDat
+    function beginRedemptionBatch()
+        external
+        nonReentrant
+        onlyWithdrawalQueue
+        whenNotPaused
+        whenNotRestrictedMarketMode
+    {
+        require(_redemptionBatchShareBasis == 0, InvalidRedemptionBatch());
+
+        _sweep();
+        _redemptionBatchAssetBasis = totalAssets() + 1;
+        _redemptionBatchShareBasis = totalSupply() + 10 ** _decimalsOffset();
+    }
+
     /// @dev Processes a withdrawal request by escrowing shares in the withdrawal queue.
     function _processWithdrawal(address caller, address owner, uint256 shares, uint256 minSharePrice)
         internal
@@ -735,7 +754,7 @@ contract StakedUSDat is
     /// @inheritdoc IStakedUSDat
     /// @dev The queue's single settlement primitive: price, deduct the fee, validate
     /// the net payout per share, burn, and transfer a complete request in one call.
-    /// The net payout goes to the queue and the fee goes to the configured surplus source.
+    /// The fee stays in the vault and immediately accrues to the remaining shares.
     function redeemQueuedShares(uint256 shares, uint256 minSharePrice)
         external
         nonReentrant
@@ -745,35 +764,44 @@ contract StakedUSDat is
         notZero(shares)
         returns (RedemptionResult result, uint256 net)
     {
-        _sweep();
+        uint256 shareBasis = _redemptionBatchShareBasis;
+        require(shareBasis != 0, InvalidRedemptionBatch());
 
-        uint256 gross;
-        uint256 fee;
-        (gross, net, fee) = _quoteQueuedRedemption(shares);
+        net = _quoteQueuedRedemption(shares, _redemptionBatchAssetBasis, shareBasis);
 
         uint256 netSharePrice = Math.mulDiv(net, 1e18, shares, Math.Rounding.Floor);
         if (netSharePrice < minSharePrice) {
             return (RedemptionResult.BelowLimit, 0);
         }
 
-        if (usdatBalance < gross) {
+        if (usdatBalance < net) {
             return (RedemptionResult.InsufficientLiquidity, 0);
         }
 
-        usdatBalance -= gross;
+        usdatBalance -= net;
         _burn(address(WITHDRAWAL_QUEUE), shares);
 
-        IERC20 usdat = IERC20(asset());
-        usdat.safeTransfer(address(WITHDRAWAL_QUEUE), net);
-        if (fee != 0) usdat.safeTransfer(surplusSource, fee);
+        IERC20(asset()).safeTransfer(address(WITHDRAWAL_QUEUE), net);
 
         return (RedemptionResult.Settled, net);
     }
 
-    /// @dev Returns the gross value, residual net payout, and ceil-rounded fee such that net + fee == gross.
-    function _quoteQueuedRedemption(uint256 shares) private view returns (uint256 gross, uint256 net, uint256 fee) {
-        gross = convertToAssets(shares);
-        fee = Math.mulDiv(gross, redemptionFeeBps(), BPS_DENOMINATOR, Math.Rounding.Ceil);
+    /// @inheritdoc IStakedUSDat
+    function endRedemptionBatch() external onlyWithdrawalQueue {
+        require(_redemptionBatchShareBasis != 0, InvalidRedemptionBatch());
+
+        _redemptionBatchShareBasis = 0;
+        _redemptionBatchAssetBasis = 0;
+    }
+
+    /// @dev Returns the net payout using one exact ERC4626 conversion basis and the active fee tier.
+    function _quoteQueuedRedemption(uint256 shares, uint256 assetBasis, uint256 shareBasis)
+        private
+        view
+        returns (uint256 net)
+    {
+        uint256 gross = Math.mulDiv(shares, assetBasis, shareBasis, Math.Rounding.Floor);
+        uint256 fee = Math.mulDiv(gross, redemptionFeeBps(), BPS_DENOMINATOR, Math.Rounding.Ceil);
         net = gross - fee;
     }
 
@@ -950,7 +978,7 @@ contract StakedUSDat is
         emit RecoveryAddressUpdated(oldRecoveryAddress, newRecoveryAddress);
     }
 
-    /// @dev Validates and updates the redemption-fee destination and surplus source.
+    /// @dev Validates and updates the surplus source.
     function _setSurplusSource(address newSource) private {
         require(newSource != address(0), InvalidZeroAddress());
         require(newSource != address(this), InvalidSurplusSource());

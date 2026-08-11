@@ -71,7 +71,9 @@ contract SurplusQueueHarness {
         external
         returns (IStakedUSDat.RedemptionResult result, uint256 usdat)
     {
-        return vault.redeemQueuedShares(shares, 0);
+        vault.beginRedemptionBatch();
+        (result, usdat) = vault.redeemQueuedShares(shares, 0);
+        vault.endRedemptionBatch();
     }
 }
 
@@ -483,9 +485,9 @@ contract StakedUSDatSurplusTest is Test {
         assertEq(uint256(result), uint256(IStakedUSDat.RedemptionResult.Settled));
         assertEq(payout, expectedPayout);
         assertEq(usdat.balanceOf(address(queue)), expectedPayout);
-        assertEq(usdat.balanceOf(vault.surplusSource()), surplusSourceBalanceBefore + fee);
+        assertEq(usdat.balanceOf(vault.surplusSource()), surplusSourceBalanceBefore);
         assertEq(vault.surplusVestingAmount(), 0);
-        assertEq(vault.usdatBalance(), INITIAL_CASH + MAX_SURPLUS - gross);
+        assertEq(vault.usdatBalance(), INITIAL_CASH + MAX_SURPLUS - expectedPayout);
     }
 
     function test_redeemQueuedShares_UsesPartiallyVestedSurplusAsLiquidity() public {
@@ -510,7 +512,7 @@ contract StakedUSDatSurplusTest is Test {
 
         assertEq(uint256(result), uint256(IStakedUSDat.RedemptionResult.Settled));
         assertEq(payout, expectedPayout);
-        assertEq(vault.usdatBalance(), INITIAL_CASH + vested - gross);
+        assertEq(vault.usdatBalance(), INITIAL_CASH + vested - expectedPayout);
         assertEq(vault.surplusVestingAmount(), MAX_SURPLUS);
         assertEq(usdat.balanceOf(address(vault)), vault.usdatBalance() + unvested);
         assertEq(usdat.balanceOf(address(queue)), expectedPayout);

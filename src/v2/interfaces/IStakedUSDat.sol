@@ -173,6 +173,12 @@ interface IStakedUSDat is IERC4626 {
     error InvalidSurplusSource();
 
     /**
+     * @dev Thrown when a queued redemption is attempted outside an active batch or
+     * a batch boundary is otherwise invalid.
+     */
+    error InvalidRedemptionBatch();
+
+    /**
      * @dev Thrown when a measured token or module balance delta is not exact.
      */
     error InvalidAssetDelta();
@@ -217,7 +223,7 @@ interface IStakedUSDat is IERC4626 {
     event RecoveryAddressUpdated(address indexed oldAddress, address indexed newAddress);
 
     /**
-     * @dev Emitted when the redemption-fee destination and surplus source is updated.
+     * @dev Emitted when the surplus source is updated.
      * @param oldSource The previous source.
      * @param newSource The new source.
      */
@@ -524,10 +530,17 @@ interface IStakedUSDat is IERC4626 {
     function requestRedeem(uint256 shares, uint256 minSharePrice) external returns (uint256 requestId);
 
     /**
+     * @notice Snapshots the vault conversion rate for one processing batch.
+     * @dev Only callable by the withdrawal queue. The snapshot is transaction-scoped.
+     */
+    function beginRedemptionBatch() external;
+
+    /**
      * @notice Attempts to redeem a complete queued request against the cash buffer.
-     * @dev Only callable by the withdrawal queue (immutable address check). Prices,
-     * deducts the active fee, checks the net payout limit and gross liquidity, then burns
-     * and atomically transfers the net payout to the queue and fee to surplusSource.
+     * @dev Only callable by the withdrawal queue during an active batch. Prices from
+     * the batch snapshot, deducts the active fee tier, checks the net payout limit and liquidity,
+     * then burns and atomically transfers the net payout to the queue. The retained fee
+     * remains recognized vault backing and accrues after the batch snapshot was fixed.
      * @param shares The complete number of escrowed shares to redeem.
      * @param minSharePrice The minimum net USDat payout per 1e18 shares.
      * @return result Whether the request settled or why it was skipped.
@@ -536,6 +549,12 @@ interface IStakedUSDat is IERC4626 {
     function redeemQueuedShares(uint256 shares, uint256 minSharePrice)
         external
         returns (RedemptionResult result, uint256 net);
+
+    /**
+     * @notice Clears the active transaction-scoped redemption snapshot.
+     * @dev Only callable by the withdrawal queue after processing its batch.
+     */
+    function endRedemptionBatch() external;
 
     // ============ View Functions ============
 
@@ -552,7 +571,7 @@ interface IStakedUSDat is IERC4626 {
     function recoveryAddress() external view returns (address);
 
     /**
-     * @notice Returns the configured redemption-fee destination and source of USDat surplus tranches.
+     * @notice Returns the configured source of USDat surplus tranches.
      */
     function surplusSource() external view returns (address);
 
@@ -657,7 +676,7 @@ interface IStakedUSDat is IERC4626 {
     function setRecoveryAddress(address newRecoveryAddress) external;
 
     /**
-     * @notice Updates the redemption-fee destination and source of future surplus tranches.
+     * @notice Updates the source of future USDat surplus tranches.
      * @dev Only callable by PARAMETER_MANAGER_ROLE, including while paused. The source cannot
      * be zero, the vault, the withdrawal queue, blacklisted in StakedUSDat, or frozen in USDat.
      * @param newSource The new surplus source.

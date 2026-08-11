@@ -11,12 +11,13 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {StakedUSDat} from "../../../src/v2/StakedUSDat.sol";
 import {STRConExecutionPolicy} from "../../../src/v2/STRConExecutionPolicy.sol";
+import {IAccountingModule} from "../../../src/v2/interfaces/modules/IAccountingModule.sol";
 import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
 import {ISTRConExecutionPolicy} from "../../../src/v2/interfaces/ISTRConExecutionPolicy.sol";
 import {IWithdrawalQueueERC721} from "../../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
 import {ISTRConModule} from "../../../src/v2/interfaces/modules/ISTRConModule.sol";
-import {ZeroAccountingModuleMock, ZeroTradableModuleMock} from "../helpers/FixedModuleMocks.sol";
-import {V2InitializationHelper} from "../helpers/V2InitializationHelper.sol";
+import {ZeroTradableModuleMock} from "../helpers/FixedModuleMocks.sol";
+import {BoundMirrorModuleMock, V2InitializationHelper} from "../helpers/V2InitializationHelper.sol";
 
 contract RedemptionFeeUSDatMock is ERC20 {
     constructor() ERC20("USDat", "USDat") {}
@@ -39,22 +40,27 @@ contract RedemptionFeeQueueHarness {
         external
         returns (IStakedUSDat.RedemptionResult result, uint256 usdat)
     {
-        return vault.redeemQueuedShares(shares, minSharePrice);
+        vault.beginRedemptionBatch();
+        (result, usdat) = vault.redeemQueuedShares(shares, minSharePrice);
+        vault.endRedemptionBatch();
     }
 }
 
-contract StakedUSDatRedemptionFeeHarness is StakedUSDat {
-    uint256 private _mockSharePrice;
+contract RedemptionFeeAccountingModuleMock is IAccountingModule, BoundMirrorModuleMock {
+    uint256 private _recognizedValue;
 
-    constructor(IWithdrawalQueueERC721 withdrawalQueue) StakedUSDat(withdrawalQueue) {}
+    constructor(address vault) BoundMirrorModuleMock(vault) {}
 
-    function setMockSharePrice(uint256 newSharePrice) external {
-        _mockSharePrice = newSharePrice;
+    function setRecognizedValue(uint256 newRecognizedValue) external {
+        _recognizedValue = newRecognizedValue;
     }
 
-    function _convertToAssets(uint256 shares, Math.Rounding rounding) internal view override returns (uint256) {
-        if (_mockSharePrice == 0) return super._convertToAssets(shares, rounding);
-        return Math.mulDiv(shares, _mockSharePrice, 1e18, rounding);
+    function recognizedValue() external view returns (uint256) {
+        return _recognizedValue;
+    }
+
+    function balance() external pure returns (uint256) {
+        return 0;
     }
 }
 
@@ -63,8 +69,8 @@ contract StakedUSDatRedemptionFeesTest is Test {
 
     RedemptionFeeUSDatMock private usdat;
     RedemptionFeeQueueHarness private queue;
-    StakedUSDatRedemptionFeeHarness private vault;
-    ZeroAccountingModuleMock private strcMirrorModule;
+    StakedUSDat private vault;
+    RedemptionFeeAccountingModuleMock private strcMirrorModule;
     ZeroTradableModuleMock private strconModule;
 
     address private unauthorized = makeAddr("unauthorized");
@@ -75,13 +81,12 @@ contract StakedUSDatRedemptionFeesTest is Test {
         usdat = new RedemptionFeeUSDatMock();
         queue = new RedemptionFeeQueueHarness();
 
-        StakedUSDatRedemptionFeeHarness implementation =
-            new StakedUSDatRedemptionFeeHarness(IWithdrawalQueueERC721(address(queue)));
+        StakedUSDat implementation = new StakedUSDat(IWithdrawalQueueERC721(address(queue)));
         ERC1967Proxy proxy = new ERC1967Proxy(
             address(implementation), abi.encodeCall(StakedUSDat.initialize, (address(this), IERC20(address(usdat))))
         );
-        vault = StakedUSDatRedemptionFeeHarness(address(proxy));
-        strcMirrorModule = new ZeroAccountingModuleMock(address(vault));
+        vault = StakedUSDat(address(proxy));
+        strcMirrorModule = new RedemptionFeeAccountingModuleMock(address(vault));
         strconModule = new ZeroTradableModuleMock(address(vault));
 
         vault.grantRole(vault.PARAMETER_MANAGER_ROLE(), address(this));
@@ -213,7 +218,7 @@ contract StakedUSDatRedemptionFeesTest is Test {
         assertEq(vault.previewRedeem(shares), gross - elevatedFee);
     }
 
-    function test_redeemQueuedShares_RoutesNetToQueueAndCeilRoundedFeeToSurplusSource() public {
+    function test_redeemQueuedShares_PaysNetAndRetainsCeilRoundedFee() public {
         _initializeAndDeposit(5, 10);
         uint256 shares = 10_000_001e12;
         uint256 gross = vault.convertToAssets(shares);
@@ -227,10 +232,10 @@ contract StakedUSDatRedemptionFeesTest is Test {
         assertEq(fee, 5_001);
         assertEq(payout, gross - fee);
         assertEq(payout + fee, gross);
-        assertEq(vault.usdatBalance(), DEPOSIT - gross);
-        assertEq(usdat.balanceOf(address(vault)), DEPOSIT - gross);
+        assertEq(vault.usdatBalance(), DEPOSIT - payout);
+        assertEq(usdat.balanceOf(address(vault)), DEPOSIT - payout);
         assertEq(usdat.balanceOf(address(queue)), payout);
-        assertEq(usdat.balanceOf(vault.surplusSource()), surplusSourceBalanceBefore + fee);
+        assertEq(usdat.balanceOf(vault.surplusSource()), surplusSourceBalanceBefore);
     }
 
     function test_redeemQueuedShares_ExactNetSharePriceSettles() public {
@@ -296,7 +301,7 @@ contract StakedUSDatRedemptionFeesTest is Test {
         assertEq(vault.totalSupply(), DEPOSIT * 1e12);
     }
 
-    function test_redeemQueuedShares_FeeRoutingDoesNotRaiseNextGrossSharePrice() public {
+    function test_redeemQueuedShares_RetainedFeeRaisesNextGrossSharePrice() public {
         _initializeAndDeposit(500, 500);
         uint256 shares = 40e18;
         uint256 firstGross = vault.convertToAssets(shares);
@@ -308,13 +313,16 @@ contract StakedUSDatRedemptionFeesTest is Test {
         assertEq(uint256(firstResult), uint256(IStakedUSDat.RedemptionResult.Settled));
         assertEq(firstGross, 40e6);
         assertEq(firstPayout, 38e6);
-        assertEq(usdat.balanceOf(vault.surplusSource()), expectedFee);
-        assertEq(secondGross, firstGross);
+        assertEq(vault.usdatBalance(), DEPOSIT - firstPayout);
+        assertEq(usdat.balanceOf(address(vault)), DEPOSIT - firstPayout);
+        assertEq(usdat.balanceOf(vault.surplusSource()), 0);
+        assertEq(vault.usdatBalance() - (DEPOSIT - firstGross), expectedFee);
+        assertGt(secondGross, firstGross);
     }
 
     function test_redeemQueuedShares_InsufficientLiquiditySkipsWithoutMutation() public {
         _initializeAndDeposit(500, 500);
-        vault.setMockSharePrice(2e6);
+        strcMirrorModule.setRecognizedValue(100e6);
         uint256 shares = 60e18;
 
         (IStakedUSDat.RedemptionResult result, uint256 payout) = queue.redeemQueuedShares(vault, shares, 0);
@@ -328,9 +336,9 @@ contract StakedUSDatRedemptionFeesTest is Test {
         assertEq(usdat.balanceOf(address(queue)), 0);
     }
 
-    function test_redeemQueuedShares_RequiresGrossAmountForLiquidityCheck() public {
+    function test_redeemQueuedShares_UsesNetAmountForLiquidityCheck() public {
         _initializeAndDeposit(500, 500);
-        vault.setMockSharePrice(2_100_000);
+        strcMirrorModule.setRecognizedValue(110e6);
         uint256 shares = 50e18;
         uint256 gross = vault.convertToAssets(shares);
         uint256 fee = Math.mulDiv(gross, 500, vault.BPS_DENOMINATOR(), Math.Rounding.Ceil);
@@ -338,16 +346,15 @@ contract StakedUSDatRedemptionFeesTest is Test {
 
         (IStakedUSDat.RedemptionResult result, uint256 payout) = queue.redeemQueuedShares(vault, shares, 0);
 
-        assertEq(gross, 105e6);
         assertGt(gross, DEPOSIT);
         assertLe(net, DEPOSIT);
-        assertEq(uint256(result), uint256(IStakedUSDat.RedemptionResult.InsufficientLiquidity));
-        assertEq(payout, 0);
-        assertEq(vault.balanceOf(address(queue)), 100e18);
-        assertEq(vault.totalSupply(), 100e18);
-        assertEq(vault.usdatBalance(), DEPOSIT);
-        assertEq(usdat.balanceOf(address(vault)), DEPOSIT);
-        assertEq(usdat.balanceOf(address(queue)), 0);
+        assertEq(uint256(result), uint256(IStakedUSDat.RedemptionResult.Settled));
+        assertEq(payout, net);
+        assertEq(vault.balanceOf(address(queue)), 50e18);
+        assertEq(vault.totalSupply(), 50e18);
+        assertEq(vault.usdatBalance(), DEPOSIT - net);
+        assertEq(usdat.balanceOf(address(vault)), DEPOSIT - net);
+        assertEq(usdat.balanceOf(address(queue)), net);
         assertEq(usdat.balanceOf(vault.surplusSource()), 0);
     }
 
