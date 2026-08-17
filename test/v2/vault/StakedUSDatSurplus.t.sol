@@ -16,6 +16,8 @@ import {ZeroTradableModuleMock} from "../helpers/FixedModuleMocks.sol";
 import {BoundMirrorModuleMock, V2InitializationHelper} from "../helpers/V2InitializationHelper.sol";
 
 contract SurplusUSDatMock is ERC20 {
+    mapping(address account => bool frozen) private _frozen;
+
     constructor() ERC20("USDat", "USDat") {}
 
     function decimals() public pure override returns (uint8) {
@@ -26,8 +28,12 @@ contract SurplusUSDatMock is ERC20 {
         _mint(to, amount);
     }
 
-    function isFrozen(address) external pure returns (bool) {
-        return false;
+    function setFrozen(address account, bool frozen) external {
+        _frozen[account] = frozen;
+    }
+
+    function isFrozen(address account) external view returns (bool) {
+        return _frozen[account];
     }
 }
 
@@ -65,7 +71,9 @@ contract SurplusQueueHarness {
         external
         returns (IStakedUSDat.RedemptionResult result, uint256 usdat)
     {
-        return vault.redeemQueuedShares(shares, 0);
+        vault.beginRedemptionBatch();
+        (result, usdat) = vault.redeemQueuedShares(shares, 0);
+        vault.endRedemptionBatch();
     }
 }
 
@@ -86,6 +94,7 @@ contract StakedUSDatSurplusTest is Test {
 
     event SurplusReceived(uint256 amount);
     event SurplusSwept(uint256 amount);
+    event SurplusSourceUpdated(address indexed oldSource, address indexed newSource);
     event SurplusVestingPeriodUpdated(uint256 oldPeriod, uint256 newPeriod);
 
     function setUp() public {
@@ -98,7 +107,7 @@ contract StakedUSDatSurplusTest is Test {
         strconModule = new ZeroTradableModuleMock(address(vault));
 
         V2InitializationHelper.initialize(vault, address(strcMirrorModule), address(strconModule), 5, 10, 25);
-        vault.grantRole(vault.OPERATOR_ROLE(), address(this));
+        vault.grantRole(vault.SURPLUS_MANAGER_ROLE(), address(this));
         vault.grantRole(vault.PARAMETER_MANAGER_ROLE(), address(this));
         vault.grantRole(vault.PAUSER_ROLE(), address(this));
 
@@ -113,6 +122,7 @@ contract StakedUSDatSurplusTest is Test {
         assertEq(vault.MAX_SURPLUS_VESTING_PERIOD(), 7 days);
         assertEq(vault.surplusVestingAmount(), 0);
         assertEq(vault.surplusVestingStartTimestamp(), 0);
+        assertEq(vault.surplusSource(), address(this));
     }
 
     function test_transferInSurplus_PullsUSDatAndStartsFullyUnvested() public {
@@ -135,13 +145,93 @@ contract StakedUSDatSurplusTest is Test {
         assertEq(vault.totalAssets(), INITIAL_CASH);
     }
 
-    function test_transferInSurplus_RequiresOperatorNonzeroAndUnpaused() public {
+    function test_setSurplusSource_RequiresParameterManagerAndRejectsInvalidSources() public {
+        address candidate = makeAddr("candidate");
+
         vm.expectRevert(
             abi.encodeWithSelector(
-                IAccessControl.AccessControlUnauthorizedAccount.selector, unauthorized, vault.OPERATOR_ROLE()
+                IAccessControl.AccessControlUnauthorizedAccount.selector, unauthorized, vault.PARAMETER_MANAGER_ROLE()
             )
         );
         vm.prank(unauthorized);
+        vault.setSurplusSource(candidate);
+
+        vm.expectRevert(IStakedUSDat.InvalidZeroAddress.selector);
+        vault.setSurplusSource(address(0));
+
+        vm.expectRevert(IStakedUSDat.InvalidSurplusSource.selector);
+        vault.setSurplusSource(address(vault));
+
+        vm.expectRevert(IStakedUSDat.InvalidSurplusSource.selector);
+        vault.setSurplusSource(address(queue));
+
+        address blacklisted = makeAddr("blacklisted");
+        vault.addToBlacklist(blacklisted);
+        vm.expectRevert(IStakedUSDat.AddressBlacklisted.selector);
+        vault.setSurplusSource(blacklisted);
+
+        address frozen = makeAddr("frozen");
+        usdat.setFrozen(frozen, true);
+        vm.expectRevert(IStakedUSDat.AddressBlacklisted.selector);
+        vault.setSurplusSource(frozen);
+
+        assertEq(vault.surplusSource(), address(this));
+    }
+
+    function test_setSurplusSource_UpdatesEmitsAndWorksWhilePaused() public {
+        address firstSource = makeAddr("firstSource");
+        vm.expectEmit(true, true, false, true, address(vault));
+        emit SurplusSourceUpdated(address(this), firstSource);
+        vault.setSurplusSource(firstSource);
+
+        assertEq(vault.surplusSource(), firstSource);
+
+        vault.pause();
+        address secondSource = makeAddr("secondSource");
+        vm.expectEmit(true, true, false, true, address(vault));
+        emit SurplusSourceUpdated(firstSource, secondSource);
+        vault.setSurplusSource(secondSource);
+
+        assertTrue(vault.paused());
+        assertEq(vault.surplusSource(), secondSource);
+    }
+
+    function test_transferInSurplus_PullsFromConfiguredSourceNotManager() public {
+        address manager = makeAddr("manager");
+        vault.grantRole(vault.SURPLUS_MANAGER_ROLE(), manager);
+
+        usdat.mint(manager, SMALL_SURPLUS);
+        vm.prank(manager);
+        usdat.approve(address(vault), SMALL_SURPLUS);
+
+        uint256 sourceBalanceBefore = usdat.balanceOf(address(this));
+        uint256 managerBalanceBefore = usdat.balanceOf(manager);
+
+        vm.prank(manager);
+        vault.transferInSurplus(SMALL_SURPLUS);
+
+        assertEq(usdat.balanceOf(address(this)), sourceBalanceBefore - SMALL_SURPLUS);
+        assertEq(usdat.balanceOf(manager), managerBalanceBefore);
+        assertEq(vault.surplusVestingAmount(), SMALL_SURPLUS);
+    }
+
+    function test_transferInSurplus_RequiresSurplusManagerNonzeroAndUnpaused() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector, unauthorized, vault.SURPLUS_MANAGER_ROLE()
+            )
+        );
+        vm.prank(unauthorized);
+        vault.transferInSurplus(SMALL_SURPLUS);
+
+        address operator = makeAddr("operator");
+        vault.grantRole(vault.OPERATOR_ROLE(), operator);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector, operator, vault.SURPLUS_MANAGER_ROLE()
+            )
+        );
+        vm.prank(operator);
         vault.transferInSurplus(SMALL_SURPLUS);
 
         vm.expectRevert(IStakedUSDat.ZeroAmount.selector);
@@ -252,6 +342,62 @@ contract StakedUSDatSurplusTest is Test {
         assertEq(vault.totalAssets(), navBefore);
     }
 
+    function test_sweep_ReleasesIncrementallyIsIdempotentAndClearsExactlyAtMaturity() public {
+        vault.transferInSurplus(MAX_SURPLUS);
+        uint256 startedAt = block.timestamp;
+
+        vm.warp(startedAt + DEFAULT_VESTING_PERIOD / 3);
+        uint256 firstUnvested = vault.getUnvestedSurplus();
+        uint256 firstRelease = MAX_SURPLUS - firstUnvested;
+        uint256 firstNav = vault.totalAssets();
+
+        vm.expectEmit(false, false, false, true, address(vault));
+        emit SurplusSwept(firstRelease);
+        vm.prank(permissionlessCaller);
+        vault.sweep();
+
+        assertEq(vault.usdatBalance(), INITIAL_CASH + firstRelease);
+        assertEq(vault.surplusVestingAmount(), MAX_SURPLUS);
+        assertEq(vault.getUnvestedSurplus(), firstUnvested);
+        assertEq(vault.totalAssets(), firstNav);
+
+        vm.warp(startedAt + (DEFAULT_VESTING_PERIOD * 2) / 3);
+        uint256 secondUnvested = vault.getUnvestedSurplus();
+        uint256 totalReleased = MAX_SURPLUS - secondUnvested;
+        uint256 secondRelease = totalReleased - firstRelease;
+        uint256 secondNav = vault.totalAssets();
+
+        vm.expectEmit(false, false, false, true, address(vault));
+        emit SurplusSwept(secondRelease);
+        vm.prank(permissionlessCaller);
+        vault.sweep();
+
+        assertEq(vault.usdatBalance(), INITIAL_CASH + totalReleased);
+        assertEq(vault.totalAssets(), secondNav);
+
+        vm.recordLogs();
+        vm.prank(permissionlessCaller);
+        vault.sweep();
+
+        assertEq(vm.getRecordedLogs().length, 0);
+        assertEq(vault.usdatBalance(), INITIAL_CASH + totalReleased);
+        assertEq(vault.totalAssets(), secondNav);
+
+        vm.warp(startedAt + DEFAULT_VESTING_PERIOD);
+        uint256 finalRelease = MAX_SURPLUS - totalReleased;
+        uint256 finalNav = vault.totalAssets();
+
+        vm.expectEmit(false, false, false, true, address(vault));
+        emit SurplusSwept(finalRelease);
+        vm.prank(permissionlessCaller);
+        vault.sweep();
+
+        assertEq(vault.usdatBalance(), INITIAL_CASH + MAX_SURPLUS);
+        assertEq(vault.surplusVestingAmount(), 0);
+        assertEq(vault.getUnvestedSurplus(), 0);
+        assertEq(vault.totalAssets(), finalNav);
+    }
+
     function test_sweep_DoesNotRequireModulePricing() public {
         vault.transferInSurplus(MAX_SURPLUS);
         vm.warp(block.timestamp + DEFAULT_VESTING_PERIOD);
@@ -329,7 +475,9 @@ contract StakedUSDatSurplusTest is Test {
         vault.authorizeRegularMode(uint64(block.timestamp + 8 hours));
 
         uint256 gross = vault.convertToAssets(shares);
-        uint256 expectedPayout = gross - Math.mulDiv(gross, 5, 10_000, Math.Rounding.Ceil);
+        uint256 fee = Math.mulDiv(gross, 5, 10_000, Math.Rounding.Ceil);
+        uint256 expectedPayout = gross - fee;
+        uint256 surplusSourceBalanceBefore = usdat.balanceOf(vault.surplusSource());
         assertGt(expectedPayout, INITIAL_CASH);
 
         (IStakedUSDat.RedemptionResult result, uint256 payout) = queue.redeemQueuedShares(vault, shares);
@@ -337,8 +485,37 @@ contract StakedUSDatSurplusTest is Test {
         assertEq(uint256(result), uint256(IStakedUSDat.RedemptionResult.Settled));
         assertEq(payout, expectedPayout);
         assertEq(usdat.balanceOf(address(queue)), expectedPayout);
+        assertEq(usdat.balanceOf(vault.surplusSource()), surplusSourceBalanceBefore);
         assertEq(vault.surplusVestingAmount(), 0);
         assertEq(vault.usdatBalance(), INITIAL_CASH + MAX_SURPLUS - expectedPayout);
+    }
+
+    function test_redeemQueuedShares_UsesPartiallyVestedSurplusAsLiquidity() public {
+        vault.transferInSurplus(MAX_SURPLUS);
+        uint256 startedAt = block.timestamp;
+        uint256 shares = vault.balanceOf(address(this));
+        assertTrue(vault.transfer(address(queue), shares));
+
+        vm.warp(startedAt + (DEFAULT_VESTING_PERIOD * 9) / 10);
+        vault.authorizeRegularMode(uint64(block.timestamp + 8 hours));
+
+        uint256 unvested = vault.getUnvestedSurplus();
+        uint256 vested = MAX_SURPLUS - unvested;
+        uint256 gross = vault.convertToAssets(shares);
+        uint256 expectedPayout =
+            gross - Math.mulDiv(gross, vault.redemptionFeeBps(), vault.BPS_DENOMINATOR(), Math.Rounding.Ceil);
+
+        assertGt(expectedPayout, INITIAL_CASH);
+        assertLe(gross, INITIAL_CASH + vested);
+
+        (IStakedUSDat.RedemptionResult result, uint256 payout) = queue.redeemQueuedShares(vault, shares);
+
+        assertEq(uint256(result), uint256(IStakedUSDat.RedemptionResult.Settled));
+        assertEq(payout, expectedPayout);
+        assertEq(vault.usdatBalance(), INITIAL_CASH + vested - expectedPayout);
+        assertEq(vault.surplusVestingAmount(), MAX_SURPLUS);
+        assertEq(usdat.balanceOf(address(vault)), vault.usdatBalance() + unvested);
+        assertEq(usdat.balanceOf(address(queue)), expectedPayout);
     }
 
     function _deployVault() private returns (StakedUSDat deployedVault) {
