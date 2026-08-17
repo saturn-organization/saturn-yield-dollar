@@ -2,7 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Script, console} from "forge-std/Script.sol";
-import {MockChainlinkOracle} from "../test/mocks/MockChainlinkOracle.sol";
+import {MockChainlinkOracle} from "../../test/mocks/MockChainlinkOracle.sol";
 
 /**
  * @title OracleHeartbeat
@@ -17,10 +17,10 @@ import {MockChainlinkOracle} from "../test/mocks/MockChainlinkOracle.sol";
  * - MOCK_ORACLE: Address of the deployed MockChainlinkOracle
  *
  * Usage:
- *   forge script script/OracleHeartbeat.s.sol --rpc-url $RPC_URL --broadcast
+ *   forge script script/v1/OracleHeartbeat.s.sol --rpc-url $RPC_URL --broadcast
  *
  * Cron example (every 12 hours):
- *   0 0,12 * * * cd /path/to/project && source .env && forge script script/OracleHeartbeat.s.sol --rpc-url $RPC_URL --broadcast
+ *   0 0,12 * * * cd /path/to/project && source .env && forge script script/v1/OracleHeartbeat.s.sol --rpc-url $RPC_URL --broadcast
  */
 contract OracleHeartbeat is Script {
     function run() external {

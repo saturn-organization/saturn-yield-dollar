@@ -5,11 +5,11 @@ import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
-import {StakedUSDat} from "../src/StakedUSDat.sol";
-import {WithdrawalQueueERC721} from "../src/WithdrawalQueueERC721.sol";
-import {StrcPriceOracle} from "../src/StrcPriceOracle.sol";
-import {IStrcPriceOracle} from "../src/interfaces/IStrcPriceOracle.sol";
-import {IWithdrawalQueueERC721} from "../src/interfaces/IWithdrawalQueueERC721.sol";
+import {StakedUSDat} from "../src/v1/StakedUSDat.sol";
+import {WithdrawalQueueERC721} from "../src/v1/WithdrawalQueueERC721.sol";
+import {StrcPriceOracle} from "../src/v1/StrcPriceOracle.sol";
+import {IStrcPriceOracle} from "../src/v1/interfaces/IStrcPriceOracle.sol";
+import {IWithdrawalQueueERC721} from "../src/v1/interfaces/IWithdrawalQueueERC721.sol";
 
 // Mock USDat token (6 decimals like real USDat)
 contract MockUSDat is Test {
@@ -603,16 +603,21 @@ contract DecimalValidationTest is Test {
     /// @dev Computes CREATE1 address for contract deployment prediction.
     /// The typecasts are safe because each branch checks bounds before casting.
     function _computeCreate1Address(address deployer, uint256 nonce) internal pure returns (address) {
+        require(nonce <= type(uint24).max, "nonce too large");
         bytes memory data;
         if (nonce == 0) {
             data = abi.encodePacked(bytes1(0xd6), bytes1(0x94), deployer, bytes1(0x80));
         } else if (nonce <= 0x7f) {
+            // forge-lint: disable-next-line(unsafe-typecast)
             data = abi.encodePacked(bytes1(0xd6), bytes1(0x94), deployer, bytes1(uint8(nonce)));
         } else if (nonce <= 0xff) {
+            // forge-lint: disable-next-line(unsafe-typecast)
             data = abi.encodePacked(bytes1(0xd7), bytes1(0x94), deployer, bytes1(0x81), bytes1(uint8(nonce)));
         } else if (nonce <= 0xffff) {
+            // forge-lint: disable-next-line(unsafe-typecast)
             data = abi.encodePacked(bytes1(0xd8), bytes1(0x94), deployer, bytes1(0x82), bytes2(uint16(nonce)));
         } else {
+            // forge-lint: disable-next-line(unsafe-typecast)
             data = abi.encodePacked(bytes1(0xd9), bytes1(0x94), deployer, bytes1(0x83), bytes3(uint24(nonce)));
         }
         return address(uint160(uint256(keccak256(data))));

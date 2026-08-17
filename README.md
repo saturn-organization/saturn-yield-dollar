@@ -115,7 +115,7 @@ optimizer enabled, 200 runs (per `foundry.toml`).
 `verify.sh` first does a read-only `git diff --ignore-submodules=dirty` of the
 compilation inputs (`src`, the `lib` submodule pins, `foundry.toml`,
 `remappings.txt`) against the audited commit — nothing is checked out, moved, or
-modified — and aborts if they differ. It then runs `script/VerifyCodeHash.s.sol`,
+modified — and aborts if they differ. It then runs `script/v1/VerifyCodeHash.s.sol`,
 which compiles that source and deploys each implementation in a local EVM and
 logs each contract's `EXTCODEHASH`, and compares those to the live values fetched
 with `cast codehash <impl>`.
