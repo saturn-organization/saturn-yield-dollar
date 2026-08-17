@@ -32,6 +32,8 @@ contract QueueStakedUSDatMock {
         return false;
     }
 
+    function beginRedemptionBatch() external pure {}
+
     function redeemQueuedShares(uint256 shares, uint256)
         external
         pure
@@ -39,6 +41,8 @@ contract QueueStakedUSDatMock {
     {
         return (IStakedUSDat.RedemptionResult.Settled, shares / 1e12);
     }
+
+    function endRedemptionBatch() external pure {}
 }
 
 contract WithdrawalQueueMigrationTest is Test {

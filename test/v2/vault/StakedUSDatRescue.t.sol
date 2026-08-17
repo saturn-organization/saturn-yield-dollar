@@ -207,6 +207,26 @@ contract StakedUSDatRescueTest is Test {
         assertEq(vault.surplusVestingAmount(), SURPLUS);
     }
 
+    function test_rescueTokens_ProtectsRemainingUnsweptSurplusWithoutDoubleCountingSweptAmount() public {
+        vault.transferInSurplus(SURPLUS);
+        vm.warp(block.timestamp + vault.surplusVestingPeriod() / 2);
+
+        uint256 unvested = vault.getUnvestedSurplus();
+        uint256 vested = SURPLUS - unvested;
+        vault.sweep();
+        usdat.mint(address(vault), USDAT_EXCESS);
+
+        vm.expectRevert(IStakedUSDat.ExceedsRescuable.selector);
+        vault.rescueTokens(address(usdat), USDAT_EXCESS + 1);
+
+        vault.rescueTokens(address(usdat), USDAT_EXCESS);
+
+        assertEq(vault.usdatBalance(), INITIAL_CASH + vested);
+        assertEq(vault.surplusVestingAmount(), SURPLUS);
+        assertEq(usdat.balanceOf(address(vault)), vault.usdatBalance() + unvested);
+        assertEq(usdat.balanceOf(recoveryAddress), USDAT_EXCESS);
+    }
+
     function test_rescueTokens_ProtectsTrackedSTRConWithoutPricing() public {
         strconModule.setBalance(TRACKED_STRCON);
         strcon.mint(address(vault), TRACKED_STRCON + STRCON_EXCESS);
