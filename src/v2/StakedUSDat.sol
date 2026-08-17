@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.36;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -51,6 +51,9 @@ contract StakedUSDat is
     /// @notice Role identifier for vault operations that move assets.
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
 
+    /// @notice Role identifier for transferring surplus into the vault.
+    bytes32 public constant SURPLUS_MANAGER_ROLE = keccak256("SURPLUS_MANAGER_ROLE");
+
     /// @notice Role identifier for selecting the current market mode
     bytes32 public constant MARKET_MODE_MANAGER_ROLE = keccak256("MARKET_MODE_MANAGER_ROLE");
 
@@ -68,6 +71,10 @@ contract StakedUSDat is
 
     /// @dev The WithdrawalQueue contract (immutable, stored in implementation bytecode)
     IWithdrawalQueueERC721 private immutable WITHDRAWAL_QUEUE;
+
+    /// @dev Transaction-scoped queued-redemption price snapshot.
+    uint256 private transient _redemptionBatchAssetBasis;
+    uint256 private transient _redemptionBatchShareBasis;
 
     /// @dev Mapping of blacklisted addresses
     mapping(address account => bool isBlacklisted) private _blacklisted;
@@ -161,6 +168,9 @@ contract StakedUSDat is
     uint256 public override surplusVestingPeriod;
 
     /// @inheritdoc IStakedUSDat
+    address public override surplusSource;
+
+    /// @inheritdoc IStakedUSDat
     ISTRConExecutionPolicy public override executionPolicy;
 
     /// @inheritdoc IStakedUSDat
@@ -169,13 +179,16 @@ contract StakedUSDat is
     /// @inheritdoc IStakedUSDat
     uint64 public override regularModeValidUntil;
 
+    /// @dev Portion of the active surplus tranche already folded into usdatBalance.
+    uint256 private _surplusSwept;
+
     modifier notZero(uint256 amount) {
         _notZero(amount);
         _;
     }
 
-    modifier whenNotRestricted() {
-        _requireNotRestricted();
+    modifier whenNotRestrictedMarketMode() {
+        _requireNotRestrictedMarketMode();
         _;
     }
 
@@ -201,7 +214,7 @@ contract StakedUSDat is
         require(amount != 0, ZeroAmount());
     }
 
-    function _requireNotRestricted() internal view {
+    function _requireNotRestrictedMarketMode() internal view {
         require(marketMode() != MarketMode.Restricted, MarketRestricted());
     }
 
@@ -258,6 +271,7 @@ contract StakedUSDat is
         strcMirrorModule = config.strcMirrorModule;
         strconModule = config.strconModule;
         executionPolicy = config.executionPolicy;
+        _setSurplusSource(config.surplusSource);
         _setRecoveryAddress(config.recoveryAddress);
         _setRedemptionFees(config.baseRedemptionFeeBps, config.elevatedRedemptionFeeBps);
         _setElevatedDepositFee(config.elevatedDepositFeeBps);
@@ -276,6 +290,7 @@ contract StakedUSDat is
         _grantV2Role(PARAMETER_MANAGER_ROLE, roles.parameterManager);
         _grantV2Role(MARKET_MODE_MANAGER_ROLE, roles.marketModeManager);
         _grantV2Role(OPERATOR_ROLE, roles.operator);
+        _grantV2Role(SURPLUS_MANAGER_ROLE, roles.surplusManager);
         _grantV2Role(BLACKLISTER_ROLE, roles.blacklister);
         _grantV2Role(ENFORCER_ROLE, roles.enforcer);
         _grantV2Role(PAUSER_ROLE, roles.pauser);
@@ -317,9 +332,9 @@ contract StakedUSDat is
         emit UnBlacklisted(target);
     }
 
-    /// @dev Reverts if the given account is blacklisted.
-    function _requireNotBlacklisted(address account) internal view {
-        require(!_blacklisted[account], AddressBlacklisted());
+    /// @dev Reverts if the given account is blacklisted on sUSDat or frozen on USDat.
+    function _requireNotRestricted(address account) internal view {
+        require(!isRestricted(account), AddressBlacklisted());
     }
 
     /// @inheritdoc IStakedUSDat
@@ -327,10 +342,15 @@ contract StakedUSDat is
         return _blacklisted[account];
     }
 
+    /// @inheritdoc IStakedUSDat
+    function isRestricted(address account) public view returns (bool) {
+        return _blacklisted[account] || IUSDat(asset()).isFrozen(account);
+    }
+
     /// @inheritdoc IERC20
     function transfer(address to, uint256 amount) public override(ERC20Upgradeable, IERC20) returns (bool) {
-        _requireNotBlacklisted(msg.sender);
-        _requireNotBlacklisted(to);
+        _requireNotRestricted(msg.sender);
+        _requireNotRestricted(to);
         return super.transfer(to, amount);
     }
 
@@ -340,8 +360,9 @@ contract StakedUSDat is
         override(ERC20Upgradeable, IERC20)
         returns (bool)
     {
-        _requireNotBlacklisted(from);
-        _requireNotBlacklisted(to);
+        _requireNotRestricted(msg.sender);
+        _requireNotRestricted(from);
+        _requireNotRestricted(to);
         return super.transferFrom(from, to, amount);
     }
 
@@ -351,7 +372,7 @@ contract StakedUSDat is
     /// @dev Adds cash, vested surplus, and both fixed module values.
     /// Module pricing failures deliberately propagate.
     function totalAssets() public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
-        uint256 vestedSurplus = surplusVestingAmount - getUnvestedSurplus();
+        uint256 vestedSurplus = _unsweptSurplus() - getUnvestedSurplus();
         return usdatBalance + vestedSurplus + strcMirrorModule.recognizedValue() + strconModule.recognizedValue();
     }
 
@@ -399,15 +420,15 @@ contract StakedUSDat is
 
     /// @inheritdoc IERC4626
     /// @dev Returns 0 when paused, deposits are restricted, or NAV cannot be priced.
-    function maxDeposit(address) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
-        if (paused() || marketMode() == MarketMode.Restricted) return 0;
+    function maxDeposit(address receiver) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
+        if (isRestricted(receiver) || paused() || marketMode() == MarketMode.Restricted) return 0;
         return _canPriceTotalAssets() ? type(uint256).max : 0;
     }
 
     /// @inheritdoc IERC4626
     /// @dev Returns 0 when paused, mints are restricted, or NAV cannot be priced.
-    function maxMint(address) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
-        if (paused() || marketMode() == MarketMode.Restricted) return 0;
+    function maxMint(address receiver) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
+        if (isRestricted(receiver) || paused() || marketMode() == MarketMode.Restricted) return 0;
         return _canPriceTotalAssets() ? type(uint256).max : 0;
     }
 
@@ -418,9 +439,9 @@ contract StakedUSDat is
     }
 
     /// @inheritdoc IERC4626
-    /// @dev Returns 0 when paused per ERC4626 spec.
+    /// @dev Returns 0 when the owner is restricted or the vault is paused per ERC4626 spec.
     function maxRedeem(address owner) public view override(ERC4626Upgradeable, IERC4626) returns (uint256) {
-        return paused() ? 0 : balanceOf(owner);
+        return (isRestricted(owner) || paused()) ? 0 : balanceOf(owner);
     }
 
     // ============ Surplus Functions ============
@@ -430,7 +451,7 @@ contract StakedUSDat is
         external
         nonReentrant
         whenNotPaused
-        onlyRole(OPERATOR_ROLE)
+        onlyRole(SURPLUS_MANAGER_ROLE)
         notZero(amount)
     {
         _sweep();
@@ -439,7 +460,7 @@ contract StakedUSDat is
         uint256 maximumSurplus = Math.mulDiv(totalAssets(), MAX_SURPLUS_BPS, BPS_DENOMINATOR);
         require(amount <= maximumSurplus, SurplusExceedsMax());
 
-        IERC20(asset()).safeTransferFrom(msg.sender, address(this), amount);
+        IERC20(asset()).safeTransferFrom(surplusSource, address(this), amount);
 
         surplusVestingAmount = amount;
         surplusVestingStartTimestamp = block.timestamp;
@@ -452,15 +473,31 @@ contract StakedUSDat is
         _sweep();
     }
 
-    /// @dev Moves a fully vested surplus tranche into the spendable USDat balance.
+    /// @dev Moves newly vested surplus into the spendable USDat balance.
     function _sweep() private {
         uint256 amount = surplusVestingAmount;
-        if (amount == 0 || getUnvestedSurplus() != 0) return;
+        if (amount == 0) return;
 
-        surplusVestingAmount = 0;
-        usdatBalance += amount;
+        uint256 unvested = getUnvestedSurplus();
+        uint256 vested = amount - unvested;
+        uint256 releasable = vested - _surplusSwept;
 
-        emit SurplusSwept(amount);
+        if (releasable != 0) {
+            _surplusSwept = vested;
+            usdatBalance += releasable;
+
+            emit SurplusSwept(releasable);
+        }
+
+        if (unvested == 0) {
+            surplusVestingAmount = 0;
+            _surplusSwept = 0;
+        }
+    }
+
+    /// @dev Returns the portion of the active tranche not yet folded into usdatBalance.
+    function _unsweptSurplus() private view returns (uint256) {
+        return surplusVestingAmount - _surplusSwept;
     }
 
     // ============ Migration Functions ============
@@ -487,7 +524,7 @@ contract StakedUSDat is
         external
         nonReentrant
         whenNotPaused
-        whenNotRestricted
+        whenNotRestrictedMarketMode
         onlyRole(OPERATOR_ROLE)
         notZero(usdatPaid)
         notZero(assetReceived)
@@ -508,7 +545,7 @@ contract StakedUSDat is
             usdatPaid,
             assetReceived,
             usdatBalance,
-            surplusVestingAmount
+            _unsweptSurplus()
         );
     }
 
@@ -517,7 +554,7 @@ contract StakedUSDat is
         external
         nonReentrant
         whenNotPaused
-        whenNotRestricted
+        whenNotRestrictedMarketMode
         onlyRole(OPERATOR_ROLE)
         notZero(assetDelivered)
         notZero(usdatReceived)
@@ -537,23 +574,23 @@ contract StakedUSDat is
             assetDelivered,
             usdatReceived,
             usdatBalance,
-            surplusVestingAmount
+            _unsweptSurplus()
         );
     }
 
     // ============ Deposit Functions ============
 
-    /// @dev Deposit/mint common workflow with blacklist checks.
+    /// @dev Deposit/mint common workflow with account-restriction checks.
     function _deposit(address caller, address receiver, uint256 assets, uint256 shares)
         internal
         override
         nonReentrant
-        whenNotRestricted
+        whenNotRestrictedMarketMode
         notZero(assets)
         notZero(shares)
     {
-        _requireNotBlacklisted(caller);
-        _requireNotBlacklisted(receiver);
+        _requireNotRestricted(caller);
+        _requireNotRestricted(receiver);
 
         _sweep();
         usdatBalance += assets;
@@ -650,6 +687,18 @@ contract StakedUSDat is
     // ============ Withdrawal Functions ============
 
     /// @inheritdoc IERC4626
+    /// @dev Returns zero because exact-asset withdrawals are disabled.
+    function previewWithdraw(uint256) public pure override(ERC4626Upgradeable, IERC4626) returns (uint256) {
+        return 0;
+    }
+
+    /// @inheritdoc IERC4626
+    /// @dev Returns the net queued-redemption payout after the active fee.
+    function previewRedeem(uint256 shares) public view override(ERC4626Upgradeable, IERC4626) returns (uint256 net) {
+        return _quoteQueuedRedemption(shares, totalAssets() + 1, totalSupply() + 10 ** _decimalsOffset());
+    }
+
+    /// @inheritdoc IERC4626
     /// @dev Disabled - use requestRedeem instead.
     function withdraw(uint256, address, address) public pure override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         revert OperationNotAllowed();
@@ -672,14 +721,29 @@ contract StakedUSDat is
         requestId = _processWithdrawal(msg.sender, msg.sender, shares, minSharePrice);
     }
 
+    /// @inheritdoc IStakedUSDat
+    function beginRedemptionBatch()
+        external
+        nonReentrant
+        onlyWithdrawalQueue
+        whenNotPaused
+        whenNotRestrictedMarketMode
+    {
+        require(_redemptionBatchShareBasis == 0, InvalidRedemptionBatch());
+
+        _sweep();
+        _redemptionBatchAssetBasis = totalAssets() + 1;
+        _redemptionBatchShareBasis = totalSupply() + 10 ** _decimalsOffset();
+    }
+
     /// @dev Processes a withdrawal request by escrowing shares in the withdrawal queue.
     function _processWithdrawal(address caller, address owner, uint256 shares, uint256 minSharePrice)
         internal
         nonReentrant
         returns (uint256 requestId)
     {
-        _requireNotBlacklisted(caller);
-        _requireNotBlacklisted(owner);
+        _requireNotRestricted(caller);
+        _requireNotRestricted(owner);
         require(shares >= MIN_REQUEST_SHARES, WithdrawalTooSmall());
 
         _transfer(owner, address(WITHDRAWAL_QUEUE), shares);
@@ -690,36 +754,55 @@ contract StakedUSDat is
     /// @inheritdoc IStakedUSDat
     /// @dev The queue's single settlement primitive: price, deduct the fee, validate
     /// the net payout per share, burn, and transfer a complete request in one call.
-    /// The fee stays in the vault and accrues to remaining shares.
+    /// The fee stays in the vault and immediately accrues to the remaining shares.
     function redeemQueuedShares(uint256 shares, uint256 minSharePrice)
         external
         nonReentrant
         onlyWithdrawalQueue
         whenNotPaused
-        whenNotRestricted
+        whenNotRestrictedMarketMode
         notZero(shares)
-        returns (RedemptionResult result, uint256 usdat)
+        returns (RedemptionResult result, uint256 net)
     {
-        _sweep();
+        uint256 shareBasis = _redemptionBatchShareBasis;
+        require(shareBasis != 0, InvalidRedemptionBatch());
 
-        uint256 gross = convertToAssets(shares);
-        uint256 fee = Math.mulDiv(gross, redemptionFeeBps(), BPS_DENOMINATOR, Math.Rounding.Ceil);
-        usdat = gross - fee;
+        net = _quoteQueuedRedemption(shares, _redemptionBatchAssetBasis, shareBasis);
 
-        uint256 netSharePrice = Math.mulDiv(usdat, 1e18, shares, Math.Rounding.Floor);
+        uint256 netSharePrice = Math.mulDiv(net, 1e18, shares, Math.Rounding.Floor);
         if (netSharePrice < minSharePrice) {
             return (RedemptionResult.BelowLimit, 0);
         }
 
-        if (usdatBalance < usdat) {
+        if (usdatBalance < net) {
             return (RedemptionResult.InsufficientLiquidity, 0);
         }
 
-        usdatBalance -= usdat;
+        usdatBalance -= net;
         _burn(address(WITHDRAWAL_QUEUE), shares);
 
-        IERC20(asset()).safeTransfer(address(WITHDRAWAL_QUEUE), usdat);
-        return (RedemptionResult.Settled, usdat);
+        IERC20(asset()).safeTransfer(address(WITHDRAWAL_QUEUE), net);
+
+        return (RedemptionResult.Settled, net);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function endRedemptionBatch() external onlyWithdrawalQueue {
+        require(_redemptionBatchShareBasis != 0, InvalidRedemptionBatch());
+
+        _redemptionBatchShareBasis = 0;
+        _redemptionBatchAssetBasis = 0;
+    }
+
+    /// @dev Returns the net payout using one exact ERC4626 conversion basis and the active fee tier.
+    function _quoteQueuedRedemption(uint256 shares, uint256 assetBasis, uint256 shareBasis)
+        private
+        view
+        returns (uint256 net)
+    {
+        uint256 gross = Math.mulDiv(shares, assetBasis, shareBasis, Math.Rounding.Floor);
+        uint256 fee = Math.mulDiv(gross, redemptionFeeBps(), BPS_DENOMINATOR, Math.Rounding.Ceil);
+        net = gross - fee;
     }
 
     /// @inheritdoc IStakedUSDat
@@ -751,8 +834,9 @@ contract StakedUSDat is
     // ========== Enforcer Functions ==========
 
     /// @inheritdoc IStakedUSDat
-    /// @dev Moves shares, no burn, no liquidity needed — value-preserving enforcement
-    /// (e.g. court-directed recovery).
+    /// @dev Moves shares from a locally blacklisted holder, no burn, no liquidity needed —
+    /// value-preserving enforcement (e.g. court-directed recovery). A USDat freeze alone
+    /// does not authorize seizure.
     function seize(address from) external nonReentrant onlyRole(ENFORCER_ROLE) whileUnpaused {
         require(_blacklisted[from], AddressNotBlacklisted());
 
@@ -774,7 +858,7 @@ contract StakedUSDat is
 
         uint256 protectedBalance;
         if (token == asset()) {
-            protectedBalance = usdatBalance + surplusVestingAmount;
+            protectedBalance = usdatBalance + _unsweptSurplus();
         }
 
         ISTRConModule module = strconModule;
@@ -794,6 +878,11 @@ contract StakedUSDat is
     /// @inheritdoc IStakedUSDat
     function setRecoveryAddress(address newRecoveryAddress) external onlyRole(PARAMETER_MANAGER_ROLE) {
         _setRecoveryAddress(newRecoveryAddress);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function setSurplusSource(address newSource) external onlyRole(PARAMETER_MANAGER_ROLE) {
+        _setSurplusSource(newSource);
     }
 
     /// @inheritdoc IStakedUSDat
@@ -889,11 +978,23 @@ contract StakedUSDat is
         emit RecoveryAddressUpdated(oldRecoveryAddress, newRecoveryAddress);
     }
 
+    /// @dev Validates and updates the surplus source.
+    function _setSurplusSource(address newSource) private {
+        require(newSource != address(0), InvalidZeroAddress());
+        require(newSource != address(this), InvalidSurplusSource());
+        require(newSource != address(WITHDRAWAL_QUEUE), InvalidSurplusSource());
+        _requireNotRestricted(newSource);
+
+        address oldSource = surplusSource;
+        surplusSource = newSource;
+
+        emit SurplusSourceUpdated(oldSource, newSource);
+    }
+
     /// @dev Reverts unless an address is a valid seizure destination now.
     function _requireValidRecoveryAddress(address account) internal view {
         require(account != address(0), InvalidZeroAddress());
-        _requireNotBlacklisted(account);
-        require(!IUSDat(asset()).isFrozen(account), AddressBlacklisted());
+        _requireNotRestricted(account);
     }
 
     /// @inheritdoc IStakedUSDat

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.36;
 
 /**
  * @title IWithdrawalQueueERC721
@@ -10,7 +10,7 @@ pragma solidity ^0.8.20;
  * their shares are escrowed, and they receive an NFT representing their claim.
  * The queue is a limit-order book against the vault-calculated net redemption
  * price: the operator processes complete requests against the vault's cash buffer
- * using live NAV and the active redemption fee. The queue never prices; its
+ * using one vault snapshot per processing batch. The queue never prices; its
  * settlement coupling is redeemQueuedShares.
  */
 interface IWithdrawalQueueERC721 {
@@ -69,6 +69,11 @@ interface IWithdrawalQueueERC721 {
      * @dev Thrown when an operation requires a Requested request.
      */
     error RequestNotOpen();
+
+    /**
+     * @dev Thrown when legacy recovery is attempted for a request that is not InProgress.
+     */
+    error RequestNotInProgress();
 
     /**
      * @dev Thrown when an operation requires a Processed request.
@@ -133,6 +138,12 @@ interface IWithdrawalQueueERC721 {
     event RequestCancelled(uint256 indexed tokenId, address indexed user, uint256 shares);
 
     /**
+     * @dev Emitted when a legacy InProgress request is returned to Requested.
+     * @param tokenId The request ID reset by the admin.
+     */
+    event LegacyInProgressRequestReset(uint256 indexed tokenId);
+
+    /**
      * @dev Emitted when a processed request's complete payout is seized.
      * @param tokenId The NFT token ID of the seized request.
      * @param user The restricted user whose funds were seized.
@@ -162,6 +173,14 @@ interface IWithdrawalQueueERC721 {
      * @dev Only callable by addresses with the UNPAUSER_ROLE.
      */
     function unpause() external;
+
+    /**
+     * @notice Returns a legacy InProgress request to the Requested state.
+     * @dev Only callable by OPERATOR_ROLE, including while paused. The request
+     * must currently be InProgress.
+     * @param tokenId Legacy request ID to reset.
+     */
+    function resetLegacyInProgressRequest(uint256 tokenId) external;
 
     // ============ Request Creation ============
 
@@ -202,12 +221,11 @@ interface IWithdrawalQueueERC721 {
 
     /**
      * @notice Attempts to settle complete withdrawal requests against the vault's cash buffer.
-     * @dev Processing follows caller order. Every encountered request must still be
-     * Requested; otherwise the complete transaction reverts. Duplicate IDs are safe:
-     * skipped requests may be retried, while a duplicate after settlement triggers the
-     * status check and atomically rolls back the batch. Below-limit and
-     * insufficient-liquidity requests remain unchanged and are skipped so later
-     * requests may settle. Only callable by addresses with the OPERATOR_ROLE.
+     * @dev Processing follows caller order at one vault-snapshotted price. Missing and
+     * non-Requested IDs are skipped, including duplicates after settlement. Below-limit
+     * and insufficient-liquidity requests remain unchanged and are also skipped so later
+     * requests may settle. Unexpected vault failures revert the complete batch. Only
+     * callable by addresses with the OPERATOR_ROLE.
      * @param tokenIds Ordered token IDs to process.
      */
     function processRequests(uint256[] calldata tokenIds) external;
