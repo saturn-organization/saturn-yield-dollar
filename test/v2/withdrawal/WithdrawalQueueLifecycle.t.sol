@@ -153,7 +153,7 @@ contract WithdrawalQueueLifecycleTest is Test {
 
     function test_supportsInterface_AdvertisesQueueAndInheritedInterfaces() public view {
         bytes4 queueInterfaceId = type(IWithdrawalQueueERC721).interfaceId;
-        assertEq(queueInterfaceId, bytes4(0xcf58cc7c));
+        assertEq(queueInterfaceId, bytes4(0x6f5e8226));
         assertTrue(queue.supportsInterface(queueInterfaceId));
         assertTrue(queue.supportsInterface(type(IERC165).interfaceId));
         assertTrue(queue.supportsInterface(type(IERC721).interfaceId));
