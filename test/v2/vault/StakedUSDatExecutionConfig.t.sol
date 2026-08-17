@@ -199,10 +199,10 @@ contract StakedUSDatExecutionConfigTest is Test {
         vault.requireUnexpiredDeadline(block.timestamp - 1);
     }
 
-    function test_executionPolicy_IsBoundAndStoredInAppendedSlotSixteen() public view {
+    function test_executionPolicy_IsBoundAndStoredInAppendedSlotSeventeen() public view {
         assertEq(policy.VAULT(), address(vault));
         assertEq(address(policy.STRCON_MODULE()), address(strconModule));
         assertEq(address(vault.executionPolicy()), address(policy));
-        assertEq(vm.load(address(vault), bytes32(uint256(16))), bytes32(uint256(uint160(address(policy)))));
+        assertEq(vm.load(address(vault), bytes32(uint256(17))), bytes32(uint256(uint160(address(policy)))));
     }
 }

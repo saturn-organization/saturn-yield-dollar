@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.36;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
@@ -51,6 +51,9 @@ contract StakedUSDat is
     /// @notice Role identifier for vault operations that move assets.
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
 
+    /// @notice Role identifier for transferring surplus into the vault.
+    bytes32 public constant SURPLUS_MANAGER_ROLE = keccak256("SURPLUS_MANAGER_ROLE");
+
     /// @notice Role identifier for selecting the current market mode
     bytes32 public constant MARKET_MODE_MANAGER_ROLE = keccak256("MARKET_MODE_MANAGER_ROLE");
 
@@ -68,6 +71,10 @@ contract StakedUSDat is
 
     /// @dev The WithdrawalQueue contract (immutable, stored in implementation bytecode)
     IWithdrawalQueueERC721 private immutable WITHDRAWAL_QUEUE;
+
+    /// @dev Transaction-scoped queued-redemption price snapshot.
+    uint256 private transient _redemptionBatchAssetBasis;
+    uint256 private transient _redemptionBatchShareBasis;
 
     /// @dev Mapping of blacklisted addresses
     mapping(address account => bool isBlacklisted) private _blacklisted;
@@ -159,6 +166,9 @@ contract StakedUSDat is
 
     /// @inheritdoc IStakedUSDat
     uint256 public override surplusVestingPeriod;
+
+    /// @inheritdoc IStakedUSDat
+    address public override surplusSource;
 
     /// @inheritdoc IStakedUSDat
     ISTRConExecutionPolicy public override executionPolicy;
@@ -261,6 +271,7 @@ contract StakedUSDat is
         strcMirrorModule = config.strcMirrorModule;
         strconModule = config.strconModule;
         executionPolicy = config.executionPolicy;
+        _setSurplusSource(config.surplusSource);
         _setRecoveryAddress(config.recoveryAddress);
         _setRedemptionFees(config.baseRedemptionFeeBps, config.elevatedRedemptionFeeBps);
         _setElevatedDepositFee(config.elevatedDepositFeeBps);
@@ -279,6 +290,7 @@ contract StakedUSDat is
         _grantV2Role(PARAMETER_MANAGER_ROLE, roles.parameterManager);
         _grantV2Role(MARKET_MODE_MANAGER_ROLE, roles.marketModeManager);
         _grantV2Role(OPERATOR_ROLE, roles.operator);
+        _grantV2Role(SURPLUS_MANAGER_ROLE, roles.surplusManager);
         _grantV2Role(BLACKLISTER_ROLE, roles.blacklister);
         _grantV2Role(ENFORCER_ROLE, roles.enforcer);
         _grantV2Role(PAUSER_ROLE, roles.pauser);
@@ -439,7 +451,7 @@ contract StakedUSDat is
         external
         nonReentrant
         whenNotPaused
-        onlyRole(OPERATOR_ROLE)
+        onlyRole(SURPLUS_MANAGER_ROLE)
         notZero(amount)
     {
         _sweep();
@@ -448,7 +460,7 @@ contract StakedUSDat is
         uint256 maximumSurplus = Math.mulDiv(totalAssets(), MAX_SURPLUS_BPS, BPS_DENOMINATOR);
         require(amount <= maximumSurplus, SurplusExceedsMax());
 
-        IERC20(asset()).safeTransferFrom(msg.sender, address(this), amount);
+        IERC20(asset()).safeTransferFrom(surplusSource, address(this), amount);
 
         surplusVestingAmount = amount;
         surplusVestingStartTimestamp = block.timestamp;
@@ -675,6 +687,18 @@ contract StakedUSDat is
     // ============ Withdrawal Functions ============
 
     /// @inheritdoc IERC4626
+    /// @dev Returns zero because exact-asset withdrawals are disabled.
+    function previewWithdraw(uint256) public pure override(ERC4626Upgradeable, IERC4626) returns (uint256) {
+        return 0;
+    }
+
+    /// @inheritdoc IERC4626
+    /// @dev Returns the net queued-redemption payout after the active fee.
+    function previewRedeem(uint256 shares) public view override(ERC4626Upgradeable, IERC4626) returns (uint256 net) {
+        return _quoteQueuedRedemption(shares, totalAssets() + 1, totalSupply() + 10 ** _decimalsOffset());
+    }
+
+    /// @inheritdoc IERC4626
     /// @dev Disabled - use requestRedeem instead.
     function withdraw(uint256, address, address) public pure override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         revert OperationNotAllowed();
@@ -697,6 +721,21 @@ contract StakedUSDat is
         requestId = _processWithdrawal(msg.sender, msg.sender, shares, minSharePrice);
     }
 
+    /// @inheritdoc IStakedUSDat
+    function beginRedemptionBatch()
+        external
+        nonReentrant
+        onlyWithdrawalQueue
+        whenNotPaused
+        whenNotRestrictedMarketMode
+    {
+        require(_redemptionBatchShareBasis == 0, InvalidRedemptionBatch());
+
+        _sweep();
+        _redemptionBatchAssetBasis = totalAssets() + 1;
+        _redemptionBatchShareBasis = totalSupply() + 10 ** _decimalsOffset();
+    }
+
     /// @dev Processes a withdrawal request by escrowing shares in the withdrawal queue.
     function _processWithdrawal(address caller, address owner, uint256 shares, uint256 minSharePrice)
         internal
@@ -715,7 +754,7 @@ contract StakedUSDat is
     /// @inheritdoc IStakedUSDat
     /// @dev The queue's single settlement primitive: price, deduct the fee, validate
     /// the net payout per share, burn, and transfer a complete request in one call.
-    /// The fee stays in the vault and accrues to remaining shares.
+    /// The fee stays in the vault and immediately accrues to the remaining shares.
     function redeemQueuedShares(uint256 shares, uint256 minSharePrice)
         external
         nonReentrant
@@ -723,28 +762,47 @@ contract StakedUSDat is
         whenNotPaused
         whenNotRestrictedMarketMode
         notZero(shares)
-        returns (RedemptionResult result, uint256 usdat)
+        returns (RedemptionResult result, uint256 net)
     {
-        _sweep();
+        uint256 shareBasis = _redemptionBatchShareBasis;
+        require(shareBasis != 0, InvalidRedemptionBatch());
 
-        uint256 gross = convertToAssets(shares);
-        uint256 fee = Math.mulDiv(gross, redemptionFeeBps(), BPS_DENOMINATOR, Math.Rounding.Ceil);
-        usdat = gross - fee;
+        net = _quoteQueuedRedemption(shares, _redemptionBatchAssetBasis, shareBasis);
 
-        uint256 netSharePrice = Math.mulDiv(usdat, 1e18, shares, Math.Rounding.Floor);
+        uint256 netSharePrice = Math.mulDiv(net, 1e18, shares, Math.Rounding.Floor);
         if (netSharePrice < minSharePrice) {
             return (RedemptionResult.BelowLimit, 0);
         }
 
-        if (usdatBalance < usdat) {
+        if (usdatBalance < net) {
             return (RedemptionResult.InsufficientLiquidity, 0);
         }
 
-        usdatBalance -= usdat;
+        usdatBalance -= net;
         _burn(address(WITHDRAWAL_QUEUE), shares);
 
-        IERC20(asset()).safeTransfer(address(WITHDRAWAL_QUEUE), usdat);
-        return (RedemptionResult.Settled, usdat);
+        IERC20(asset()).safeTransfer(address(WITHDRAWAL_QUEUE), net);
+
+        return (RedemptionResult.Settled, net);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function endRedemptionBatch() external onlyWithdrawalQueue {
+        require(_redemptionBatchShareBasis != 0, InvalidRedemptionBatch());
+
+        _redemptionBatchShareBasis = 0;
+        _redemptionBatchAssetBasis = 0;
+    }
+
+    /// @dev Returns the net payout using one exact ERC4626 conversion basis and the active fee tier.
+    function _quoteQueuedRedemption(uint256 shares, uint256 assetBasis, uint256 shareBasis)
+        private
+        view
+        returns (uint256 net)
+    {
+        uint256 gross = Math.mulDiv(shares, assetBasis, shareBasis, Math.Rounding.Floor);
+        uint256 fee = Math.mulDiv(gross, redemptionFeeBps(), BPS_DENOMINATOR, Math.Rounding.Ceil);
+        net = gross - fee;
     }
 
     /// @inheritdoc IStakedUSDat
@@ -820,6 +878,11 @@ contract StakedUSDat is
     /// @inheritdoc IStakedUSDat
     function setRecoveryAddress(address newRecoveryAddress) external onlyRole(PARAMETER_MANAGER_ROLE) {
         _setRecoveryAddress(newRecoveryAddress);
+    }
+
+    /// @inheritdoc IStakedUSDat
+    function setSurplusSource(address newSource) external onlyRole(PARAMETER_MANAGER_ROLE) {
+        _setSurplusSource(newSource);
     }
 
     /// @inheritdoc IStakedUSDat
@@ -913,6 +976,19 @@ contract StakedUSDat is
         recoveryAddress = newRecoveryAddress;
 
         emit RecoveryAddressUpdated(oldRecoveryAddress, newRecoveryAddress);
+    }
+
+    /// @dev Validates and updates the surplus source.
+    function _setSurplusSource(address newSource) private {
+        require(newSource != address(0), InvalidZeroAddress());
+        require(newSource != address(this), InvalidSurplusSource());
+        require(newSource != address(WITHDRAWAL_QUEUE), InvalidSurplusSource());
+        _requireNotRestricted(newSource);
+
+        address oldSource = surplusSource;
+        surplusSource = newSource;
+
+        emit SurplusSourceUpdated(oldSource, newSource);
     }
 
     /// @dev Reverts unless an address is a valid seizure destination now.

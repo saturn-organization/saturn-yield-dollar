@@ -103,7 +103,7 @@ totalAssets() = usdatBalance
 a USDat/USD depeg. `usdatBalance` is idle USDat: the deposit inlet, redemption outlet, and
 source/sink of rotations.
 
-**Surplus inlet.** `transferInSurplus(amount)` (OPERATOR_ROLE) accepts discretionary USDat
+**Surplus inlet.** `transferInSurplus(amount)` (`SURPLUS_MANAGER_ROLE`) accepts discretionary USDat
 surplus; no amount or schedule is owed to the vault. It enters a segregated
 `surplusVestingAmount` leg — in the vault but outside
 `usdatBalance` — and vests linearly over `surplusVestingPeriod` (default 3 days, max 7d).
@@ -119,8 +119,10 @@ Only one tranche may exist. A new transfer requires the prior tranche fully vest
 amount ≤ floor(navBefore × MAX_SURPLUS_BPS / 10_000)
 ```
 
-The vault pulls its configured USDat asset from the operator with `safeTransferFrom` before
-recognizing the tranche.
+The vault pulls its configured USDat asset from the current `surplusSource` with
+`safeTransferFrom` before recognizing the tranche. The authorized surplus manager selects only the
+amount; it cannot select or supply the source account. `surplusSource` is a dedicated wallet
+that holds approved surplus and preapproves the vault to pull approved surplus tranches.
 
 The public `sweep()` is a permissionless, NAV-neutral poke over the private `_sweep()` helper
 and remains callable during a hard pause because it transfers no tokens and cannot accelerate
@@ -790,13 +792,16 @@ enum RedemptionResult { Settled, BelowLimit, InsufficientLiquidity }
 
 // WithdrawalQueueERC721: OPERATOR_ROLE, nonReentrant, queue-local whenNotPaused
 processRequests(uint256[] tokenIds)
+  empty input → return
+  vault.beginRedemptionBatch()
   for each request in caller-supplied order:
-    require(request.status == RequestStatus.Requested, RequestNotOpen());
+    if token does not exist or status != Requested → continue
     (result, usdat) = vault.redeemQueuedShares(request.shares, request.minSharePrice)
     if result == BelowLimit → continue                 // request stays open
     if result == InsufficientLiquidity → continue      // a later smaller request may fit
     request.usdatOwed = usdat
     request.status = Processed
+  vault.endRedemptionBatch()
 ```
 
 The queue does not inspect `marketMode()`. `redeemQueuedShares` owns the Restricted-mode
@@ -805,39 +810,53 @@ no-op.
 
 Duplicate IDs need no separate validation. A skipped request may be retried later in the
 same caller-supplied sequence. Once an occurrence settles, its status becomes `Processed`,
-so any later duplicate fails the `Requested` check and atomically rolls back the complete
-transaction. A duplicate therefore cannot burn shares or fund an obligation twice.
+so any later duplicate is skipped. Missing, cancelled, closed, and already-settled IDs likewise
+cannot block otherwise valid requests or burn shares twice.
 
 ```solidity
 // StakedUSDat — queue-only; price, check, burn, and transfer atomically
+function beginRedemptionBatch() external onlyWithdrawalQueue;
+// assetBasis = totalAssets() + 1 after _sweep()
+// shareBasis = totalSupply() + 10 ** _decimalsOffset()
+// both values are held in transaction-scoped transient storage
 function redeemQueuedShares(uint256 shares, uint256 minSharePrice)
     external onlyWithdrawalQueue whenNotPaused whenNotRestrictedMarketMode
     returns (RedemptionResult result, uint256 usdat);
-// gross = convertToAssets(shares), floor-rounded and priced before the burn
-// fee = Math.mulDiv(gross, redemptionFeeBps(), 10_000, Math.Rounding.Ceil)
+// require an active batch
+// gross = Math.mulDiv(shares, assetBasis, shareBasis, Math.Rounding.Floor)
+// feeBps = redemptionFeeBps(); stable throughout this processRequests execution
+// fee = Math.mulDiv(gross, feeBps, 10_000, Math.Rounding.Ceil)
 // net = gross - fee
 // netSharePrice = Math.mulDiv(net, 1e18, shares, Math.Rounding.Floor)
 // netSharePrice < minSharePrice → BelowLimit
 // (equivalent to net < ceil(shares * minSharePrice / 1e18), without limit overflow)
 // usdatBalance < net → InsufficientLiquidity
 // otherwise burn every share, decrement usdatBalance by net,
-// transfer net USDat to the queue, and return Settled
+// transfer net USDat to the queue, retain the fee in the vault, and return Settled
+function endRedemptionBatch() external onlyWithdrawalQueue;
+// explicitly clears the transient snapshot
 ```
 
-Expected no-settlement outcomes return a result without reverting the batch; invalid IDs or
-states revert as operator errors. An insufficient request is skipped so a later smaller one
-may settle. The operator selects and orders IDs; there is no FIFO guarantee.
+Expected no-settlement outcomes return a result without reverting the batch. Missing and
+non-Requested IDs are skipped before calling the vault. An insufficient request is skipped so a
+later smaller one may settle. Unexpected pricing, accounting, authorization, or transfer failures
+still revert the complete batch. The operator selects and orders IDs; there is no FIFO guarantee.
 
-Each successful settlement reprices the next request at the then-current NAV. When the
-redemption fee is nonzero, only the net payout leaves the vault, so the retained fee accrues
-to the remaining shares. A later request receives a slightly higher gross share price and,
-under an unchanged fee tier, a slightly higher net share price that may cross its
-`minSharePrice`. The active fee can independently change settlement eligibility. This
-fee-accreted sequential pricing and its ordering consequences are explicit and accepted;
-processing does not snapshot one batch-wide price.
+The vault snapshots the exact ERC4626 asset and share bases once before processing. Every request
+in that `processRequests` call uses the same rational price even though each successful settlement
+raises the live accounting PPS. The active fee tier is read for each request but cannot change
+during that `processRequests` execution. Per-request floor/ceil rounding still applies. The next
+`processRequests` call takes a fresh price snapshot that includes prior retained fees. The operator
+selects batch composition and order; there is no FIFO guarantee.
 
-Even for a buggy queue, `redeemQueuedShares` burns only queue-held shares at current vault
-NAV and fee, and settles only a complete, buffer-covered request while processing is
+The snapshot uses EIP-1153 transient storage, which is separate from persistent proxy storage and
+is automatically cleared at transaction end. The queue also explicitly closes the snapshot so two
+`processRequests` calls in one outer transaction form separate batches. V2 deployment tooling pins
+Solidity 0.8.36 and targets Cancun or newer. Any future change to this vault/queue batch interface
+upgrades both proxies atomically.
+
+Even for a buggy queue, `redeemQueuedShares` burns only queue-held shares at the batch-snapshotted
+vault NAV and fee, and settles only a complete, buffer-covered request while processing is
 enabled. Backing-asset and liquidity-path changes do not touch the queue.
 
 **Cancellation.** While active, the current NFT owner may call `cancelRequest(tokenId)` on
@@ -1020,15 +1039,16 @@ For storage compatibility, the v1 `depositFeeBps` slot stores
 | Fee | Destination | Configuration and purpose |
 |---|---|---|
 | elevated deposit fee (`elevatedDepositFeeBps`) | stays in the vault | anti-dilution against higher-risk entry windows; `setElevatedDepositFee` (`PARAMETER_MANAGER_ROLE`), capped at 500 bps |
-| redemption fee (`baseRedemptionFeeBps` / `elevatedRedemptionFeeBps`) | stays in the vault | exits process at cost on average; `setRedemptionFees` (`PARAMETER_MANAGER_ROLE`), `base ≤ elevated ≤ 500`; the net payout limit is checked after the active fee |
+| redemption fee (`baseRedemptionFeeBps` / `elevatedRedemptionFeeBps`) | stays in the vault | protects remaining holders against liquidity-sensitive exits; `setRedemptionFees` (`PARAMETER_MANAGER_ROLE`), `base ≤ elevated ≤ 500`; the net payout limit is checked after the active fee; each retained fee immediately accrues to remaining shares |
 
 The intended launch range for the redemption-fee tiers is approximately 5–10 bps; the exact
 base and elevated values remain approved launch parameters.
 
-`previewDeposit`/`previewMint` include `depositFeeBps()`. `previewRedeem` remains gross
-(`convertToAssets`); `redeem()` is disabled, and frontends apply the active redemption fee
-when presenting the net queue proceeds and `minSharePrice` described in §2.6. The fee is not
-snapshotted at request creation. Appendix F gives the permission matrix.
+`previewDeposit`/`previewMint` include `depositFeeBps()`. `previewWithdraw` returns zero because
+`withdraw()` is disabled. `previewRedeem(shares)` returns the same net payout used by
+`redeemQueuedShares`: gross `convertToAssets(shares)` less the active redemption fee rounded up.
+`redeem()` remains disabled. The fee is not snapshotted at request creation. Appendix F gives the
+permission matrix.
 
 ### 2.8 Roles
 
@@ -1037,9 +1057,10 @@ Capability-named (`keccak256("<NAME>_ROLE")`):
 | Role | Definition | Scope | Permitted co-location | Timelocked |
 |---|---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | Grant/revoke roles; authorize UUPS upgrades; execute `migrate` | StakedUSDat and queue, with separate grants | No other role | Yes |
-| `PARAMETER_MANAGER_ROLE` | Set vault fees, vesting/reward limits, migration parameters and `recoveryAddress`; directly set the fixed policy's execution vehicle, tolerance and capacity; set the active STRCon oracle wrapper | Vault role registry, including direct authorization reads by the fixed policy, bound modules, and wrapper | No other role | Yes |
+| `PARAMETER_MANAGER_ROLE` | Set vault fees, vesting/reward limits, migration parameters, `recoveryAddress`, and `surplusSource`; directly set the fixed policy's execution vehicle, tolerance and capacity; set the active STRCon oracle wrapper | Vault role registry, including direct authorization reads by the fixed policy, bound modules, and wrapper | No other role | Yes |
 | `MARKET_MODE_MANAGER_ROLE` | Set Elevated or Restricted and grant expiring Regular authorization for at most eight hours; cannot set fee amounts or clear hard pause | StakedUSDat | `OPERATOR_ROLE` only | No |
-| `OPERATOR_ROLE` | Execute `buy`/`sell`, transfer surplus and STRCMirrorModule rewards, and select/order queue requests for processing | StakedUSDat and queue, with separate grants | `MARKET_MODE_MANAGER_ROLE` only | No |
+| `OPERATOR_ROLE` | Execute `buy`/`sell`, transfer STRCMirrorModule rewards, and select/order queue requests for processing | StakedUSDat and queue, with separate grants | `MARKET_MODE_MANAGER_ROLE` only | No |
+| `SURPLUS_MANAGER_ROLE` | Start a capped surplus tranche from the configured `surplusSource`; cannot select the source or destination | StakedUSDat | No other role | No |
 | `BLACKLISTER_ROLE` | Add/remove the canonical sUSDat blacklist; cannot move or destroy positions | StakedUSDat | No other role | No |
 | `ENFORCER_ROLE` | Seize locally blacklisted sUSDat positions, seize queue claims eligible under the sUSDat blacklist or USDat freeze list, and rescue untracked vault excess; cannot blacklist or freeze | StakedUSDat and queue, with separate grants | No other role | Yes |
 | `PAUSER_ROLE` | Invoke vault hard pause or queue-local pause; cannot unpause | StakedUSDat and queue, with separate grants | No other role | No |
@@ -1079,12 +1100,17 @@ sUSDat/USDat-restricted addresses and emits
 `RecoveryAddressUpdated(oldAddress, newAddress)`. Every seizure and token rescue reads the
 current value and accepts no destination; the queue stores no copy.
 
-**`seize(from)`** (new, `ENFORCER_ROLE`) transfers a locally blacklisted holder's sUSDat to
-`recoveryAddress` — moves shares, no burn, no liquidity needed. A USDat freeze alone does
-not authorize this operation. Queue `seizeRequest(tokenId)` and `seize(tokenId)` instead
-accept either a local sUSDat blacklist or a USDat freeze, and send the request NFT or funded
-USDat to the same address. V2 removes the v1 `redistributeLockedAmount`
-burn-and-redistribute path.
+**Surplus source.** StakedUSDat initializes one `surplusSource` used as the source of future
+surplus tranches. `setSurplusSource(newSource)`
+(`PARAMETER_MANAGER_ROLE`) remains callable while paused, rejects zero, the vault, the withdrawal
+queue, or an sUSDat/USDat-restricted address, and emits
+`SurplusSourceUpdated(oldSource, newSource)`. Each surplus transfer reads the current value;
+`SURPLUS_MANAGER_ROLE` cannot rotate it.
+
+**`seize(from)`** (new, `ENFORCER_ROLE`) transfers a blacklisted holder's sUSDat to
+`recoveryAddress` — moves shares, no burn, no liquidity needed. Queue
+`seizeRequest(tokenId)` and `seize(tokenId)` send the request NFT or funded USDat to the
+same address. V2 removes the v1 `redistributeLockedAmount` burn-and-redistribute path.
 
 ### 2.9 V2 initialization and migration tolerance
 
@@ -1097,6 +1123,7 @@ struct V2Config {
     ISTRConModule strconModule;
     ISTRConExecutionPolicy executionPolicy;
     address recoveryAddress;
+    address surplusSource;
     address executionVehicle;
     uint16 baseRedemptionFeeBps;
     uint16 elevatedRedemptionFeeBps;
@@ -1111,6 +1138,7 @@ struct V2Roles {
     address parameterManager;
     address marketModeManager;
     address operator;
+    address surplusManager;
     address blacklister;
     address enforcer;
     address pauser;
@@ -1124,7 +1152,8 @@ function initializeV2(V2Config calldata config, V2Roles calldata roles)
 ```
 
 `initializeV2` validates both modules' immutable `VAULT` bindings, the policy's immutable
-`VAULT` and `STRCON_MODULE` bindings, and a zero initial `STRConModule.balance()`. It
+`VAULT` and `STRCON_MODULE` bindings, a zero initial `STRConModule.balance()`, and a
+`surplusSource` that satisfies the same destination checks as later rotations. It
 permanently binds the two module slots and the execution-policy slot, installs vault-owned
 configuration through the same internal setters used after initialization, grants each role
 in `V2Roles`, sets `surplusVestingPeriod = 3 days`, configures Elevated, and sets
@@ -1235,7 +1264,7 @@ the mirror and recognizes STRCon, subject to `migrationToleranceBps`.
    queue processing resumes.
 4. Schedule the two `upgradeToAndCall` operations through the five-day timelock. The sUSDat
    `initializeV2(config, roles)` call defined in §2.9 installs both modules and the fixed
-   execution policy, installs the approved nonzero `recoveryAddress`, parameters, and roles,
+   execution policy, installs the approved valid `recoveryAddress` and `surplusSource`, parameters, and roles,
    initializes effective Elevated with no outstanding Regular authorization, atomically
    initializes the migration tolerance and the policy's vehicle, execution tolerance,
    capacity, and refill rate, and maps the legacy vault slots into the renamed
@@ -1437,14 +1466,12 @@ Option 2); without it, the flat fee applies.
 
 **Per-request settlement, not batch-and-sum.** v1's batch totals existed because one
 external USDat pot was distributed pro rata. Vault-priced requests have exact amounts, no
-pro-rata math or settlement-generated dust, and can skip unmet limits. Each request uses
-current NAV. With a zero redemption fee, sequential fills share one price apart from
-rounding because each removes assets and shares proportionally. With a nonzero fee, only
-the net payout leaves, so the retained fee accrues to remaining shares and later requests
-receive a slightly higher gross price and, under an unchanged fee tier, a slightly higher
-net price. This order-dependence—including its interaction with operator-selected ordering
-and `minSharePrice`—is accepted. The intended 5–10 bps launch range keeps the effect small
-but does not eliminate it.
+pro-rata math or settlement-generated dust, and can skip unmet limits. The vault snapshots one
+exact conversion basis per processor-selected batch and applies the transaction-stable active fee
+tier to each request. Each fill removes only its net payout while burning the request's complete
+shares, so retained fees raise live PPS but do not reprice later requests in that batch. A later
+batch snapshots the resulting higher PPS. Per-request conversion and ceil rounding apply
+independently.
 
 **Queue-side entry with a narrow vault primitive.** The alternative—vault-side processing
 that loops queue state—must enforce queue invariants across contracts or delegate back.
@@ -1481,7 +1508,7 @@ operating choices, not incidents. Restricted blocks deposits, settlement, and ro
 while requests, funded claims, and transfers stay live. Vault hard pause contains vault and
 sUSDat mutations; queue-local pause separately contains funded claims and queue-only state.
 Separate `MARKET_MODE_MANAGER_ROLE` allows later separation from execution despite shared
-initial holders. Both fees stay in the vault to offset dilution, not create revenue.
+initial holders. Deposit and redemption fees stay in the vault and accrue to remaining shares.
 Regular authorization expires after at most eight hours, so a missed close transaction
 fails safe to effective Elevated. Elevated is the required off-hours mode; Restricted is
 reserved for identified executable arbitrage rather than raw oracle divergence.
@@ -1669,10 +1696,9 @@ alive for whitelisted owners (add/remove: WHITELIST_MANAGER_ROLE), so integrator
   all internal pricing already bind to `convertToAssets` — the fee-free NAV mark — leaving
   the previews free; the retrofit touches nothing outside the instant path. Integrator
   note: price sUSDat via `convertToAssets`, never `previewRedeem`.
-- Flow: sweep → consume per-period cap → pay net from the buffer; the fee difference stays
-  in the vault (NAV-accretive, same mechanism as the redemption fee). Cap in net USDat per
-  fixed period; `instantExitFeeBps ≥ baseRedemptionFeeBps` (same cost plus immediacy), hard cap
-  500.
+- Flow: sweep → consume per-period cap → pay net from the buffer; the fee difference remains in
+  the vault and immediately accrues to remaining shares. Cap in net USDat per fixed period;
+  `instantExitFeeBps ≥ baseRedemptionFeeBps` (same cost plus immediacy), hard cap 500.
 - No permit or slippage variants: redeeming your own shares touches no allowance (the vault
   is the share token), and the whitelisted audience is contracts that enforce their own
   bounds; `redeemWithMinAssets` is a 5-line addition on concrete demand.

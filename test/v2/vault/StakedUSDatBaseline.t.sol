@@ -31,6 +31,14 @@ contract StakedUSDatBaselineTest is Test {
         assertGt(address(implementation).code.length, 0);
     }
 
+    function test_previewWithdrawReturnsZeroWhenWithdrawIsUnsupported() public {
+        IStakedUSDat implementation = new StakedUSDatV2(IWithdrawalQueueV2(makeAddr("withdrawalQueue")));
+
+        assertEq(implementation.previewWithdraw(0), 0);
+        assertEq(implementation.previewWithdraw(1e6), 0);
+        assertEq(implementation.previewWithdraw(type(uint256).max), 0);
+    }
+
     function test_v1StoragePrefixSurvivesUpgradeAndV2StateAppendsAtSlotTen() public {
         BaselineUSDatMock usdat = new BaselineUSDatMock();
         address withdrawalQueue = makeAddr("withdrawalQueue");
@@ -84,6 +92,7 @@ contract StakedUSDatBaselineTest is Test {
         assertEq(vaultV2.surplusVestingAmount(), 0);
         assertEq(vaultV2.surplusVestingStartTimestamp(), 0);
         assertEq(vaultV2.surplusVestingPeriod(), 3 days);
+        assertEq(vaultV2.surplusSource(), address(this));
         assertEq(vaultV2.MAX_SURPLUS_BPS(), 500);
         assertEq(vaultV2.totalAssets(), uint256(legacySlots[7]));
 
@@ -108,9 +117,10 @@ contract StakedUSDatBaselineTest is Test {
         assertEq(vm.load(address(proxy), bytes32(uint256(13))), bytes32(0));
         assertEq(vm.load(address(proxy), bytes32(uint256(14))), bytes32(0));
         assertEq(vm.load(address(proxy), bytes32(uint256(15))), bytes32(uint256(3 days)));
-        uint256 expectedSlotSixteen =
+        assertEq(vm.load(address(proxy), bytes32(uint256(16))), bytes32(uint256(uint160(address(this)))));
+        uint256 expectedSlotSeventeen =
             uint256(uint160(address(vaultV2.executionPolicy()))) | (uint256(vaultV2.regularModeValidUntil()) << 176);
-        assertEq(vm.load(address(proxy), bytes32(uint256(16))), bytes32(expectedSlotSixteen));
-        assertEq(vm.load(address(proxy), bytes32(uint256(17))), bytes32(0));
+        assertEq(vm.load(address(proxy), bytes32(uint256(17))), bytes32(expectedSlotSeventeen));
+        assertEq(vm.load(address(proxy), bytes32(uint256(18))), bytes32(0));
     }
 }
