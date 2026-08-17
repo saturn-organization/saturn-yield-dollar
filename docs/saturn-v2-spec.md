@@ -33,7 +33,7 @@ the sole token-backed tradable module.
 | `transferInRewards` + STRC vesting surface | moves into STRCMirrorModule (§2.3); retires with it |
 | `burnQueuedShares(shares, strcAmount)` | `redeemQueuedShares(shares, minSharePrice)` (§2.6) |
 | `collectDust` | dropped — per-request settlement leaves no dust |
-| oracle failure reverts `totalAssets()` and all views | same fail-closed reverts, kept deliberately; `maxDeposit`/`maxMint` catch and report 0 for ERC-4626 (§2.2) |
+| oracle failure reverts `totalAssets()` and pricing-dependent views | same fail-closed reverts, kept deliberately as an EIP-4626 deviation; `maxDeposit`/`maxMint` catch and report 0 (§2.2) |
 | — | `transferInSurplus` cash surplus inlet (§2.1) |
 | one configured deposit fee | market-mode fee: zero in Regular, elevated in Elevated, and deposits disabled in Restricted (§2.4, §2.7) |
 | — | `MarketMode` selects Regular, Elevated, or Restricted operation; Regular authorization expires fail-safe to Elevated, and hard pause remains separate (§2.7) |
@@ -265,13 +265,16 @@ changes only the oracle used by `recognizedValue()` and `getPrice()`, not the mo
 vault, or recognized balance. The public typed state variable provides the canonical
 `oracle()` getter; there is no redundant `getOracle()` function.
 
-**Failure semantics — fail closed.** If a module cannot price, `recognizedValue()` reverts
-through `totalAssets()`, halting every value-sensitive path, including mints, queue
-processing, rotations, and downstream `convertToAssets`/`previewRedeem` use. Nonpricing
+**Failure semantics — fail closed; intentional EIP-4626 deviation.** If a module cannot
+price, `recognizedValue()` reverts through `totalAssets()`, halting every value-sensitive
+path, including mints, queue processing, rotations, and the pricing-dependent
+`convertToAssets`, `convertToShares`, and `preview*` views. EIP-4626 requires
+`totalAssets()` and its conversion surface not to revert, so this propagation is an
+intentional deviation from the standard. Integrators must catch these reverts and treat NAV
+as unavailable, not as zero or as authorization to use a cached price. Nonpricing
 operations—share transfers, `requestRedeem`, `updateMinSharePrice`, `claim`, and
-seizures—remain live. For ERC-4626 compliance, `maxDeposit`/`maxMint` catch
-`totalAssets()` failure and return 0; `max*` functions must not revert. Manual vault pause
-follows the STRCon impairment path in Appendix G.
+seizures—remain live. `maxDeposit` and `maxMint` alone normalize a pricing failure to 0.
+Manual vault pause follows the STRCon impairment path in Appendix G.
 
 **Rescue.** `rescueTokens(token, amount)` (`ENFORCER_ROLE`) sends only untracked
 excess to the current `recoveryAddress`; it accepts no caller-selected destination.
@@ -419,7 +422,16 @@ rejects feeds not reporting 8 decimals. Replacing either feed requires a new wra
 `STRConModule.setOracle(newOracle)`, which independently rejects a wrapper unless its
 `decimals()` value is 8. Numeric setters use
 `onlyVaultRole(PARAMETER_MANAGER_ROLE)` against immutable `VAULT` and emit configuration
-events. STRCMirrorModule keeps the deployed v1 `StrcPriceOracle`.
+events. Oracle rotation remains callable while the vault is paused or the current wrapper
+cannot price because it does not require a successful read from the current wrapper.
+STRCMirrorModule keeps the deployed v1 `StrcPriceOracle`.
+
+There is no standby STRCon replacement price source or backup wrapper at launch. A permanent
+failure or deprecation of the configured source requires Saturn to work with Chainlink to
+establish a replacement source, deploy and review a compatible wrapper, and execute the
+timelocked `setOracle` rotation. The contract therefore provides a recovery mechanism but
+does not guarantee a bounded recovery time. Until a working source is available—or
+governance executes a timelocked recovery upgrade—the vault remains fail closed.
 
 #### STRCon operations
 
