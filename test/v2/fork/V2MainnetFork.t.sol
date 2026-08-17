@@ -37,13 +37,16 @@ interface ILegacyOracleBinding {
  */
 contract V2MockMainnetForkTest is Test {
     error ExternalCallFailed(address target, bytes reason);
-    error InProgressRequest(uint256 tokenId);
     error InvalidLegacyRequest(uint256 tokenId, uint256 status);
 
     uint256 private constant PINNED_MAINNET_BLOCK = 25_627_322;
     uint256 private constant MAINNET_CHAIN_ID = 1;
     uint256 private constant TIMELOCK_DELAY = 5 days;
     uint256 private constant REQUEST_WORDS = 5;
+    uint256 private constant REQUESTED_STATUS = 1;
+    uint256 private constant IN_PROGRESS_STATUS = 2;
+    uint256 private constant PROCESSED_STATUS = 3;
+    uint256 private constant CLAIMED_STATUS = 4;
 
     bytes32 private constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
@@ -352,6 +355,7 @@ contract V2MockMainnetForkTest is Test {
         _assertVaultUpgrade(vaultBefore);
         _assertQueueUnchanged(queueBefore);
         _assertV2Roles();
+        _resetLegacyInProgressRequestsIfAny(queueBefore);
         _assertDeploymentCodeHashes();
     }
 
@@ -562,13 +566,12 @@ contract V2MockMainnetForkTest is Test {
             uint256 shares = uint256(snapshot.requestWords[tokenId * REQUEST_WORDS]);
             uint256 usdatOwed = uint256(snapshot.requestWords[tokenId * REQUEST_WORDS + 1]);
             uint256 status = uint256(snapshot.requestWords[tokenId * REQUEST_WORDS + 4]);
-            if (status == 0 || status > 4) revert InvalidLegacyRequest(tokenId, status);
-            if (status == 2) revert InProgressRequest(tokenId);
+            if (status == 0 || status > CLAIMED_STATUS) revert InvalidLegacyRequest(tokenId, status);
 
-            if (status == 1) {
+            if (status == REQUESTED_STATUS || status == IN_PROGRESS_STATUS) {
                 ++pending;
                 escrowedShares += shares;
-            } else if (status == 3) {
+            } else if (status == PROCESSED_STATUS) {
                 claimableUsdat += usdatOwed;
             }
 
@@ -592,6 +595,22 @@ contract V2MockMainnetForkTest is Test {
     }
 
     function _assertQueueUnchanged(QueueSnapshot memory before_) private view {
+        _assertQueueState(before_, false);
+    }
+
+    function _resetLegacyInProgressRequestsIfAny(QueueSnapshot memory before_) private {
+        for (uint256 tokenId; tokenId < before_.nextTokenId; ++tokenId) {
+            uint256 status = uint256(before_.requestWords[tokenId * REQUEST_WORDS + 4]);
+            if (status != IN_PROGRESS_STATUS) continue;
+
+            vm.prank(OPERATOR);
+            _queueV2.resetLegacyInProgressRequest(tokenId);
+        }
+
+        _assertQueueState(before_, true);
+    }
+
+    function _assertQueueState(QueueSnapshot memory before_, bool legacyRequestsReset) private view {
         assertEq(_implementationOf(WITHDRAWAL_QUEUE_PROXY), address(_queueImplementation));
         assertEq(_queueV2.nextTokenId(), before_.nextTokenId);
         assertEq(uint256(vm.load(WITHDRAWAL_QUEUE_PROXY, bytes32(uint256(2)))), before_.pendingCount);
@@ -603,10 +622,14 @@ contract V2MockMainnetForkTest is Test {
         for (uint256 tokenId; tokenId < before_.nextTokenId; ++tokenId) {
             bytes32 base = keccak256(abi.encode(tokenId, uint256(0)));
             for (uint256 word; word < REQUEST_WORDS; ++word) {
-                assertEq(
-                    vm.load(WITHDRAWAL_QUEUE_PROXY, bytes32(uint256(base) + word)),
-                    before_.requestWords[tokenId * REQUEST_WORDS + word]
-                );
+                bytes32 expected = before_.requestWords[tokenId * REQUEST_WORDS + word];
+                if (
+                    legacyRequestsReset && word == 4
+                        && uint256(before_.requestWords[tokenId * REQUEST_WORDS + 4]) == IN_PROGRESS_STATUS
+                ) {
+                    expected = bytes32(REQUESTED_STATUS);
+                }
+                assertEq(vm.load(WITHDRAWAL_QUEUE_PROXY, bytes32(uint256(base) + word)), expected);
             }
 
             (bool exists, address owner) = _ownerOf(tokenId);

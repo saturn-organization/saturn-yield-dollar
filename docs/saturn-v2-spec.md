@@ -52,7 +52,7 @@ sUSDat mutations; queue-local pause separately gates queue-only actions (§2.6).
 | `processRequests(tokenIds, totalUsdatReceived, totalStrcSold, executionPrice)` — batch pro-rata against an attested STRC sale | `processRequests(tokenIds)` — whole-request settlement at current NAV from the vault's USDat buffer (§2.6) |
 | `claim` + `claimBatch`/`claimAll`/`claimBatchFor`/`claimAllFor` | single `claim(tokenId)` (§2.6) |
 | `_validateTotals`, `_isWithinTolerance`, `_validateAmount`, oracle/asset-sale reads | dropped — the queue never knows which backing asset funds the buffer; settlement pricing and fees live in the vault |
-| `lockRequests` / `unlockRequests`, `InProgress` | dropped — settlement is atomic at the validated mark |
+| `lockRequests` / `unlockRequests`, `InProgress` | operational locking dropped — settlement is atomic at the validated mark; `resetLegacyInProgressRequest` remains only as an operator recovery path for an inherited `InProgress` request |
 | `minUsdatReceived` (absolute payout bound) | `minSharePrice` (6-decimal minimum net USDat payout per `1e18` shares after the active redemption fee, §2.6); the same storage slot is reinterpreted without conversion and legacy owners receive a grace period to update or cancel (§3.1) |
 | dust flow (`approve` + `collectDust`) | dropped |
 | `SlippageExceeded` revert on unmet limit | below-limit requests are skipped, not reverted |
@@ -83,6 +83,9 @@ move into STRCMirrorModule), `setTolerance` (→ `STRConExecutionPolicy.setExecu
 ERC721Enumerable views + multicall/events), plus the `pendingCount` variable (no on-chain
 consumer). Remaining reads: the `requests` mapping, `nextTokenId`, `getUserRequests`, and
 inherited ERC721Enumerable.
+
+V2 adds `resetLegacyInProgressRequest(tokenId)` as a distinct migration-recovery
+selector; it does not restore either v1 locking selector.
 
 ---
 
@@ -771,7 +774,9 @@ struct Request {
 ```
 
 Lifecycle is `Requested → Processed → Claimed` or `Requested → Cancelled`. `InProgress`
-only preserves v1 numbering; migration clears all v1 locks and v2 never creates it.
+only preserves v1 numbering and v2 never creates it. `OPERATOR_ROLE` may atomically
+return an explicitly selected legacy `InProgress` request to `Requested`, including while
+the queue is paused; the selected request must have that exact status.
 Processed USDat stays in the queue until claimed. There are no partial fills: the stored
 `shares` value is never decremented; the corresponding escrowed shares are either burned
 on complete settlement or returned on cancellation.
@@ -1267,9 +1272,10 @@ the mirror and recognizes STRCon, subject to `migrationToleranceBps`.
    and the oracle returned by the v1 `getStrcOracle()`; bind `STRConModule` to the proxy,
    STRCon, and its new wrapper; bind `STRConExecutionPolicy` to the proxy and that exact
    `STRConModule`.
-2. Rehearse the exact batch against current mainnet state. A storage-layout error, an
-   accounting mismatch, or any v1 queue request still marked `InProgress` blocks
-   scheduling; return such requests to `Requested` first.
+2. Rehearse the exact batch against current mainnet state. A storage-layout error or an
+   accounting mismatch blocks scheduling. Record every v1 queue request still marked
+   `InProgress`; either unlock it in v1 before the upgrade or prepare an operator
+   `resetLegacyInProgressRequest` call for each ID after the upgrade.
 3. Announce that each legacy `minUsdatReceived` value will become a 6-decimal minimum net
    `minSharePrice` per `1e18` shares after the active redemption fee. Leave requests
    unchanged and allow owners sufficient time after the upgrade to update or cancel before
@@ -1312,7 +1318,9 @@ the mirror and recognizes STRCon, subject to `migrationToleranceBps`.
    `migrationToleranceBps` remains conservative and sufficient. Any approved adjustment
    must be active before scheduling Step 2 and remain at or below the 500-bps hard cap
    defined in §2.9.
-3. Ensure there are no remaining `InProgress` Requests. They will be locked forever.
+3. Call `resetLegacyInProgressRequest` once for each inherited `InProgress` ID and rescan
+   the complete inventory. The selector preserves the queue's current pause state; do not
+   process requests until no `InProgress` entries remain.
 
 ### 3.3 Step 2 — `migrate()`
 
@@ -1354,7 +1362,7 @@ oracle read; its reward and parameter mutations reject.
 |---|---|---|
 | Step-1 state migration | Incorrect seeding changes NAV, share price, or reward vesting. | Exact five-field seed mapping, fork rehearsal, atomic upgrade, and pre/post accounting comparison. Any mismatch blocks Step 2. |
 | Partner readiness | Although the sUSDat and queue proxy addresses remain, functions move or disappear and bots, indexers, and frontends need the new ABIs and module addresses. | Publish final ABIs, addresses, behavior changes, and upgrade timing; confirm critical partners are ready before Step 1. |
-| Legacy queue limits | Reinterpreting `minUsdatReceived` as a net-of-fee per-share `minSharePrice` may park or unexpectedly execute an old request. | Announce the change and leave sufficient time to update or cancel before processing resumes; return every `InProgress` request to `Requested` before upgrade. |
+| Legacy queue limits | Reinterpreting `minUsdatReceived` as a net-of-fee per-share `minSharePrice` may park or unexpectedly execute an old request. | Announce the change and leave sufficient time to update or cancel before processing resumes; reset every inherited `InProgress` request and verify the full inventory before processing resumes. |
 | Transition liquidity | Mirrored STRC cannot be sold after Step 1, so queue funding depends on available USDat until STRCon is recognized. | Forecast the transition buffer and communicate that insufficient liquidity delays processing. |
 | Step-2 execution | Unvested rewards, incomplete STRCon delivery, invalid pricing, or excessive oracle basis prevent conversion. | Timelock, zero-unvested and zero-STRCon preconditions, exact delivery, NAV tolerance, and atomic reversion. |
 | Post-upgrade oracle liveness | Fail-closed pricing can make value-sensitive operations and partner integrations unavailable. | Partners test revert handling; monitoring and the Appendix G recovery runbook remain active. |
@@ -1493,7 +1501,9 @@ buffer covers the whole request. This narrow, one-way trust replaces v1
 
 **Locks removed.** `lockRequests`/`InProgress` protected an in-flight off-chain execution
 window (lock → sell STRC over hours → settle at attested price). Atomic settlement at the
-validated mark has no such window.
+validated mark has no such window. V2 never creates `InProgress`; the operator-only,
+pause-independent `resetLegacyInProgressRequest` selector exists solely to recover any
+inherited request omitted from pre-upgrade cleanup.
 
 **`minSharePrice` instead of `minUsdatReceived`.** A per-share limit means the same thing
 at every order size and directly protects the payout per share. The net payout price is

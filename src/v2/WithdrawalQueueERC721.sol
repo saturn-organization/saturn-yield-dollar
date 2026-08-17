@@ -119,7 +119,6 @@ contract WithdrawalQueueERC721 is
     /// Existing requests are deliberately untouched: the v1 minUsdatReceived slot
     /// is reinterpreted in place as the net-of-fee minSharePrice without numeric
     /// conversion.
-    /// Every v1 InProgress request must be returned to Requested before the upgrade.
     /// @param operator The OPERATOR_ROLE holder (processRequests).
     /// @param enforcer The ENFORCER_ROLE holder (seizeRequest, seize).
     /// @param pauser The PAUSER_ROLE holder.
@@ -138,6 +137,15 @@ contract WithdrawalQueueERC721 is
         _grantRole(ENFORCER_ROLE, enforcer);
         _grantRole(PAUSER_ROLE, pauser);
         _grantRole(UNPAUSER_ROLE, unpauser);
+    }
+
+    /// @inheritdoc IWithdrawalQueueERC721
+    function resetLegacyInProgressRequest(uint256 tokenId) external onlyRole(OPERATOR_ROLE) {
+        Request storage req = requests[tokenId];
+        require(req.status == RequestStatus.InProgress, RequestNotInProgress());
+        req.status = RequestStatus.Requested;
+
+        emit LegacyInProgressRequestReset(tokenId);
     }
 
     /// @dev Authorizes an upgrade to a new implementation. Only callable by DEFAULT_ADMIN_ROLE.
