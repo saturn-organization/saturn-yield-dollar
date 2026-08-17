@@ -37,13 +37,16 @@ interface ILegacyOracleBinding {
  */
 contract V2MockMainnetForkTest is Test {
     error ExternalCallFailed(address target, bytes reason);
-    error InProgressRequest(uint256 tokenId);
     error InvalidLegacyRequest(uint256 tokenId, uint256 status);
 
     uint256 private constant PINNED_MAINNET_BLOCK = 25_627_322;
     uint256 private constant MAINNET_CHAIN_ID = 1;
     uint256 private constant TIMELOCK_DELAY = 5 days;
     uint256 private constant REQUEST_WORDS = 5;
+    uint256 private constant REQUESTED_STATUS = 1;
+    uint256 private constant IN_PROGRESS_STATUS = 2;
+    uint256 private constant PROCESSED_STATUS = 3;
+    uint256 private constant CLAIMED_STATUS = 4;
 
     bytes32 private constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
@@ -77,6 +80,8 @@ contract V2MockMainnetForkTest is Test {
     address private constant RECOVERY_ADDRESS = address(0x1008);
     address private constant EXECUTION_VEHICLE = address(0x1009);
     address private constant EXECUTOR = address(0x1010);
+    address private constant SURPLUS_SOURCE = address(0x1011);
+    address private constant SURPLUS_MANAGER = address(0x1012);
 
     uint16 private constant BASE_REDEMPTION_FEE_BPS = 5;
     uint16 private constant ELEVATED_REDEMPTION_FEE_BPS = 10;
@@ -214,7 +219,7 @@ contract V2MockMainnetForkTest is Test {
         assertTrue(IAccessControl(STAKED_USDAT_PROXY).hasRole(bytes32(0), TIMELOCK));
         assertTrue(IAccessControl(WITHDRAWAL_QUEUE_PROXY).hasRole(bytes32(0), TIMELOCK));
 
-        for (uint256 slot = 10; slot <= 16; ++slot) {
+        for (uint256 slot = 10; slot <= 18; ++slot) {
             assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(slot)), bytes32(0));
         }
     }
@@ -297,6 +302,7 @@ contract V2MockMainnetForkTest is Test {
             strconModule: _module,
             executionPolicy: _policy,
             recoveryAddress: RECOVERY_ADDRESS,
+            surplusSource: SURPLUS_SOURCE,
             executionVehicle: EXECUTION_VEHICLE,
             baseRedemptionFeeBps: BASE_REDEMPTION_FEE_BPS,
             elevatedRedemptionFeeBps: ELEVATED_REDEMPTION_FEE_BPS,
@@ -310,6 +316,7 @@ contract V2MockMainnetForkTest is Test {
             parameterManager: PARAMETER_MANAGER,
             marketModeManager: MARKET_MODE_MANAGER,
             operator: OPERATOR,
+            surplusManager: SURPLUS_MANAGER,
             blacklister: BLACKLISTER,
             enforcer: ENFORCER,
             pauser: PAUSER,
@@ -350,6 +357,7 @@ contract V2MockMainnetForkTest is Test {
         _assertVaultUpgrade(vaultBefore);
         _assertQueueUnchanged(queueBefore);
         _assertV2Roles();
+        _resetLegacyInProgressRequestsIfAny(queueBefore);
         _assertDeploymentCodeHashes();
     }
 
@@ -486,6 +494,7 @@ contract V2MockMainnetForkTest is Test {
         assertEq(address(_vaultV2.strconModule()), address(_module));
         assertEq(address(_vaultV2.executionPolicy()), address(_policy));
         assertEq(_vaultV2.recoveryAddress(), RECOVERY_ADDRESS);
+        assertEq(_vaultV2.surplusSource(), SURPLUS_SOURCE);
         assertEq(_vaultV2.baseRedemptionFeeBps(), BASE_REDEMPTION_FEE_BPS);
         assertEq(_vaultV2.elevatedRedemptionFeeBps(), ELEVATED_REDEMPTION_FEE_BPS);
         assertEq(_vaultV2.elevatedDepositFeeBps(), ELEVATED_DEPOSIT_FEE_BPS);
@@ -507,14 +516,16 @@ contract V2MockMainnetForkTest is Test {
         uint256 expectedSlotTen = uint256(uint160(RECOVERY_ADDRESS))
             | (uint256(IStakedUSDat.MarketMode.Elevated) << 160) | (uint256(BASE_REDEMPTION_FEE_BPS) << 168)
             | (uint256(ELEVATED_REDEMPTION_FEE_BPS) << 184);
-        uint256 expectedSlotSixteen = uint256(uint160(address(_policy))) | (uint256(MIGRATION_TOLERANCE_BPS) << 160);
+        uint256 expectedSlotSeventeen = uint256(uint160(address(_policy))) | (uint256(MIGRATION_TOLERANCE_BPS) << 160);
         assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(10))), bytes32(expectedSlotTen));
         assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(11))), bytes32(uint256(uint160(address(_mirror)))));
         assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(12))), bytes32(uint256(uint160(address(_module)))));
         assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(13))), bytes32(0));
         assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(14))), bytes32(0));
         assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(15))), bytes32(uint256(3 days)));
-        assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(16))), bytes32(expectedSlotSixteen));
+        assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(16))), bytes32(uint256(uint160(SURPLUS_SOURCE))));
+        assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(17))), bytes32(expectedSlotSeventeen));
+        assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(18))), bytes32(0));
     }
 
     function _snapshotQueueV1() private view returns (QueueSnapshot memory snapshot) {
@@ -559,13 +570,12 @@ contract V2MockMainnetForkTest is Test {
             uint256 shares = uint256(snapshot.requestWords[tokenId * REQUEST_WORDS]);
             uint256 usdatOwed = uint256(snapshot.requestWords[tokenId * REQUEST_WORDS + 1]);
             uint256 status = uint256(snapshot.requestWords[tokenId * REQUEST_WORDS + 4]);
-            if (status == 0 || status > 4) revert InvalidLegacyRequest(tokenId, status);
-            if (status == 2) revert InProgressRequest(tokenId);
+            if (status == 0 || status > CLAIMED_STATUS) revert InvalidLegacyRequest(tokenId, status);
 
-            if (status == 1) {
+            if (status == REQUESTED_STATUS || status == IN_PROGRESS_STATUS) {
                 ++pending;
                 escrowedShares += shares;
-            } else if (status == 3) {
+            } else if (status == PROCESSED_STATUS) {
                 claimableUsdat += usdatOwed;
             }
 
@@ -589,6 +599,22 @@ contract V2MockMainnetForkTest is Test {
     }
 
     function _assertQueueUnchanged(QueueSnapshot memory before_) private view {
+        _assertQueueState(before_, false);
+    }
+
+    function _resetLegacyInProgressRequestsIfAny(QueueSnapshot memory before_) private {
+        for (uint256 tokenId; tokenId < before_.nextTokenId; ++tokenId) {
+            uint256 status = uint256(before_.requestWords[tokenId * REQUEST_WORDS + 4]);
+            if (status != IN_PROGRESS_STATUS) continue;
+
+            vm.prank(OPERATOR);
+            _queueV2.resetLegacyInProgressRequest(tokenId);
+        }
+
+        _assertQueueState(before_, true);
+    }
+
+    function _assertQueueState(QueueSnapshot memory before_, bool legacyRequestsReset) private view {
         assertEq(_implementationOf(WITHDRAWAL_QUEUE_PROXY), address(_queueImplementation));
         assertEq(_queueV2.nextTokenId(), before_.nextTokenId);
         assertEq(uint256(vm.load(WITHDRAWAL_QUEUE_PROXY, bytes32(uint256(2)))), before_.pendingCount);
@@ -600,10 +626,14 @@ contract V2MockMainnetForkTest is Test {
         for (uint256 tokenId; tokenId < before_.nextTokenId; ++tokenId) {
             bytes32 base = keccak256(abi.encode(tokenId, uint256(0)));
             for (uint256 word; word < REQUEST_WORDS; ++word) {
-                assertEq(
-                    vm.load(WITHDRAWAL_QUEUE_PROXY, bytes32(uint256(base) + word)),
-                    before_.requestWords[tokenId * REQUEST_WORDS + word]
-                );
+                bytes32 expected = before_.requestWords[tokenId * REQUEST_WORDS + word];
+                if (
+                    legacyRequestsReset && word == 4
+                        && uint256(before_.requestWords[tokenId * REQUEST_WORDS + 4]) == IN_PROGRESS_STATUS
+                ) {
+                    expected = bytes32(REQUESTED_STATUS);
+                }
+                assertEq(vm.load(WITHDRAWAL_QUEUE_PROXY, bytes32(uint256(base) + word)), expected);
             }
 
             (bool exists, address owner) = _ownerOf(tokenId);
@@ -622,6 +652,7 @@ contract V2MockMainnetForkTest is Test {
         assertTrue(_vaultV2.hasRole(_vaultV2.PARAMETER_MANAGER_ROLE(), PARAMETER_MANAGER));
         assertTrue(_vaultV2.hasRole(_vaultV2.MARKET_MODE_MANAGER_ROLE(), MARKET_MODE_MANAGER));
         assertTrue(_vaultV2.hasRole(_vaultV2.OPERATOR_ROLE(), OPERATOR));
+        assertTrue(_vaultV2.hasRole(_vaultV2.SURPLUS_MANAGER_ROLE(), SURPLUS_MANAGER));
         assertTrue(_vaultV2.hasRole(_vaultV2.BLACKLISTER_ROLE(), BLACKLISTER));
         assertTrue(_vaultV2.hasRole(_vaultV2.ENFORCER_ROLE(), ENFORCER));
         assertTrue(_vaultV2.hasRole(_vaultV2.PAUSER_ROLE(), PAUSER));

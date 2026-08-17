@@ -14,7 +14,9 @@ import {IAccountingModule} from "../../../src/v2/interfaces/modules/IAccountingM
 import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
 import {ISTRConModule} from "../../../src/v2/interfaces/modules/ISTRConModule.sol";
 import {ITradableModule} from "../../../src/v2/interfaces/modules/ITradableModule.sol";
+import {ISTRConPriceOracle} from "../../../src/v2/interfaces/oracles/ISTRConPriceOracle.sol";
 import {IWithdrawalQueueERC721} from "../../../src/v2/interfaces/IWithdrawalQueueERC721.sol";
+import {STRConModule} from "../../../src/v2/modules/STRCon/STRConModule.sol";
 import {BoundMirrorModuleMock, V2InitializationHelper} from "../helpers/V2InitializationHelper.sol";
 
 contract FixedModuleUSDatMock is ERC20 {
@@ -110,6 +112,30 @@ contract FixedTradableModuleMock is ITradableModule {
     function sell(uint256) external pure {}
 }
 
+contract FixedModulePriceOracleMock is ISTRConPriceOracle {
+    error PricingFailed();
+
+    uint256 private immutable _PRICE;
+    bool private _pricingFails;
+
+    constructor(uint256 price_) {
+        _PRICE = price_;
+    }
+
+    function setPricingFails(bool pricingFails) external {
+        _pricingFails = pricingFails;
+    }
+
+    function decimals() external pure returns (uint8) {
+        return 8;
+    }
+
+    function getPrice() external view returns (uint256) {
+        if (_pricingFails) revert PricingFailed();
+        return _PRICE;
+    }
+}
+
 contract StakedUSDatFixedModuleAccountingTest is Test {
     uint256 private constant CASH = 37_000_003;
     uint256 private constant MIRROR_VALUE = 11_000_007;
@@ -199,6 +225,34 @@ contract StakedUSDatFixedModuleAccountingTest is Test {
 
         vm.expectRevert(FixedTradableModuleMock.PricingFailed.selector);
         vault.totalAssets();
+    }
+
+    function test_totalAssets_RecoversAfterOracleRotationWhilePaused() public {
+        StakedUSDat recoveryVault = _deployVault();
+        FixedAccountingModuleMock recoveryMirror = new FixedAccountingModuleMock(address(recoveryVault));
+        FixedModulePriceOracleMock failedOracle = new FixedModulePriceOracleMock(100e8);
+        STRConModule recoveryModule = new STRConModule(address(recoveryVault), address(usdat), failedOracle);
+        _initializeV2(recoveryVault, recoveryMirror, recoveryModule);
+
+        vm.prank(address(recoveryVault));
+        recoveryModule.buy(1e18);
+        failedOracle.setPricingFails(true);
+
+        vm.expectRevert(FixedModulePriceOracleMock.PricingFailed.selector);
+        recoveryVault.totalAssets();
+        assertEq(recoveryVault.maxDeposit(address(this)), 0);
+        assertEq(recoveryVault.maxMint(address(this)), 0);
+
+        recoveryVault.pause();
+        FixedModulePriceOracleMock replacementOracle = new FixedModulePriceOracleMock(102e8);
+        recoveryModule.setOracle(address(replacementOracle));
+
+        assertEq(recoveryModule.balance(), 1e18);
+        assertEq(recoveryVault.totalAssets(), 102e6);
+
+        recoveryVault.unpause();
+        assertEq(recoveryVault.maxDeposit(address(this)), type(uint256).max);
+        assertEq(recoveryVault.maxMint(address(this)), type(uint256).max);
     }
 
     function test_maxDepositAndMaxMint_ReturnMaximumWhenPricingIsHealthy() public {

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.36;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -119,7 +119,6 @@ contract WithdrawalQueueERC721 is
     /// Existing requests are deliberately untouched: the v1 minUsdatReceived slot
     /// is reinterpreted in place as the net-of-fee minSharePrice without numeric
     /// conversion.
-    /// Every v1 InProgress request must be returned to Requested before the upgrade.
     /// @param operator The OPERATOR_ROLE holder (processRequests).
     /// @param enforcer The ENFORCER_ROLE holder (seizeRequest, seize).
     /// @param pauser The PAUSER_ROLE holder.
@@ -140,11 +139,20 @@ contract WithdrawalQueueERC721 is
         _grantRole(UNPAUSER_ROLE, unpauser);
     }
 
+    /// @inheritdoc IWithdrawalQueueERC721
+    function resetLegacyInProgressRequest(uint256 tokenId) external onlyRole(OPERATOR_ROLE) {
+        Request storage req = requests[tokenId];
+        require(req.status == RequestStatus.InProgress, RequestNotInProgress());
+        req.status = RequestStatus.Requested;
+
+        emit LegacyInProgressRequestReset(tokenId);
+    }
+
     /// @dev Authorizes an upgrade to a new implementation. Only callable by DEFAULT_ADMIN_ROLE.
     function _authorizeUpgrade(address) internal override onlyRole(DEFAULT_ADMIN_ROLE) {}
 
-    /// @dev Reverts if the given account is blacklisted in either StakedUSDat or USDat.
-    function _requireNotBlacklisted(address account) internal view {
+    /// @dev Reverts if the given account is blacklisted on StakedUSDat or frozen on USDat.
+    function _requireNotRestricted(address account) internal view {
         require(!STAKED_USDAT.isBlacklisted(account), AddressBlacklisted());
         require(!USDAT.isFrozen(account), AddressBlacklisted());
     }
@@ -158,7 +166,7 @@ contract WithdrawalQueueERC721 is
     function _validatedRecoveryAddress() internal view returns (address recovery) {
         recovery = STAKED_USDAT.recoveryAddress();
         require(recovery != address(0), ZeroAmount());
-        _requireNotBlacklisted(recovery);
+        _requireNotRestricted(recovery);
     }
 
     // ============ Request Creation ============
@@ -172,7 +180,7 @@ contract WithdrawalQueueERC721 is
         returns (uint256 tokenId)
     {
         require(shares != 0, ZeroAmount());
-        _requireNotBlacklisted(user);
+        _requireNotRestricted(user);
 
         tokenId = nextTokenId++;
 
@@ -192,7 +200,7 @@ contract WithdrawalQueueERC721 is
     /// @inheritdoc IWithdrawalQueueERC721
     function updateMinSharePrice(uint256 tokenId, uint256 newMinSharePrice) external whenNotPaused {
         require(ownerOf(tokenId) == msg.sender, NotOwner());
-        _requireNotBlacklisted(msg.sender);
+        _requireNotRestricted(msg.sender);
 
         Request storage req = requests[tokenId];
         require(req.status == RequestStatus.Requested, RequestNotOpen());
@@ -206,7 +214,7 @@ contract WithdrawalQueueERC721 is
     function cancelRequest(uint256 tokenId) external nonReentrant whenNotPaused {
         address owner = ownerOf(tokenId);
         require(owner == msg.sender, NotOwner());
-        _requireNotBlacklisted(owner);
+        _requireNotRestricted(owner);
 
         Request storage req = requests[tokenId];
         require(req.status == RequestStatus.Requested, RequestNotOpen());
@@ -223,27 +231,33 @@ contract WithdrawalQueueERC721 is
     // ============ Processing Functions ============
 
     /// @inheritdoc IWithdrawalQueueERC721
-    /// @dev Each request settles completely or remains unchanged. Expected limit and
-    /// liquidity failures do not stop the batch; any invalid entry reverts the whole
-    /// transaction, including earlier settlements.
+    /// @dev Missing, closed, below-limit, and illiquid requests do not stop the batch.
+    /// Unexpected vault failures revert the whole transaction, including earlier settlements.
     function processRequests(uint256[] calldata tokenIds) external nonReentrant whenNotPaused onlyRole(OPERATOR_ROLE) {
         uint256 count = tokenIds.length;
+        if (count == 0) return;
+
+        STAKED_USDAT.beginRedemptionBatch();
 
         for (uint256 i = 0; i < count; i++) {
             uint256 tokenId = tokenIds[i];
             Request storage req = requests[tokenId];
-            require(req.status == RequestStatus.Requested, RequestNotOpen());
+            if (_ownerOf(tokenId) == address(0) || req.status != RequestStatus.Requested) continue;
 
-            (IStakedUSDat.RedemptionResult result, uint256 usdat) =
+            (IStakedUSDat.RedemptionResult result, uint256 net) =
                 STAKED_USDAT.redeemQueuedShares(req.shares, req.minSharePrice);
             if (result == IStakedUSDat.RedemptionResult.BelowLimit) continue;
-            if (result == IStakedUSDat.RedemptionResult.InsufficientLiquidity) continue;
+            if (result == IStakedUSDat.RedemptionResult.InsufficientLiquidity) {
+                continue;
+            }
 
-            req.usdatOwed = usdat;
+            req.usdatOwed = net;
             req.status = RequestStatus.Processed;
 
-            emit WithdrawalProcessed(tokenId, req.shares, usdat);
+            emit WithdrawalProcessed(tokenId, req.shares, net);
         }
+
+        STAKED_USDAT.endRedemptionBatch();
     }
 
     // ============ Claiming Functions ============
@@ -252,7 +266,7 @@ contract WithdrawalQueueERC721 is
     function claim(uint256 tokenId) external nonReentrant whenNotPaused returns (uint256 amount) {
         address owner = ownerOf(tokenId);
         require(owner == msg.sender, NotOwner());
-        _requireNotBlacklisted(owner);
+        _requireNotRestricted(owner);
 
         Request storage req = requests[tokenId];
         require(req.status == RequestStatus.Processed, RequestNotProcessed());
@@ -330,8 +344,9 @@ contract WithdrawalQueueERC721 is
     /// @dev Applies queue restrictions to ordinary owner/approved-operator transfers.
     /// Enforcement uses the separately authorized and validated seizure functions.
     function transferFrom(address from, address to, uint256 tokenId) public override(ERC721Upgradeable, IERC721) {
-        _requireNotBlacklisted(from);
-        _requireNotBlacklisted(to);
+        _requireNotRestricted(msg.sender);
+        _requireNotRestricted(from);
+        _requireNotRestricted(to);
 
         super.transferFrom(from, to, tokenId);
     }
@@ -341,13 +356,13 @@ contract WithdrawalQueueERC721 is
         return super._update(to, tokenId, auth);
     }
 
-    /// @dev Override required by Solidity for multiple inheritance.
+    /// @dev Advertises the protocol interface in addition to inherited ERC-165 support.
     function supportsInterface(bytes4 interfaceId)
         public
         view
         override(ERC721EnumerableUpgradeable, AccessControlUpgradeable)
         returns (bool)
     {
-        return super.supportsInterface(interfaceId);
+        return interfaceId == type(IWithdrawalQueueERC721).interfaceId || super.supportsInterface(interfaceId);
     }
 }
