@@ -1076,12 +1076,8 @@ Capability-named (`keccak256("<NAME>_ROLE")`):
 | `DEFAULT_ADMIN_ROLE` | Grant/revoke roles; authorize UUPS upgrades; execute `migrate` | StakedUSDat and queue, with separate grants | No other role | Yes |
 | `PARAMETER_MANAGER_ROLE` | Set vault fees, vesting/reward limits, migration parameters, `recoveryAddress`, and `surplusSource`; directly set the fixed policy's execution vehicle, tolerance and capacity; set the active STRCon oracle wrapper | Vault role registry, including direct authorization reads by the fixed policy, bound modules, and wrapper | No other role | Yes |
 | `MARKET_MODE_MANAGER_ROLE` | Set Elevated or Restricted and grant expiring Regular authorization for at most eight hours; cannot set fee amounts or clear hard pause | StakedUSDat | `OPERATOR_ROLE` only | No |
-<<<<<<< HEAD
-| `OPERATOR_ROLE` | Execute `buy`/`sell`, transfer surplus and STRCMirrorModule rewards, select/order queue requests for processing, and reset inherited queue requests from `InProgress` to `Requested` | StakedUSDat and queue, with separate grants | `MARKET_MODE_MANAGER_ROLE` only | No |
-=======
 | `OPERATOR_ROLE` | Execute `buy`/`sell`, transfer STRCMirrorModule rewards, and select/order queue requests for processing | StakedUSDat and queue, with separate grants | `MARKET_MODE_MANAGER_ROLE` only | No |
 | `SURPLUS_MANAGER_ROLE` | Start a capped surplus tranche from the configured `surplusSource`; cannot select the source or destination | StakedUSDat | No other role | No |
->>>>>>> origin/sm-susdat-v2-spec
 | `BLACKLISTER_ROLE` | Add/remove the canonical sUSDat blacklist; cannot move or destroy positions | StakedUSDat | No other role | No |
 | `ENFORCER_ROLE` | Seize locally blacklisted sUSDat positions, seize queue claims eligible under the sUSDat blacklist or USDat freeze list, and rescue untracked vault excess; cannot blacklist or freeze | StakedUSDat and queue, with separate grants | No other role | Yes |
 | `PAUSER_ROLE` | Invoke vault hard pause or queue-local pause; cannot unpause | StakedUSDat and queue, with separate grants | No other role | No |
