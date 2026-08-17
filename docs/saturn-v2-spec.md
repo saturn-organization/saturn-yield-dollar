@@ -62,6 +62,8 @@ sUSDat mutations; queue-local pause separately gates queue-only actions (§2.6).
 Retained with narrower surfaces: request creation and share escrow, single-request reads,
 current-owner request enumeration, NFT ownership, and pause. Cancellation, compliance, and
 roles change per §2.6–2.8.
+ERC-165 advertises `IWithdrawalQueueERC721` in addition to the inherited ERC-721,
+ERC-721 metadata/enumeration, and AccessControl interfaces.
 
 ### Removed functions
 
