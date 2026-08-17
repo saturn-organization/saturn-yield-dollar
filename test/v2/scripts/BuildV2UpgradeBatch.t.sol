@@ -52,6 +52,7 @@ contract BuildV2UpgradeBatchTest is Test {
             strconModule: ISTRConModule(builder.STRCON_MODULE()),
             executionPolicy: ISTRConExecutionPolicy(builder.EXECUTION_POLICY()),
             recoveryAddress: builder.RECOVERY_ADDRESS(),
+            surplusSource: builder.SURPLUS_SOURCE(),
             executionVehicle: builder.EXECUTION_VEHICLE(),
             baseRedemptionFeeBps: builder.BASE_REDEMPTION_FEE_BPS(),
             elevatedRedemptionFeeBps: builder.ELEVATED_REDEMPTION_FEE_BPS(),
@@ -65,6 +66,7 @@ contract BuildV2UpgradeBatchTest is Test {
             parameterManager: builder.VAULT_PARAMETER_MANAGER(),
             marketModeManager: builder.VAULT_MARKET_MODE_MANAGER(),
             operator: builder.VAULT_OPERATOR(),
+            surplusManager: builder.VAULT_SURPLUS_MANAGER(),
             blacklister: builder.VAULT_BLACKLISTER(),
             enforcer: builder.VAULT_ENFORCER(),
             pauser: builder.VAULT_PAUSER(),
@@ -77,7 +79,7 @@ contract BuildV2UpgradeBatchTest is Test {
             (builder.QUEUE_OPERATOR(), builder.QUEUE_ENFORCER(), builder.QUEUE_PAUSER(), builder.QUEUE_UNPAUSER())
         );
 
-        assertEq(_selector(batch.vaultInitializer), bytes4(0x9306a37a));
+        assertEq(_selector(batch.vaultInitializer), bytes4(0x4a1cd8c2));
         assertEq(_selector(batch.vaultInitializer), IStakedUSDat.initializeV2.selector);
         assertEq(_selector(batch.queueInitializer), IWithdrawalQueueV2Initializer.initializeV2.selector);
         assertEq(batch.vaultInitializer, expectedVaultInitializer);

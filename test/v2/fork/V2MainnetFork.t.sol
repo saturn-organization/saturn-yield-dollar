@@ -77,6 +77,8 @@ contract V2MockMainnetForkTest is Test {
     address private constant RECOVERY_ADDRESS = address(0x1008);
     address private constant EXECUTION_VEHICLE = address(0x1009);
     address private constant EXECUTOR = address(0x1010);
+    address private constant SURPLUS_SOURCE = address(0x1011);
+    address private constant SURPLUS_MANAGER = address(0x1012);
 
     uint16 private constant BASE_REDEMPTION_FEE_BPS = 5;
     uint16 private constant ELEVATED_REDEMPTION_FEE_BPS = 10;
@@ -212,7 +214,7 @@ contract V2MockMainnetForkTest is Test {
         assertTrue(IAccessControl(STAKED_USDAT_PROXY).hasRole(bytes32(0), TIMELOCK));
         assertTrue(IAccessControl(WITHDRAWAL_QUEUE_PROXY).hasRole(bytes32(0), TIMELOCK));
 
-        for (uint256 slot = 10; slot <= 17; ++slot) {
+        for (uint256 slot = 10; slot <= 18; ++slot) {
             assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(slot)), bytes32(0));
         }
     }
@@ -295,6 +297,7 @@ contract V2MockMainnetForkTest is Test {
             strconModule: _module,
             executionPolicy: _policy,
             recoveryAddress: RECOVERY_ADDRESS,
+            surplusSource: SURPLUS_SOURCE,
             executionVehicle: EXECUTION_VEHICLE,
             baseRedemptionFeeBps: BASE_REDEMPTION_FEE_BPS,
             elevatedRedemptionFeeBps: ELEVATED_REDEMPTION_FEE_BPS,
@@ -308,6 +311,7 @@ contract V2MockMainnetForkTest is Test {
             parameterManager: PARAMETER_MANAGER,
             marketModeManager: MARKET_MODE_MANAGER,
             operator: OPERATOR,
+            surplusManager: SURPLUS_MANAGER,
             blacklister: BLACKLISTER,
             enforcer: ENFORCER,
             pauser: PAUSER,
@@ -482,6 +486,7 @@ contract V2MockMainnetForkTest is Test {
         assertEq(address(_vaultV2.strconModule()), address(_module));
         assertEq(address(_vaultV2.executionPolicy()), address(_policy));
         assertEq(_vaultV2.recoveryAddress(), RECOVERY_ADDRESS);
+        assertEq(_vaultV2.surplusSource(), SURPLUS_SOURCE);
         assertEq(_vaultV2.baseRedemptionFeeBps(), BASE_REDEMPTION_FEE_BPS);
         assertEq(_vaultV2.elevatedRedemptionFeeBps(), ELEVATED_REDEMPTION_FEE_BPS);
         assertEq(_vaultV2.elevatedDepositFeeBps(), ELEVATED_DEPOSIT_FEE_BPS);
@@ -503,15 +508,16 @@ contract V2MockMainnetForkTest is Test {
         uint256 expectedSlotTen = uint256(uint160(RECOVERY_ADDRESS))
             | (uint256(IStakedUSDat.MarketMode.Elevated) << 160) | (uint256(BASE_REDEMPTION_FEE_BPS) << 168)
             | (uint256(ELEVATED_REDEMPTION_FEE_BPS) << 184);
-        uint256 expectedSlotSixteen = uint256(uint160(address(_policy))) | (uint256(MIGRATION_TOLERANCE_BPS) << 160);
+        uint256 expectedSlotSeventeen = uint256(uint160(address(_policy))) | (uint256(MIGRATION_TOLERANCE_BPS) << 160);
         assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(10))), bytes32(expectedSlotTen));
         assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(11))), bytes32(uint256(uint160(address(_mirror)))));
         assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(12))), bytes32(uint256(uint160(address(_module)))));
         assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(13))), bytes32(0));
         assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(14))), bytes32(0));
         assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(15))), bytes32(uint256(3 days)));
-        assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(16))), bytes32(expectedSlotSixteen));
-        assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(17))), bytes32(0));
+        assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(16))), bytes32(uint256(uint160(SURPLUS_SOURCE))));
+        assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(17))), bytes32(expectedSlotSeventeen));
+        assertEq(vm.load(STAKED_USDAT_PROXY, bytes32(uint256(18))), bytes32(0));
     }
 
     function _snapshotQueueV1() private view returns (QueueSnapshot memory snapshot) {
@@ -619,6 +625,7 @@ contract V2MockMainnetForkTest is Test {
         assertTrue(_vaultV2.hasRole(_vaultV2.PARAMETER_MANAGER_ROLE(), PARAMETER_MANAGER));
         assertTrue(_vaultV2.hasRole(_vaultV2.MARKET_MODE_MANAGER_ROLE(), MARKET_MODE_MANAGER));
         assertTrue(_vaultV2.hasRole(_vaultV2.OPERATOR_ROLE(), OPERATOR));
+        assertTrue(_vaultV2.hasRole(_vaultV2.SURPLUS_MANAGER_ROLE(), SURPLUS_MANAGER));
         assertTrue(_vaultV2.hasRole(_vaultV2.BLACKLISTER_ROLE(), BLACKLISTER));
         assertTrue(_vaultV2.hasRole(_vaultV2.ENFORCER_ROLE(), ENFORCER));
         assertTrue(_vaultV2.hasRole(_vaultV2.PAUSER_ROLE(), PAUSER));
