@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity 0.8.36;
 
 import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
 import {IERC4626} from "@openzeppelin/contracts/interfaces/IERC4626.sol";
@@ -49,6 +49,7 @@ contract STRCMirrorModule is IAccountingModule {
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
     bytes32 public constant PARAMETER_MANAGER_ROLE = keccak256("PARAMETER_MANAGER_ROLE");
     uint256 public constant BPS_DENOMINATOR = 10_000;
+    uint256 public constant MAX_REWARDS_BPS = 500;
     uint256 public constant MAX_VESTING_PERIOD = 90 days;
 
     // ============ Immutables ============
@@ -149,7 +150,9 @@ contract STRCMirrorModule is IAccountingModule {
         if (initialVestingPeriod == 0 || initialVestingPeriod > MAX_VESTING_PERIOD) {
             revert InvalidVestingPeriod();
         }
-        if (initialMaxRewardsBps == 0) revert InvalidMaxRewardsBps();
+        if (initialMaxRewardsBps == 0 || initialMaxRewardsBps > MAX_REWARDS_BPS) {
+            revert InvalidMaxRewardsBps();
+        }
 
         uint256 initialUnvested =
             _getUnvestedAmount(initialVestingAmount, initialLastDistributionTimestamp, initialVestingPeriod);
@@ -197,9 +200,9 @@ contract STRCMirrorModule is IAccountingModule {
         emit VestingPeriodUpdated(oldPeriod, newVestingPeriod);
     }
 
-    /// @notice Updates the per-transfer reward cap without imposing an upper bound.
+    /// @notice Updates the per-transfer reward cap within the hard protocol maximum.
     function setMaxRewardsBps(uint256 newMaxRewardsBps) external whenActive onlyVaultRole(PARAMETER_MANAGER_ROLE) {
-        if (newMaxRewardsBps == 0) revert InvalidMaxRewardsBps();
+        if (newMaxRewardsBps == 0 || newMaxRewardsBps > MAX_REWARDS_BPS) revert InvalidMaxRewardsBps();
 
         maxRewardsBps = newMaxRewardsBps;
 

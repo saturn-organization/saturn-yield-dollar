@@ -80,6 +80,8 @@ contract BuildV2UpgradeBatch is Script {
     // =========================================================================
 
     address public constant RECOVERY_ADDRESS = address(0);
+    // Dedicated USDat wallet that preapproves the vault for surplus transfers.
+    address public constant SURPLUS_SOURCE = address(0);
     address public constant EXECUTION_VEHICLE = address(0);
 
     uint16 public constant BASE_REDEMPTION_FEE_BPS = 0;
@@ -105,6 +107,7 @@ contract BuildV2UpgradeBatch is Script {
     address public constant VAULT_PARAMETER_MANAGER = address(0);
     address public constant VAULT_MARKET_MODE_MANAGER = address(0);
     address public constant VAULT_OPERATOR = address(0);
+    address public constant VAULT_SURPLUS_MANAGER = address(0);
     address public constant VAULT_BLACKLISTER = address(0);
     address public constant VAULT_ENFORCER = address(0);
     address public constant VAULT_PAUSER = address(0);
@@ -211,6 +214,7 @@ contract BuildV2UpgradeBatch is Script {
             strconModule: ISTRConModule(STRCON_MODULE),
             executionPolicy: ISTRConExecutionPolicy(EXECUTION_POLICY),
             recoveryAddress: RECOVERY_ADDRESS,
+            surplusSource: SURPLUS_SOURCE,
             executionVehicle: EXECUTION_VEHICLE,
             baseRedemptionFeeBps: BASE_REDEMPTION_FEE_BPS,
             elevatedRedemptionFeeBps: ELEVATED_REDEMPTION_FEE_BPS,
@@ -224,6 +228,7 @@ contract BuildV2UpgradeBatch is Script {
             parameterManager: VAULT_PARAMETER_MANAGER,
             marketModeManager: VAULT_MARKET_MODE_MANAGER,
             operator: VAULT_OPERATOR,
+            surplusManager: VAULT_SURPLUS_MANAGER,
             blacklister: VAULT_BLACKLISTER,
             enforcer: VAULT_ENFORCER,
             pauser: VAULT_PAUSER,
@@ -245,11 +250,13 @@ contract BuildV2UpgradeBatch is Script {
         _requireSet(STRCON_MODULE, "STRCON_MODULE");
         _requireSet(EXECUTION_POLICY, "EXECUTION_POLICY");
         _requireSet(RECOVERY_ADDRESS, "RECOVERY_ADDRESS");
+        _requireSet(SURPLUS_SOURCE, "SURPLUS_SOURCE");
         _requireSet(EXECUTION_VEHICLE, "EXECUTION_VEHICLE");
 
         _requireSet(VAULT_PARAMETER_MANAGER, "VAULT_PARAMETER_MANAGER");
         _requireSet(VAULT_MARKET_MODE_MANAGER, "VAULT_MARKET_MODE_MANAGER");
         _requireSet(VAULT_OPERATOR, "VAULT_OPERATOR");
+        _requireSet(VAULT_SURPLUS_MANAGER, "VAULT_SURPLUS_MANAGER");
         _requireSet(VAULT_BLACKLISTER, "VAULT_BLACKLISTER");
         _requireSet(VAULT_ENFORCER, "VAULT_ENFORCER");
         _requireSet(VAULT_PAUSER, "VAULT_PAUSER");
