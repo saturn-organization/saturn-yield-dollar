@@ -256,6 +256,7 @@ contract StakedUSDatSellTest is Test {
         uint256 shareSupply;
         uint256 surplusAmount;
         uint256 surplusStart;
+        uint256 surplusSwept;
         uint128 capacityMaximum;
         uint128 capacityAvailable;
         uint128 capacityRefillPerDay;
@@ -269,6 +270,7 @@ contract StakedUSDatSellTest is Test {
     uint256 private constant AMOUNT_IN = 100e18;
     uint256 private constant BOUNDARY_AMOUNT_OUT = 9_500_000_000;
     uint256 private constant FAVORABLE_AMOUNT_OUT = 10_100_000_000;
+    uint256 private constant SURPLUS_SWEPT_SLOT = 18;
 
     SellTokenMock private usdat;
     SellTokenMock private strcon;
@@ -358,7 +360,7 @@ contract StakedUSDatSellTest is Test {
         assertEq(strcon.balanceOf(vehicle), beforeState.vehicleStrcon + AMOUNT_IN);
         assertEq(strcon.allowance(address(vault), vehicle), 0);
 
-        assertGe(usdat.balanceOf(address(vault)), vault.usdatBalance() + vault.surplusVestingAmount());
+        assertGe(usdat.balanceOf(address(vault)), vault.usdatBalance() + _remainingSurplus());
         assertGe(strcon.balanceOf(address(vault)), module.balance());
         assertEq(usdat.balanceOf(address(vault)) - vault.usdatBalance(), activeSurplus);
 
@@ -387,7 +389,7 @@ contract StakedUSDatSellTest is Test {
         assertEq(strcon.balanceOf(address(vault)), beforeState.vaultStrcon - amountIn);
         assertEq(module.balance(), beforeState.moduleBalance - amountIn);
         assertEq(strcon.balanceOf(vehicle), beforeState.vehicleStrcon + amountIn);
-        assertGe(usdat.balanceOf(address(vault)), vault.usdatBalance() + vault.surplusVestingAmount());
+        assertGe(usdat.balanceOf(address(vault)), vault.usdatBalance() + _remainingSurplus());
         assertGe(strcon.balanceOf(address(vault)), module.balance());
         assertEq(vault.balanceOf(address(this)), beforeState.shareBalance);
         assertEq(vault.totalSupply(), beforeState.shareSupply);
@@ -401,6 +403,24 @@ contract StakedUSDatSellTest is Test {
 
         assertEq(vault.usdatBalance(), CASH + FAVORABLE_AMOUNT_OUT);
         assertEq(module.balance(), POSITION - AMOUNT_IN);
+    }
+
+    function test_sell_PartiallySweepsVestedSurplusAndProtectsRemainingSurplus() public {
+        uint256 surplus = 30e6;
+        usdat.mint(address(this), surplus);
+        usdat.approve(address(vault), surplus);
+        vault.transferInSurplus(surplus);
+
+        vm.warp(block.timestamp + 1 days);
+        uint256 unvested = vault.getUnvestedSurplus();
+        uint256 released = surplus - unvested;
+
+        _sell(AMOUNT_IN, BOUNDARY_AMOUNT_OUT, block.timestamp);
+
+        assertEq(vault.usdatBalance(), CASH + released + BOUNDARY_AMOUNT_OUT);
+        assertEq(_surplusSwept(), released);
+        assertEq(_remainingSurplus(), unvested);
+        assertEq(usdat.balanceOf(address(vault)), vault.usdatBalance() + unvested);
     }
 
     function test_sell_ConsumesGreaterOfActualUSDatAndCeilOracleNotional() public {
@@ -509,6 +529,12 @@ contract StakedUSDatSellTest is Test {
     }
 
     function test_sell_LateSTRConTransferFailureRollsBackEveryLeg() public {
+        uint256 surplus = 30e6;
+        usdat.mint(address(this), surplus);
+        usdat.approve(address(vault), surplus);
+        vault.transferInSurplus(surplus);
+        vm.warp(block.timestamp + 1 days);
+
         strcon.configureTransferBehavior(SellTokenMock.TransferBehavior.REVERT_TRANSFER, address(vault), 0);
         Snapshot memory beforeState = _snapshot(vehicle);
 
@@ -652,6 +678,7 @@ contract StakedUSDatSellTest is Test {
         state.shareSupply = vault.totalSupply();
         state.surplusAmount = vault.surplusVestingAmount();
         state.surplusStart = vault.surplusVestingStartTimestamp();
+        state.surplusSwept = _surplusSwept();
         (state.capacityMaximum, state.capacityAvailable, state.capacityRefillPerDay, state.capacityLastUpdated) =
             policy.executionCapacity();
     }
@@ -668,11 +695,20 @@ contract StakedUSDatSellTest is Test {
         assertEq(vault.totalSupply(), state.shareSupply);
         assertEq(vault.surplusVestingAmount(), state.surplusAmount);
         assertEq(vault.surplusVestingStartTimestamp(), state.surplusStart);
+        assertEq(_surplusSwept(), state.surplusSwept);
         (uint128 capacityMaximum, uint128 capacityAvailable, uint128 capacityRefillPerDay, uint64 capacityLastUpdated) =
             policy.executionCapacity();
         assertEq(capacityMaximum, state.capacityMaximum);
         assertEq(capacityAvailable, state.capacityAvailable);
         assertEq(capacityRefillPerDay, state.capacityRefillPerDay);
         assertEq(capacityLastUpdated, state.capacityLastUpdated);
+    }
+
+    function _remainingSurplus() private view returns (uint256) {
+        return vault.surplusVestingAmount() - _surplusSwept();
+    }
+
+    function _surplusSwept() private view returns (uint256) {
+        return uint256(vm.load(address(vault), bytes32(SURPLUS_SWEPT_SLOT)));
     }
 }

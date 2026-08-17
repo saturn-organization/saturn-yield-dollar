@@ -193,6 +193,35 @@ contract WithdrawalQueueLifecycleTest is Test {
         assertEq(queue.ownerOf(tokenId), alice);
     }
 
+    function test_nftTransfer_RejectsApprovedOperatorBlacklistedOnSUsdat() public {
+        _expectRestrictedApprovedOperatorTransferReverts(true);
+    }
+
+    function test_nftTransfer_RejectsApprovedOperatorFrozenOnUsdat() public {
+        _expectRestrictedApprovedOperatorTransferReverts(false);
+    }
+
+    function test_nftTransfer_AllowsUnrestrictedApprovedOperator() public {
+        uint256 requestedId = _createRequest(alice, 12e18, 1);
+        uint256 processedId = _createRequest(alice, 13e18, 2);
+        _makeProcessed(processedId, 9e6);
+
+        vm.startPrank(alice);
+        queue.approve(bob, requestedId);
+        queue.approve(bob, processedId);
+        vm.stopPrank();
+
+        vm.startPrank(bob);
+        queue.transferFrom(alice, carol, requestedId);
+        queue.safeTransferFrom(alice, carol, processedId);
+        vm.stopPrank();
+
+        assertEq(queue.ownerOf(requestedId), carol);
+        assertEq(queue.ownerOf(processedId), carol);
+        assertEq(queue.getApproved(requestedId), address(0));
+        assertEq(queue.getApproved(processedId), address(0));
+    }
+
     function test_getUserRequests_ReturnsAllCurrentlyOwnedRequests() public {
         uint256 requestedId = _createRequest(alice, 12e18, 1);
         uint256 processedId = _createRequest(alice, 13e18, 1);
@@ -882,6 +911,59 @@ contract WithdrawalQueueLifecycleTest is Test {
     function _setRequestWord(uint256 tokenId, uint256 offset, uint256 value) private {
         bytes32 base = keccak256(abi.encode(tokenId, REQUESTS_SLOT));
         vm.store(address(queue), bytes32(uint256(base) + offset), bytes32(value));
+    }
+
+    function _expectRestrictedApprovedOperatorTransferReverts(bool blacklistOnSUsdat) private {
+        uint256 requestedId = _createRequest(alice, 12e18, 1);
+        uint256 processedId = _createRequest(alice, 13e18, 2);
+        _makeProcessed(processedId, 9e6);
+
+        vm.startPrank(alice);
+        queue.approve(bob, requestedId);
+        queue.approve(bob, processedId);
+        vm.stopPrank();
+
+        if (blacklistOnSUsdat) {
+            stakedUsdat.setBlacklisted(bob, true);
+        } else {
+            usdat.setFrozen(bob, true);
+        }
+
+        vm.startPrank(bob);
+        vm.expectRevert(IWithdrawalQueueERC721.AddressBlacklisted.selector);
+        queue.transferFrom(alice, carol, requestedId);
+        vm.expectRevert(IWithdrawalQueueERC721.AddressBlacklisted.selector);
+        queue.safeTransferFrom(alice, carol, processedId);
+        vm.stopPrank();
+
+        assertEq(queue.ownerOf(requestedId), alice);
+        assertEq(queue.ownerOf(processedId), alice);
+        assertEq(queue.getApproved(requestedId), bob);
+        assertEq(queue.getApproved(processedId), bob);
+        assertEq(queue.balanceOf(alice), 2);
+        assertEq(queue.balanceOf(carol), 0);
+        assertEq(queue.totalSupply(), 2);
+
+        (
+            uint256 requestedShares,
+            uint256 requestedOwed,,
+            uint256 requestedLimit,
+            IWithdrawalQueueERC721.RequestStatus requestedStatus
+        ) = queue.requests(requestedId);
+        (
+            uint256 processedShares,
+            uint256 processedOwed,,
+            uint256 processedLimit,
+            IWithdrawalQueueERC721.RequestStatus processedStatus
+        ) = queue.requests(processedId);
+        assertEq(requestedShares, 12e18);
+        assertEq(requestedOwed, 0);
+        assertEq(requestedLimit, 1);
+        assertEq(uint256(requestedStatus), uint256(IWithdrawalQueueERC721.RequestStatus.Requested));
+        assertEq(processedShares, 13e18);
+        assertEq(processedOwed, 9e6);
+        assertEq(processedLimit, 2);
+        assertEq(uint256(processedStatus), uint256(IWithdrawalQueueERC721.RequestStatus.Processed));
     }
 
     function _expectRestrictedOwnerReverts(uint256 cancelId, uint256 claimId) private {
