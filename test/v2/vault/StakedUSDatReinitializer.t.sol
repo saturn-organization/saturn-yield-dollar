@@ -109,6 +109,7 @@ contract StakedUSDatReinitializerTest is Test {
     uint256 private constant ORACLE_PRICE = 100e8;
     uint256 private constant DEPOSIT = 1_000e6;
     uint256 private constant REWARD = 200_000;
+    uint256 private constant MAX_MIRROR_REWARDS_BPS = 500;
 
     ReinitializerUSDatMock private usdat;
     ReinitializerSTRCMock private strcon;
@@ -316,6 +317,23 @@ contract StakedUSDatReinitializerTest is Test {
         assertTrue(mirror.seeded());
         assertEq(StakedUSDatV2(proxy).migrationToleranceBps(), 50);
         assertEq(StakedUSDatV2(proxy).executionPolicy().executionVehicle(), executionVehicle);
+    }
+
+    function test_initializeV2_RejectsLegacyRewardsCapAboveMaximumAndCanRetry() public {
+        vaultV1.setMaxRewardsBps(MAX_MIRROR_REWARDS_BPS + 1);
+
+        vm.expectRevert(STRCMirrorModule.InvalidMaxRewardsBps.selector);
+        _upgrade(_validConfig());
+
+        assertEq(vaultV1.getStrcOracle(), address(legacyOracle));
+        assertEq(vaultV1.maxRewardsBps(), MAX_MIRROR_REWARDS_BPS + 1);
+        assertFalse(mirror.seeded());
+
+        vaultV1.setMaxRewardsBps(MAX_MIRROR_REWARDS_BPS);
+        _upgrade(_validConfig());
+
+        assertTrue(mirror.seeded());
+        assertEq(mirror.maxRewardsBps(), MAX_MIRROR_REWARDS_BPS);
     }
 
     function test_initializeV2_StartsElevatedAndRegularRequiresFreshAuthorization() public {

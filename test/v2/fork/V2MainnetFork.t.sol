@@ -91,6 +91,7 @@ contract V2MockMainnetForkTest is Test {
     uint128 private constant EXECUTION_CAPACITY = 1_000_000e6;
     uint128 private constant EXECUTION_REFILL_PER_DAY = 100_000e6;
     uint256 private constant ORACLE_DEVIATION_BPS = 500;
+    uint256 private constant MAX_MIRROR_REWARDS_BPS = 500;
 
     bytes32 private constant UPGRADE_SALT = keccak256("SATURN_V2_MOCK_FORK_UPGRADE");
     bytes32 private constant MIGRATION_SALT = keccak256("SATURN_V2_MOCK_FORK_MIGRATION");
@@ -203,6 +204,7 @@ contract V2MockMainnetForkTest is Test {
         assertEq(address(_vaultV1.asset()), USDAT);
         assertEq(_vaultV1.getWithdrawalQueue(), WITHDRAWAL_QUEUE_PROXY);
         assertEq(_vaultV1.getStrcOracle(), LEGACY_STRC_ORACLE);
+        assertLe(_vaultV1.maxRewardsBps(), MAX_MIRROR_REWARDS_BPS);
         assertEq(address(_queueV1.USDAT()), USDAT);
         assertEq(address(_queueV1.STAKED_USDAT()), STAKED_USDAT_PROXY);
 
@@ -481,7 +483,9 @@ contract V2MockMainnetForkTest is Test {
         assertEq(_mirror.vestingAmount(), uint256(before_.legacySlots[1]));
         assertEq(_mirror.lastDistributionTimestamp(), uint256(before_.legacySlots[2]));
         assertEq(_mirror.vestingPeriod(), uint256(before_.legacySlots[3]));
+        assertEq(_mirror.MAX_REWARDS_BPS(), MAX_MIRROR_REWARDS_BPS);
         assertEq(_mirror.maxRewardsBps(), uint256(before_.legacySlots[9]));
+        assertLe(_mirror.maxRewardsBps(), _mirror.MAX_REWARDS_BPS());
         assertEq(_mirror.getUnvestedAmount(), before_.unvestedStrc);
         assertTrue(_mirror.seeded());
         assertFalse(_mirror.retired());

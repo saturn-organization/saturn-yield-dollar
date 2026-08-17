@@ -322,23 +322,25 @@ recognizedValue = retired || balance == 0
     : Math.mulDiv(balance - unvested, price, 10 ** priceDecimals, Math.Rounding.Floor);
 ```
 
-`transferInRewards(strcAmount)` requires initialized, non-retired state, vault
-`OPERATOR_ROLE`, a nonzero amount, and no unvested reward. It limits the floor-rounded USD
-reward value to `floor(VAULT.totalAssets() * maxRewardsBps / 10_000)`, then increases
-`balance`, sets `vestingAmount = strcAmount`, and records the current timestamp.
+`MAX_REWARDS_BPS` is a hard-coded 500 bps. `transferInRewards(strcAmount)` requires
+initialized, non-retired state, vault `OPERATOR_ROLE`, a nonzero amount, and no unvested
+reward. It limits the floor-rounded USD reward value to
+`floor(VAULT.totalAssets() * maxRewardsBps / 10_000)`, then increases `balance`, sets
+`vestingAmount = strcAmount`, and records the current timestamp. This limit applies to each
+reward tranche rather than cumulative rewards.
 `setVestingPeriod` requires vault `PARAMETER_MANAGER_ROLE`, no unvested reward, and
 `0 < newPeriod ≤ 90 days`; it updates the period and clears `vestingAmount`.
-`setMaxRewardsBps` requires vault
-`PARAMETER_MANAGER_ROLE` and a nonzero value but has no upper bound. Both setters reject
-retired state.
+`setMaxRewardsBps` requires vault `PARAMETER_MANAGER_ROLE` and
+`0 < newMaxRewardsBps ≤ MAX_REWARDS_BPS`. Both setters reject retired state.
 
 Beginning with Step 1, vault rotations address only `strconModule`;
 `STRCMirrorModule.balance()` can increase only through `transferInRewards` until Step 2
 retires it. Vault-only
 `seed(initialBalance, initialVestingAmount, initialLastDistributionTimestamp,
 initialVestingPeriod, initialMaxRewardsBps)` initializes the balance and reward state once;
-it requires `0 < initialVestingPeriod ≤ 90 days`, nonzero `initialMaxRewardsBps`, and a
-computed unvested amount no greater than `initialBalance`. Vault-only `retire()` requires no
+it requires `0 < initialVestingPeriod ≤ 90 days`,
+`0 < initialMaxRewardsBps ≤ MAX_REWARDS_BPS`, and a computed unvested amount no greater
+than `initialBalance`. Vault-only `retire()` requires no
 unvested reward and permanently retires the module:
 
 ```solidity
@@ -1198,7 +1200,9 @@ The caller does not supply the legacy mirror state. The reinitializer reads
 `strcBalance`, `vestingAmount`, `lastDistributionTimestamp`, `vestingPeriod`, and
 `maxRewardsBps` directly from their preserved proxy slots and passes those exact values to
 `STRCMirrorModule.seed`. Oracle-wrapper parameters remain properties of the separately deployed
-wrapper rather than initializer calldata.
+wrapper rather than initializer calldata. The upgrade gate verifies that the live legacy
+`maxRewardsBps` satisfies `0 < maxRewardsBps ≤ MAX_REWARDS_BPS`; the value is copied exactly
+and is never clamped, so an out-of-range value blocks Step 1.
 
 Migration tolerance is a reviewed Step 1 initializer argument:
 

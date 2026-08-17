@@ -93,6 +93,7 @@ contract STRCMirrorModuleTest is Test {
     uint256 private constant DEFAULT_PRICE = 50e8;
     uint256 private constant DEFAULT_PERIOD = 30 days;
     uint256 private constant DEFAULT_MAX_REWARDS_BPS = 250;
+    uint256 private constant MAX_REWARDS_BPS = 500;
 
     STRCMirrorOracleMock private oracle;
     STRCMirrorVaultMock private vault;
@@ -171,12 +172,20 @@ contract STRCMirrorModuleTest is Test {
         assertEq(module.vestingPeriod(), 90 days);
     }
 
-    function test_seedRequiresNonzeroMaxRewardsWithoutUpperBound() public {
+    function test_seedEnforcesMaxRewardsBpsBounds() public {
         vm.expectRevert(STRCMirrorModule.InvalidMaxRewardsBps.selector);
         _seed(module, 0, 0, START, DEFAULT_PERIOD, 0);
+        assertFalse(module.seeded());
+        assertEq(module.maxRewardsBps(), 0);
 
-        _seed(module, 0, 0, START, DEFAULT_PERIOD, 10_001);
-        assertEq(module.maxRewardsBps(), 10_001);
+        vm.expectRevert(STRCMirrorModule.InvalidMaxRewardsBps.selector);
+        _seed(module, 0, 0, START, DEFAULT_PERIOD, MAX_REWARDS_BPS + 1);
+        assertFalse(module.seeded());
+        assertEq(module.maxRewardsBps(), 0);
+
+        _seed(module, 0, 0, START, DEFAULT_PERIOD, MAX_REWARDS_BPS);
+        assertTrue(module.seeded());
+        assertEq(module.maxRewardsBps(), MAX_REWARDS_BPS);
     }
 
     function test_seedChecksComputedUnvestedRatherThanRawVestingAmount() public {
@@ -345,7 +354,7 @@ contract STRCMirrorModuleTest is Test {
         assertEq(module.lastDistributionTimestamp(), START - 10);
     }
 
-    function test_setMaxRewardsBpsRequiresActiveParameterManagerAndNonzeroValue() public {
+    function test_setMaxRewardsBpsRequiresActiveParameterManager() public {
         vm.expectRevert(STRCMirrorModule.STRCMirrorInactive.selector);
         module.setMaxRewardsBps(1);
 
@@ -354,20 +363,27 @@ contract STRCMirrorModuleTest is Test {
 
         vm.expectRevert(STRCMirrorModule.Unauthorized.selector);
         module.setMaxRewardsBps(1);
-
-        vault.setRole(module.PARAMETER_MANAGER_ROLE(), address(this), true);
-        vm.expectRevert(STRCMirrorModule.InvalidMaxRewardsBps.selector);
-        module.setMaxRewardsBps(0);
     }
 
-    function test_setMaxRewardsBpsHasNoUpperBoundAndWorksDuringVesting() public {
-        _seed(module, 11, 11, START, DEFAULT_PERIOD, DEFAULT_MAX_REWARDS_BPS);
+    function test_setMaxRewardsBpsEnforcesBoundsAndWorksDuringVesting() public {
+        uint256 initialMaxRewardsBps = DEFAULT_MAX_REWARDS_BPS;
+        _seed(module, 11, 11, START, DEFAULT_PERIOD, initialMaxRewardsBps);
+
+        vm.expectRevert(STRCMirrorModule.InvalidMaxRewardsBps.selector);
+        module.setMaxRewardsBps(0);
+        assertEq(module.maxRewardsBps(), initialMaxRewardsBps);
+        assertEq(module.getUnvestedAmount(), 11);
+
+        vm.expectRevert(STRCMirrorModule.InvalidMaxRewardsBps.selector);
+        module.setMaxRewardsBps(MAX_REWARDS_BPS + 1);
+        assertEq(module.maxRewardsBps(), initialMaxRewardsBps);
+        assertEq(module.getUnvestedAmount(), 11);
 
         vm.expectEmit(false, false, false, true, address(module));
-        emit MaxRewardsBpsUpdated(10_001);
-        module.setMaxRewardsBps(10_001);
+        emit MaxRewardsBpsUpdated(MAX_REWARDS_BPS);
+        module.setMaxRewardsBps(MAX_REWARDS_BPS);
 
-        assertEq(module.maxRewardsBps(), 10_001);
+        assertEq(module.maxRewardsBps(), MAX_REWARDS_BPS);
         assertEq(module.getUnvestedAmount(), 11);
     }
 
