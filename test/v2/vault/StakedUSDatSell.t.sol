@@ -270,7 +270,7 @@ contract StakedUSDatSellTest is Test {
     uint256 private constant AMOUNT_IN = 100e18;
     uint256 private constant BOUNDARY_AMOUNT_OUT = 9_500_000_000;
     uint256 private constant FAVORABLE_AMOUNT_OUT = 10_100_000_000;
-    uint256 private constant SURPLUS_SWEPT_SLOT = 17;
+    uint256 private constant SURPLUS_SWEPT_SLOT = 18;
 
     SellTokenMock private usdat;
     SellTokenMock private strcon;

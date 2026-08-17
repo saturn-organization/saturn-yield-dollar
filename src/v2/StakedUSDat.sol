@@ -51,6 +51,9 @@ contract StakedUSDat is
     /// @notice Role identifier for vault operations that move assets.
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
 
+    /// @notice Role identifier for transferring surplus into the vault.
+    bytes32 public constant SURPLUS_MANAGER_ROLE = keccak256("SURPLUS_MANAGER_ROLE");
+
     /// @notice Role identifier for selecting the current market mode
     bytes32 public constant MARKET_MODE_MANAGER_ROLE = keccak256("MARKET_MODE_MANAGER_ROLE");
 
@@ -165,6 +168,9 @@ contract StakedUSDat is
     uint256 public override surplusVestingPeriod;
 
     /// @inheritdoc IStakedUSDat
+    address public override surplusSource;
+
+    /// @inheritdoc IStakedUSDat
     ISTRConExecutionPolicy public override executionPolicy;
 
     /// @inheritdoc IStakedUSDat
@@ -265,6 +271,7 @@ contract StakedUSDat is
         strcMirrorModule = config.strcMirrorModule;
         strconModule = config.strconModule;
         executionPolicy = config.executionPolicy;
+        _setSurplusSource(config.surplusSource);
         _setRecoveryAddress(config.recoveryAddress);
         _setRedemptionFees(config.baseRedemptionFeeBps, config.elevatedRedemptionFeeBps);
         _setElevatedDepositFee(config.elevatedDepositFeeBps);
@@ -283,6 +290,7 @@ contract StakedUSDat is
         _grantV2Role(PARAMETER_MANAGER_ROLE, roles.parameterManager);
         _grantV2Role(MARKET_MODE_MANAGER_ROLE, roles.marketModeManager);
         _grantV2Role(OPERATOR_ROLE, roles.operator);
+        _grantV2Role(SURPLUS_MANAGER_ROLE, roles.surplusManager);
         _grantV2Role(BLACKLISTER_ROLE, roles.blacklister);
         _grantV2Role(ENFORCER_ROLE, roles.enforcer);
         _grantV2Role(PAUSER_ROLE, roles.pauser);
@@ -443,7 +451,7 @@ contract StakedUSDat is
         external
         nonReentrant
         whenNotPaused
-        onlyRole(OPERATOR_ROLE)
+        onlyRole(SURPLUS_MANAGER_ROLE)
         notZero(amount)
     {
         _sweep();
@@ -452,7 +460,7 @@ contract StakedUSDat is
         uint256 maximumSurplus = Math.mulDiv(totalAssets(), MAX_SURPLUS_BPS, BPS_DENOMINATOR);
         require(amount <= maximumSurplus, SurplusExceedsMax());
 
-        IERC20(asset()).safeTransferFrom(msg.sender, address(this), amount);
+        IERC20(asset()).safeTransferFrom(surplusSource, address(this), amount);
 
         surplusVestingAmount = amount;
         surplusVestingStartTimestamp = block.timestamp;
@@ -873,6 +881,11 @@ contract StakedUSDat is
     }
 
     /// @inheritdoc IStakedUSDat
+    function setSurplusSource(address newSource) external onlyRole(PARAMETER_MANAGER_ROLE) {
+        _setSurplusSource(newSource);
+    }
+
+    /// @inheritdoc IStakedUSDat
     function setMigrationTolerance(uint16 newBps) external onlyRole(PARAMETER_MANAGER_ROLE) {
         _setMigrationTolerance(newBps);
     }
@@ -963,6 +976,19 @@ contract StakedUSDat is
         recoveryAddress = newRecoveryAddress;
 
         emit RecoveryAddressUpdated(oldRecoveryAddress, newRecoveryAddress);
+    }
+
+    /// @dev Validates and updates the surplus source.
+    function _setSurplusSource(address newSource) private {
+        require(newSource != address(0), InvalidZeroAddress());
+        require(newSource != address(this), InvalidSurplusSource());
+        require(newSource != address(WITHDRAWAL_QUEUE), InvalidSurplusSource());
+        _requireNotRestricted(newSource);
+
+        address oldSource = surplusSource;
+        surplusSource = newSource;
+
+        emit SurplusSourceUpdated(oldSource, newSource);
     }
 
     /// @dev Reverts unless an address is a valid seizure destination now.

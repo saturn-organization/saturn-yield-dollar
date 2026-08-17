@@ -223,6 +223,8 @@ contract StakedUSDatRedemptionFeesTest is Test {
         uint256 shares = 10_000_001e12;
         uint256 gross = vault.convertToAssets(shares);
         uint256 fee = Math.mulDiv(gross, 5, vault.BPS_DENOMINATOR(), Math.Rounding.Ceil);
+        uint256 surplusSourceBalanceBefore = usdat.balanceOf(vault.surplusSource());
+
         (IStakedUSDat.RedemptionResult result, uint256 payout) = queue.redeemQueuedShares(vault, shares, 0);
 
         assertEq(uint256(result), uint256(IStakedUSDat.RedemptionResult.Settled));
@@ -233,6 +235,7 @@ contract StakedUSDatRedemptionFeesTest is Test {
         assertEq(vault.usdatBalance(), DEPOSIT - payout);
         assertEq(usdat.balanceOf(address(vault)), DEPOSIT - payout);
         assertEq(usdat.balanceOf(address(queue)), payout);
+        assertEq(usdat.balanceOf(vault.surplusSource()), surplusSourceBalanceBefore);
     }
 
     function test_redeemQueuedShares_ExactNetSharePriceSettles() public {
@@ -261,6 +264,8 @@ contract StakedUSDatRedemptionFeesTest is Test {
         uint256 usdatBalanceBefore = vault.usdatBalance();
         uint256 vaultAssetsBefore = usdat.balanceOf(address(vault));
         uint256 queueAssetsBefore = usdat.balanceOf(address(queue));
+        uint256 surplusSourceAssetsBefore = usdat.balanceOf(vault.surplusSource());
+
         (IStakedUSDat.RedemptionResult result, uint256 payout) =
             queue.redeemQueuedShares(vault, shares, netSharePrice + 1);
 
@@ -271,6 +276,7 @@ contract StakedUSDatRedemptionFeesTest is Test {
         assertEq(vault.usdatBalance(), usdatBalanceBefore);
         assertEq(usdat.balanceOf(address(vault)), vaultAssetsBefore);
         assertEq(usdat.balanceOf(address(queue)), queueAssetsBefore);
+        assertEq(usdat.balanceOf(vault.surplusSource()), surplusSourceAssetsBefore);
     }
 
     function test_redeemQueuedShares_ElevatedFeeCanMoveNetPriceBelowOtherwiseAcceptableLimit() public {
@@ -309,6 +315,7 @@ contract StakedUSDatRedemptionFeesTest is Test {
         assertEq(firstPayout, 38e6);
         assertEq(vault.usdatBalance(), DEPOSIT - firstPayout);
         assertEq(usdat.balanceOf(address(vault)), DEPOSIT - firstPayout);
+        assertEq(usdat.balanceOf(vault.surplusSource()), 0);
         assertEq(vault.usdatBalance() - (DEPOSIT - firstGross), expectedFee);
         assertGt(secondGross, firstGross);
     }
@@ -348,6 +355,7 @@ contract StakedUSDatRedemptionFeesTest is Test {
         assertEq(vault.usdatBalance(), DEPOSIT - net);
         assertEq(usdat.balanceOf(address(vault)), DEPOSIT - net);
         assertEq(usdat.balanceOf(address(queue)), net);
+        assertEq(usdat.balanceOf(vault.surplusSource()), 0);
     }
 
     function test_redeemQueuedShares_RestrictedModeRevertsWithoutMutation() public {
