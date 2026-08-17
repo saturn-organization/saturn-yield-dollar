@@ -247,7 +247,9 @@ contract WithdrawalQueueERC721 is
             (IStakedUSDat.RedemptionResult result, uint256 net) =
                 STAKED_USDAT.redeemQueuedShares(req.shares, req.minSharePrice);
             if (result == IStakedUSDat.RedemptionResult.BelowLimit) continue;
-            if (result == IStakedUSDat.RedemptionResult.InsufficientLiquidity) continue;
+            if (result == IStakedUSDat.RedemptionResult.InsufficientLiquidity) {
+                continue;
+            }
 
             req.usdatOwed = net;
             req.status = RequestStatus.Processed;

@@ -878,9 +878,10 @@ enabled. Backing-asset and liquidity-path changes do not touch the queue.
 
 **Cancellation.** While active, the current NFT owner may call `cancelRequest(tokenId)` on
 an open request. It is nonReentrant, returns all shares to that owner, marks `Cancelled`,
-and burns the NFT without a fee. Restricted owners cannot cancel; enforcement handles
-their positions. Queue pause blocks cancellation. Vault pause also causes cancellation to
-revert when the queue attempts to return the escrowed sUSDat.
+and burns the NFT without a fee. A cancelled ID in an operator batch is skipped without
+blocking other requests. Restricted owners cannot cancel; enforcement handles their
+positions. Queue pause blocks cancellation. Vault pause also causes cancellation to revert
+when the queue attempts to return the escrowed sUSDat.
 
 **Claiming.** `claim(tokenId)` is the only claim function. While active, the current owner
 of a `Processed` request receives all `usdatOwed`; the request becomes `Claimed` and the NFT

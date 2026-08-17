@@ -276,7 +276,7 @@ contract WithdrawalQueueSettlementTest is Test {
         assertEq(usdat.balanceOf(address(queue)), 0);
     }
 
-    function testFuzz_processRequests_SettlesOnceAndSkipsLaterDuplicate(
+    function testFuzz_processRequests_SettledDuplicateSettlesOnlyOnce(
         uint128 rawShares,
         uint96 rawPayout,
         uint256 limit
@@ -291,6 +291,8 @@ contract WithdrawalQueueSettlementTest is Test {
         queue.processRequests(tokenIds);
 
         assertEq(stakedUsdat.callCount(), 1);
+        assertEq(stakedUsdat.callShares(0), shares);
+        assertEq(stakedUsdat.callLimits(0), limit);
         _assertRequest(tokenId, shares, payout, limit, IWithdrawalQueueERC721.RequestStatus.Processed);
         assertEq(queue.ownerOf(tokenId), alice);
         assertEq(queue.totalSupply(), 1);
@@ -298,20 +300,23 @@ contract WithdrawalQueueSettlementTest is Test {
         assertEq(usdat.balanceOf(address(queue)), payout);
     }
 
-    function test_processRequests_SettlesValidRequestAndSkipsLaterCancelledRequest() public {
+    function test_processRequests_FrontRunCancellationDoesNotBlockOtherRequests() public {
         uint256 validId = _configuredRequest(12e18, 101, IStakedUSDat.RedemptionResult.Settled, 9e6);
         uint256 cancelledId = _configuredRequest(13e18, 102, IStakedUSDat.RedemptionResult.Settled, 10e6);
         vm.prank(alice);
         queue.cancelRequest(cancelledId);
 
         uint256[] memory tokenIds = new uint256[](2);
-        tokenIds[0] = validId;
-        tokenIds[1] = cancelledId;
+        tokenIds[0] = cancelledId;
+        tokenIds[1] = validId;
 
         queue.processRequests(tokenIds);
 
         assertEq(stakedUsdat.callCount(), 1);
+        assertEq(stakedUsdat.callShares(0), 12e18);
+        assertEq(stakedUsdat.callLimits(0), 101);
         _assertRequest(validId, 12e18, 9e6, 101, IWithdrawalQueueERC721.RequestStatus.Processed);
+        _assertRequest(cancelledId, 13e18, 0, 102, IWithdrawalQueueERC721.RequestStatus.Cancelled);
         assertEq(stakedUsdat.balanceOf(address(queue)), 0);
         assertEq(usdat.balanceOf(address(queue)), 9e6);
     }
@@ -593,7 +598,7 @@ contract WithdrawalQueueRealSettlementIntegrationTest is Test {
         assertEq(usdat.balanceOf(address(vault)), 100e6);
     }
 
-    function test_processRequests_RealVaultSettlesOnceAndSkipsDuplicate() public {
+    function test_processRequests_RealVaultSettledDuplicateSettlesOnlyOnceAcrossBothContracts() public {
         vm.prank(alice);
         uint256 tokenId = vault.requestRedeem(20e18, 0);
 
