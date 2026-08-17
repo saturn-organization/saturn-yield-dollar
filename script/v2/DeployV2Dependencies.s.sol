@@ -35,7 +35,6 @@ interface ILiveWithdrawalQueue {
  *
  * Required environment variables:
  * - V2_ORACLE_INITIAL_DEVIATION_BPS
- * - V2_ORACLE_MAX_DEVIATION_BPS
  * - V2_EXPECTED_TRADE_EXECUTION_LOGIC_CODEHASH
  * - V2_EXPECTED_STRCON_PRICE_ORACLE_CODEHASH
  * - V2_EXPECTED_STRC_MIRROR_MODULE_CODEHASH
@@ -77,7 +76,6 @@ contract DeployV2Dependencies is Script {
 
     struct OracleConfig {
         uint256 initialDeviationBps;
-        uint256 maxDeviationBps;
     }
 
     struct ExpectedCodeHashes {
@@ -103,10 +101,8 @@ contract DeployV2Dependencies is Script {
     function run() external returns (Deployments memory deployed) {
         require(block.chainid == MAINNET_CHAIN_ID, WrongChain(block.chainid));
 
-        OracleConfig memory oracleConfig = OracleConfig({
-            initialDeviationBps: vm.envUint("V2_ORACLE_INITIAL_DEVIATION_BPS"),
-            maxDeviationBps: vm.envUint("V2_ORACLE_MAX_DEVIATION_BPS")
-        });
+        OracleConfig memory oracleConfig =
+            OracleConfig({initialDeviationBps: vm.envUint("V2_ORACLE_INITIAL_DEVIATION_BPS")});
         ExpectedCodeHashes memory expectedCodeHashes = _loadExpectedCodeHashes();
         address legacyStrcOracle = _validateLiveBindings();
 
@@ -146,8 +142,7 @@ contract DeployV2Dependencies is Script {
                 ISyntheticSharesOracle(SYNTHETIC_SHARES_ORACLE),
                 IPriceOracle(PRIMARY_FEED),
                 IPriceOracle(REFERENCE_FEED),
-                oracleConfig.initialDeviationBps,
-                oracleConfig.maxDeviationBps
+                oracleConfig.initialDeviationBps
             )
         );
         deployed.strcMirrorModule =
@@ -237,10 +232,7 @@ contract DeployV2Dependencies is Script {
         );
         require(address(priceOracle.primaryFeed()) == PRIMARY_FEED, InvalidBinding("price oracle primary feed"));
         require(address(priceOracle.referenceFeed()) == REFERENCE_FEED, InvalidBinding("price oracle reference feed"));
-        require(
-            priceOracle.MAX_DEVIATION_BPS() == oracleConfig.maxDeviationBps,
-            InvalidBinding("price oracle max deviation")
-        );
+        require(priceOracle.MAX_DEVIATION_BPS() == 1_000, InvalidBinding("price oracle max deviation"));
         require(
             priceOracle.deviationBps() == oracleConfig.initialDeviationBps,
             InvalidBinding("price oracle initial deviation")
@@ -356,7 +348,6 @@ contract DeployV2Dependencies is Script {
         console.log("=== V2 Dependency Deployment Manifest ===");
         console.log("Legacy STRC oracle:", legacyStrcOracle);
         console.log("Oracle initial deviation bps:", oracleConfig.initialDeviationBps);
-        console.log("Oracle maximum deviation bps:", oracleConfig.maxDeviationBps);
 
         _logDeployment("STRConTradeExecutionLogic", deployed.tradeExecutionLogic);
         _logDeployment("STRConPriceOracle", deployed.strconPriceOracle);
