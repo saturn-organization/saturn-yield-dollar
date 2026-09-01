@@ -5,8 +5,9 @@ pragma solidity 0.8.36;
  * @title ISyntheticSharesOracle
  * @dev Minimal interface for Ondo Global Markets' SyntheticSharesOracle
  * (Ethereum: 0x9BC39DB6fbB44B91a48b8D5A6C208B82B1741bE6). The per-asset `paused`
- * flag is set only for scheduled corporate actions; routine dividends ride the
- * sValue drift path (2% per 24h limit) and never pause.
+ * flag identifies an asset whose multiplier must not be consumed. Consumers
+ * must fail closed while paused; they must not infer an economic reason from
+ * the current value or pause flag alone.
  */
 interface ISyntheticSharesOracle {
     /**

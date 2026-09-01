@@ -23,6 +23,8 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: 1.8.1
 
       - name: Show Forge version
         run: forge --version
@@ -35,3 +37,6 @@ jobs:
 
       - name: Run Forge tests
         run: forge test -vvv
+
+      - name: Run V3 model tests
+        run: node --test test/model/tranche-calibration-replay.test.mjs test/model/tranche-shadow-reconciler.test.mjs

@@ -16,4 +16,7 @@ remappings = [
 # an existing pause; the linter's helper extraction is not behavior-preserving.
 exclude_lints = ["unwrapped-modifier-logic"]
 
+[invariant]
+fail_on_revert = true
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

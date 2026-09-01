@@ -1,0 +1,114 @@
+{
+  "schema": "saturn-v3-shadow-v1",
+  "source": "synthetic fork-shaped lifecycle; no production observations",
+  "config": {
+    "maxUnreviewedGrowthBps": "2000",
+    "tolerances": {}
+  },
+  "initial": {
+    "context": {
+      "supply": "100000000000000000000000000",
+      "exposure": "600000000000000000000000",
+      "rawIndex": "1000000000000000000",
+      "backingValueUSDat6": "500000000000",
+      "strconPrice8": "10000000000"
+    },
+    "state": {
+      "incomeState": "Active",
+      "lastSettlementBlock": "100",
+      "lastAcceptedRawIndex": "1000000000000000000",
+      "lastEligibleUnitIndexWad": "1000000000000000000",
+      "cumulativeStructuralAdjustmentFactorWad": "1000000000000000000",
+      "eligibleUnitsPerSUSDatShareWad": "0",
+      "lastRoundingRemainder": "0",
+      "liveUnitScaleWad": "1000000000000000000",
+      "liveUnitsOffsetWad": "0",
+      "crystallizedValueScaleWad": "0",
+      "crystallizedValueOffsetWad": "0",
+      "crystallizationNonce": "0",
+      "fundedUSDat": "0",
+      "pendingFundedUSDat": "0",
+      "recognizedUSDat": "0",
+      "recognizedUSDatPerSUSDatShareWad": "0",
+      "lastUSDatRoundingRemainder": "0"
+    }
+  },
+  "shadowCohort": {
+    "backingAssets": "500000000000000000000000",
+    "baseSeniorClaimValueUSDat6": "333333333333",
+    "alphasBps": ["3500", "4000", "4500", "5000", "6000"]
+  },
+  "transitions": [
+    {
+      "id": "ordinary-income-lazy",
+      "kind": "oracle_update",
+      "blockNumber": "101",
+      "rawIndex": "1100000000000000000",
+      "strconPrice8": "9900000000",
+      "backingValueUSDat6": "505000000000"
+    },
+    {
+      "id": "transfer-no-checkpoint",
+      "kind": "transfer",
+      "blockNumber": "102"
+    },
+    {
+      "id": "deposit-boundary-old-supply",
+      "kind": "supply_change",
+      "blockNumber": "103",
+      "supplyAfter": "120000000000000000000000000",
+      "backingValueUSDat6": "505000000000"
+    },
+    {
+      "id": "buy-settles-old-exposure",
+      "kind": "buy",
+      "blockNumber": "104",
+      "rawIndex": "1200000000000000000",
+      "assetReceived": "100000000000000000000000",
+      "backingValueUSDat6": "506000000000"
+    },
+    {
+      "id": "funded-surplus-pending",
+      "kind": "fund_surplus",
+      "blockNumber": "105",
+      "amount": "100000000"
+    },
+    {
+      "id": "partial-surplus-recognition",
+      "kind": "recognize_surplus",
+      "blockNumber": "106",
+      "amount": "40000000",
+      "backingValueUSDat6": "506000166667"
+    },
+    {
+      "id": "partial-sale-crystallization",
+      "kind": "sell",
+      "blockNumber": "107",
+      "rawIndex": "1300000000000000000",
+      "assetDelivered": "175000000000000000000000",
+      "usdatReceived": "17500000000000",
+      "strconPrice8": "10000000000",
+      "backingValueUSDat6": "507000000000"
+    },
+    {
+      "id": "enter-corporate-action-review",
+      "kind": "enter_review",
+      "blockNumber": "108",
+      "settleCurrent": false
+    },
+    {
+      "id": "neutral-two-for-one-resolution",
+      "kind": "resolve_structural",
+      "blockNumber": "109",
+      "rawIndex": "2600000000000000000",
+      "newFactorWad": "2000000000000000000"
+    },
+    {
+      "id": "remaining-surplus-recognition",
+      "kind": "recognize_surplus",
+      "blockNumber": "110",
+      "amount": "60000000",
+      "backingValueUSDat6": "507000250000"
+    }
+  ]
+}

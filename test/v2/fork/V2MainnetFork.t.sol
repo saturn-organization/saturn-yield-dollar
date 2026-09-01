@@ -27,19 +27,23 @@ interface ILegacyOracleBinding {
 }
 
 /**
- * @title V2MockMainnetForkTest
+ * @title V2MockMainnetForkBase
  * @notice End-to-end rehearsal against pinned live v1 state.
  * @dev Future v2 contracts, configuration, roles, and STRCon inventory are created
  * only inside the fork. This is not the production-manifest replay.
  *
  * Run with:
- * RUN_V2_MOCK_FORK=true forge test --match-path test/v2/fork/V2MainnetFork.t.sol -vvv
+ * RUN_V2_MOCK_FORK=true RPC_URL=$SATURN_MAINNET_RPC_URL \
+ *   forge test --match-path test/v2/fork/V2MainnetFork.t.sol --disable-block-gas-limit -vvv
+ *
+ * The flag is test-harness-only: this one Foundry call rehearses multiple separately
+ * scheduled governance transactions and therefore intentionally exceeds one block's gas.
  */
-contract V2MockMainnetForkTest is Test {
+abstract contract V2MockMainnetForkBase is Test {
     error ExternalCallFailed(address target, bytes reason);
     error InvalidLegacyRequest(uint256 tokenId, uint256 status);
 
-    uint256 private constant PINNED_MAINNET_BLOCK = 25_627_322;
+    uint256 internal constant PINNED_MAINNET_BLOCK = 25_627_322;
     uint256 private constant MAINNET_CHAIN_ID = 1;
     uint256 private constant TIMELOCK_DELAY = 5 days;
     uint256 private constant REQUEST_WORDS = 5;
@@ -50,16 +54,16 @@ contract V2MockMainnetForkTest is Test {
 
     bytes32 private constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
-    address private constant USDAT = 0x23238f20b894f29041f48D88eE91131C395Aaa71;
-    address private constant STAKED_USDAT_PROXY = 0xD166337499E176bbC38a1FBd113Ab144e5bd2Df7;
-    address private constant WITHDRAWAL_QUEUE_PROXY = 0x4Bc9FEC04F0F95e9b42a3EF18F3C96fB57923D2e;
+    address internal constant USDAT = 0x23238f20b894f29041f48D88eE91131C395Aaa71;
+    address internal constant STAKED_USDAT_PROXY = 0xD166337499E176bbC38a1FBd113Ab144e5bd2Df7;
+    address internal constant WITHDRAWAL_QUEUE_PROXY = 0x4Bc9FEC04F0F95e9b42a3EF18F3C96fB57923D2e;
     address private constant LEGACY_STRC_ORACLE = 0x5f7eCD0D045c393da6cb6c933c671AC305A871BF;
-    address private constant STRCON = 0xECABE1Ff8a9e1dC55899cf58dac8497ecE5Ae84c;
+    address internal constant STRCON = 0xECABE1Ff8a9e1dC55899cf58dac8497ecE5Ae84c;
 
-    address private constant TIMELOCK = 0xfD5782E3BFF366601da3973aE30C583dE4F08A67;
+    address internal constant TIMELOCK = 0xfD5782E3BFF366601da3973aE30C583dE4F08A67;
     address private constant PROPOSER = 0x610182581C93687Ca03F4a8E7f124f8cEC616820;
 
-    address private constant SYNTHETIC_SHARES_ORACLE = 0x9BC39DB6fbB44B91a48b8D5A6C208B82B1741bE6;
+    address internal constant SYNTHETIC_SHARES_ORACLE = 0x9BC39DB6fbB44B91a48b8D5A6C208B82B1741bE6;
     address private constant PRIMARY_FEED = 0xC353ac4b425f818Ad87E228bf816E15c2173AC07;
     address private constant REFERENCE_FEED = 0x67d4Ae9f265270aE123c08D2657536771D19cD91;
 
@@ -155,19 +159,19 @@ contract V2MockMainnetForkTest is Test {
 
     StakedUSDatV1 private _vaultV1;
     WithdrawalQueueV1 private _queueV1;
-    StakedUSDatV2 private _vaultV2;
-    WithdrawalQueueV2 private _queueV2;
-    TimelockController private _timelock;
+    StakedUSDatV2 internal _vaultV2;
+    WithdrawalQueueV2 internal _queueV2;
+    TimelockController internal _timelock;
 
     DeployV2Dependencies private _dependencyDeployer;
     BuildV2UpgradeBatch private _upgradeBuilder;
     BuildV2Migration private _migrationBuilder;
 
     address private _tradeExecutionLogic;
-    STRConPriceOracle private _priceOracle;
-    STRCMirrorModule private _mirror;
-    STRConModule private _module;
-    STRConExecutionPolicy private _policy;
+    STRConPriceOracle internal _priceOracle;
+    STRCMirrorModule internal _mirror;
+    STRConModule internal _module;
+    STRConExecutionPolicy internal _policy;
     StakedUSDatV2 private _vaultImplementation;
     WithdrawalQueueV2 private _queueImplementation;
 
@@ -177,15 +181,9 @@ contract V2MockMainnetForkTest is Test {
     OracleRound private _referenceRound;
     DeploymentCodeHashes private _codeHashes;
 
-    function test_mockMainnetFork_ExecutesFullV2UpgradeAndMigration() public {
-        if (!vm.envOr("RUN_V2_MOCK_FORK", false)) {
-            vm.skip(true, "set RUN_V2_MOCK_FORK=true to run the pinned mainnet rehearsal");
-            return;
-        }
+    function _executeFullV2UpgradeAndMigration() internal {
         require(vm.envExists("RPC_URL"), "RPC_URL is required");
-
         vm.createSelectFork(vm.envString("RPC_URL"), PINNED_MAINNET_BLOCK);
-
         _bindAndValidateLiveV1();
         _captureOracleRounds();
         _deployV2Dependencies();
@@ -682,7 +680,7 @@ contract V2MockMainnetForkTest is Test {
         (round.roundId, round.answer, round.startedAt,, round.answeredInRound) = IPriceOracle(feed).latestRoundData();
     }
 
-    function _refreshOracleRounds() private {
+    function _refreshOracleRounds() internal {
         _mockFreshRound(_legacyFeed, _legacyRound);
         _mockFreshRound(PRIMARY_FEED, _primaryRound);
         _mockFreshRound(REFERENCE_FEED, _referenceRound);
@@ -723,9 +721,19 @@ contract V2MockMainnetForkTest is Test {
         return address(uint160(uint256(vm.load(proxy, IMPLEMENTATION_SLOT))));
     }
 
-    function _callAs(address caller, address target, bytes memory data) private {
+    function _callAs(address caller, address target, bytes memory data) internal {
         vm.prank(caller);
         (bool success, bytes memory result) = target.call(data);
         if (!success) revert ExternalCallFailed(target, result);
+    }
+}
+
+contract V2MockMainnetForkTest is V2MockMainnetForkBase {
+    function test_mockMainnetFork_ExecutesFullV2UpgradeAndMigration() public {
+        if (!vm.envOr("RUN_V2_MOCK_FORK", false)) {
+            vm.skip(true, "set RUN_V2_MOCK_FORK=true to run the pinned mainnet rehearsal");
+            return;
+        }
+        _executeFullV2UpgradeAndMigration();
     }
 }
