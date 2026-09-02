@@ -1,4 +1,9 @@
 @openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/
+pendle-sy/=lib/pendle-sy-public/contracts/
+pendle-core/=lib/pendle-core-v2-public/contracts/
+pendle-oz/=lib/pendle-openzeppelin-contracts/contracts/
+lib/pendle-sy-public/:@openzeppelin/contracts/=lib/pendle-openzeppelin-contracts/contracts/
+lib/pendle-core-v2-public/:@openzeppelin/contracts/=lib/pendle-openzeppelin-contracts/contracts/
 @openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/
 erc4626-tests/=lib/openzeppelin-contracts-upgradeable/lib/erc4626-tests/
 forge-std/=lib/forge-std/src/

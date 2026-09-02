@@ -145,8 +145,16 @@ contract VaultQueueHarness {
         vault.endRedemptionBatch();
     }
 
-    function beginRedemptionBatch(IStakedUSDat vault) external {
+    function beginRedemptionBatchTwice(IStakedUSDat vault) external {
         vault.beginRedemptionBatch();
+        vault.beginRedemptionBatch();
+    }
+
+    function beginEndBeginEndRedemptionBatch(IStakedUSDat vault) external {
+        vault.beginRedemptionBatch();
+        vault.endRedemptionBatch();
+        vault.beginRedemptionBatch();
+        vault.endRedemptionBatch();
     }
 
     function redeemWithoutBatch(IStakedUSDat vault, uint256 shares, uint256 minSharePrice)
@@ -156,8 +164,13 @@ contract VaultQueueHarness {
         return vault.redeemQueuedShares(shares, minSharePrice);
     }
 
-    function endRedemptionBatch(IStakedUSDat vault) external {
+    function redeemAfterEndedBatch(IStakedUSDat vault, uint256 shares, uint256 minSharePrice)
+        external
+        returns (IStakedUSDat.RedemptionResult result, uint256 usdat)
+    {
+        vault.beginRedemptionBatch();
         vault.endRedemptionBatch();
+        return vault.redeemQueuedShares(shares, minSharePrice);
     }
 }
 
@@ -474,15 +487,13 @@ contract StakedUSDatQueuedRedemptionTest is Test {
         vm.expectRevert(IStakedUSDat.InvalidRedemptionBatch.selector);
         queueHarness.redeemWithoutBatch(vault, 40e18, 0);
 
-        queueHarness.beginRedemptionBatch(vault);
+        vm.expectRevert(IStakedUSDat.InvalidRedemptionBatch.selector);
+        queueHarness.beginRedemptionBatchTwice(vault);
+
+        queueHarness.beginEndBeginEndRedemptionBatch(vault);
 
         vm.expectRevert(IStakedUSDat.InvalidRedemptionBatch.selector);
-        queueHarness.beginRedemptionBatch(vault);
-
-        queueHarness.endRedemptionBatch(vault);
-
-        vm.expectRevert(IStakedUSDat.InvalidRedemptionBatch.selector);
-        queueHarness.redeemWithoutBatch(vault, 40e18, 0);
+        queueHarness.redeemAfterEndedBatch(vault, 40e18, 0);
     }
 
     function _assertVaultUnchanged() private view {

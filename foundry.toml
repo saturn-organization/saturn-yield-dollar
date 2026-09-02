@@ -7,6 +7,11 @@ optimizer = true
 optimizer_runs = 150
 remappings = [
     "solady/=lib/solady/src/",
+    "pendle-sy/=lib/pendle-sy-public/contracts/",
+    "pendle-core/=lib/pendle-core-v2-public/contracts/",
+    "pendle-oz/=lib/pendle-openzeppelin-contracts/contracts/",
+    "lib/pendle-sy-public/:@openzeppelin/contracts/=lib/pendle-openzeppelin-contracts/contracts/",
+    "lib/pendle-core-v2-public/:@openzeppelin/contracts/=lib/pendle-openzeppelin-contracts/contracts/",
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/"
 ]
