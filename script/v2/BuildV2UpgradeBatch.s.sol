@@ -9,6 +9,7 @@ import {ISTRConExecutionPolicy} from "../../src/v2/interfaces/ISTRConExecutionPo
 import {IStakedUSDat} from "../../src/v2/interfaces/IStakedUSDat.sol";
 import {ISTRCMirrorModule} from "../../src/v2/interfaces/modules/ISTRCMirrorModule.sol";
 import {ISTRConModule} from "../../src/v2/interfaces/modules/ISTRConModule.sol";
+import {UpgradeConfig} from "./configs/UpgradeConfig.sol";
 
 interface IUUPSUpgradeable {
     function upgradeToAndCall(address newImplementation, bytes calldata data) external payable;
@@ -26,7 +27,7 @@ interface IWithdrawalQueueImplementationBindings {
 /**
  * @title BuildV2UpgradeBatch
  * @notice Builds the exact atomic Step-1 schedule and execution calldata without broadcasting.
- * @dev Set every TODO constant below, review the resulting operation id and calldata, then
+ * @dev Set the upgrade configuration in UpgradeConfig.sol, review the operation id and calldata, then
  * submit `scheduleCalldata` from PROPOSER to TIMELOCK through Fireblocks. After the delay,
  * submit the matching `executeCalldata` to TIMELOCK from any executor.
  *
@@ -41,90 +42,11 @@ interface IWithdrawalQueueImplementationBindings {
  *   fireblocks-json-rpc --http -- cast send $TIMELOCK $EXECUTE_CALLDATA \
  *     --from $EXECUTOR --unlocked --rpc-url {}
  */
-contract BuildV2UpgradeBatch is Script {
+contract BuildV2UpgradeBatch is Script, UpgradeConfig {
     error InvalidConfiguration(string field);
     error MissingCode(address target);
     error UnsetAddress(string field);
     error WrongChain(uint256 actualChainId);
-
-    // =========================================================================
-    // REVIEWED PRODUCTION INFRASTRUCTURE
-    // =========================================================================
-
-    uint256 public constant EXPECTED_CHAIN_ID = 1;
-    uint256 public constant TIMELOCK_DELAY = 5 days;
-    uint16 public constant MAX_FEE_BPS = 500;
-    uint16 public constant MAX_EXECUTION_TOLERANCE_BPS = 500;
-    uint16 public constant MAX_MIGRATION_TOLERANCE_BPS = 500;
-
-    address public constant TIMELOCK = 0xfD5782E3BFF366601da3973aE30C583dE4F08A67;
-    address public constant PROPOSER = 0x610182581C93687Ca03F4a8E7f124f8cEC616820;
-    address public constant STAKED_USDAT_PROXY = 0xD166337499E176bbC38a1FBd113Ab144e5bd2Df7;
-    address public constant WITHDRAWAL_QUEUE_PROXY = 0x4Bc9FEC04F0F95e9b42a3EF18F3C96fB57923D2e;
-    address public constant USDAT = 0x23238f20b894f29041f48D88eE91131C395Aaa71;
-
-    bytes32 public constant PREDECESSOR = bytes32(0);
-
-    // =========================================================================
-    // TODO: SET FROM DeployV2Dependencies.s.sol OUTPUT
-    // =========================================================================
-
-    address public constant STAKED_USDAT_IMPLEMENTATION = address(0);
-    address public constant WITHDRAWAL_QUEUE_IMPLEMENTATION = address(0);
-    address public constant STRC_MIRROR_MODULE = address(0);
-    address public constant STRCON_MODULE = address(0);
-    address public constant EXECUTION_POLICY = address(0);
-
-    // =========================================================================
-    // TODO: SET APPROVED VAULT CONFIGURATION
-    // =========================================================================
-
-    address public constant RECOVERY_ADDRESS = address(0);
-    // Dedicated USDat wallet that preapproves the vault for surplus transfers.
-    address public constant SURPLUS_SOURCE = address(0);
-    address public constant EXECUTION_VEHICLE = address(0);
-
-    uint16 public constant BASE_REDEMPTION_FEE_BPS = 0;
-    uint16 public constant ELEVATED_REDEMPTION_FEE_BPS = 0;
-    uint16 public constant ELEVATED_DEPOSIT_FEE_BPS = 0;
-    uint16 public constant EXECUTION_TOLERANCE_BPS = 0;
-    uint16 public constant MIGRATION_TOLERANCE_BPS = 0;
-
-    uint128 public constant INITIAL_EXECUTION_CAPACITY = 0;
-    uint128 public constant INITIAL_EXECUTION_REFILL_PER_DAY = 0;
-
-    // These are absolute Unix timestamps used to review the expected timelock window.
-    uint64 public constant EXPECTED_SCHEDULE_TIMESTAMP = 0;
-    uint64 public constant EXPECTED_UPGRADE_EXECUTION_TIMESTAMP = 0;
-
-    // Use a reviewed unique, nonzero salt for this exact Step-1 batch.
-    bytes32 public constant BATCH_SALT = bytes32(0);
-
-    // =========================================================================
-    // TODO: SET APPROVED VAULT ROLE HOLDERS
-    // =========================================================================
-
-    address public constant VAULT_PARAMETER_MANAGER = address(0);
-    address public constant VAULT_MARKET_MODE_MANAGER = address(0);
-    address public constant VAULT_OPERATOR = address(0);
-    address public constant VAULT_SURPLUS_MANAGER = address(0);
-    address public constant VAULT_BLACKLISTER = address(0);
-    address public constant VAULT_ENFORCER = address(0);
-    address public constant VAULT_PAUSER = address(0);
-    address public constant VAULT_UNPAUSER = address(0);
-
-    // =========================================================================
-    // TODO: SET APPROVED WITHDRAWAL-QUEUE ROLE HOLDERS
-    // These may equal the corresponding vault holders, but are explicit inputs.
-    // =========================================================================
-
-    address public constant QUEUE_OPERATOR = address(0);
-    address public constant QUEUE_ENFORCER = address(0);
-    address public constant QUEUE_PAUSER = address(0);
-    address public constant QUEUE_UNPAUSER = address(0);
-
-    // Flip only after every value above has been reviewed.
-    bool public constant CONFIGURATION_APPROVED = false;
 
     struct QueueRoles {
         address operator;
@@ -196,13 +118,15 @@ contract BuildV2UpgradeBatch is Script {
             IUUPSUpgradeable.upgradeToAndCall, (input.withdrawalQueueImplementation, batch.queueInitializer)
         );
 
-        batch.operationId = keccak256(abi.encode(batch.targets, batch.values, batch.payloads, PREDECESSOR, input.salt));
+        batch.operationId =
+            keccak256(abi.encode(batch.targets, batch.values, batch.payloads, UPGRADE_PREDECESSOR, input.salt));
         batch.scheduleCalldata = abi.encodeCall(
             TimelockController.scheduleBatch,
-            (batch.targets, batch.values, batch.payloads, PREDECESSOR, input.salt, TIMELOCK_DELAY)
+            (batch.targets, batch.values, batch.payloads, UPGRADE_PREDECESSOR, input.salt, TIMELOCK_DELAY)
         );
         batch.executeCalldata = abi.encodeCall(
-            TimelockController.executeBatch, (batch.targets, batch.values, batch.payloads, PREDECESSOR, input.salt)
+            TimelockController.executeBatch,
+            (batch.targets, batch.values, batch.payloads, UPGRADE_PREDECESSOR, input.salt)
         );
     }
 
@@ -242,7 +166,7 @@ contract BuildV2UpgradeBatch is Script {
 
     function _validateConfiguration() private view {
         require(block.chainid == EXPECTED_CHAIN_ID, WrongChain(block.chainid));
-        require(CONFIGURATION_APPROVED, InvalidConfiguration("CONFIGURATION_APPROVED"));
+        require(UPGRADE_CONFIGURATION_APPROVED, InvalidConfiguration("UPGRADE_CONFIGURATION_APPROVED"));
 
         _requireSet(STAKED_USDAT_IMPLEMENTATION, "STAKED_USDAT_IMPLEMENTATION");
         _requireSet(WITHDRAWAL_QUEUE_IMPLEMENTATION, "WITHDRAWAL_QUEUE_IMPLEMENTATION");
@@ -336,7 +260,7 @@ contract BuildV2UpgradeBatch is Script {
         );
 
         require(
-            timelock.hashOperationBatch(batch.targets, batch.values, batch.payloads, PREDECESSOR, BATCH_SALT)
+            timelock.hashOperationBatch(batch.targets, batch.values, batch.payloads, UPGRADE_PREDECESSOR, BATCH_SALT)
                 == batch.operationId,
             InvalidConfiguration("operation id")
         );

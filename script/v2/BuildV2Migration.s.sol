@@ -11,6 +11,7 @@ import {ISTRConExecutionPolicy} from "../../src/v2/interfaces/ISTRConExecutionPo
 import {IStakedUSDat} from "../../src/v2/interfaces/IStakedUSDat.sol";
 import {ISTRCMirrorModule} from "../../src/v2/interfaces/modules/ISTRCMirrorModule.sol";
 import {ISTRConModule} from "../../src/v2/interfaces/modules/ISTRConModule.sol";
+import {MigrationConfig} from "./configs/MigrationConfig.sol";
 
 interface IPausableView {
     function paused() external view returns (bool);
@@ -33,40 +34,10 @@ interface IPausableView {
  *   fireblocks-json-rpc --http -- cast send $TIMELOCK $EXECUTE_CALLDATA \
  *     --from $EXECUTOR --unlocked --rpc-url {}
  */
-contract BuildV2Migration is Script {
+contract BuildV2Migration is Script, MigrationConfig {
     error InvalidConfiguration(string field);
     error MissingCode(address target);
     error WrongChain(uint256 actualChainId);
-
-    // =========================================================================
-    // REVIEWED PRODUCTION INFRASTRUCTURE
-    // =========================================================================
-
-    uint256 public constant EXPECTED_CHAIN_ID = 1;
-    uint256 public constant TIMELOCK_DELAY = 5 days;
-    uint16 public constant MAX_MIGRATION_TOLERANCE_BPS = 500;
-
-    address public constant TIMELOCK = 0xfD5782E3BFF366601da3973aE30C583dE4F08A67;
-    address public constant PROPOSER = 0x610182581C93687Ca03F4a8E7f124f8cEC616820;
-    address public constant STAKED_USDAT_PROXY = 0xD166337499E176bbC38a1FBd113Ab144e5bd2Df7;
-    address public constant STRCON = 0xECABE1Ff8a9e1dC55899cf58dac8497ecE5Ae84c;
-
-    bytes32 public constant PREDECESSOR = bytes32(0);
-
-    // =========================================================================
-    // TODO: SET AFTER THE VALIDATION ROUND TRIP
-    // =========================================================================
-
-    uint256 public constant EXPECTED_STRCON = 0;
-    address public constant EXPECTED_EXECUTION_VEHICLE = address(0);
-    uint16 public constant EXPECTED_MIGRATION_TOLERANCE_BPS = 0;
-    uint256 public constant MIGRATION_DEADLINE = 0;
-
-    // Use a reviewed unique, nonzero salt for this exact Step-2 operation.
-    bytes32 public constant MIGRATION_SALT = bytes32(0);
-
-    // Flip only after every value above has been reviewed.
-    bool public constant CONFIGURATION_APPROVED = false;
 
     struct MigrationOperation {
         address target;
@@ -107,19 +78,20 @@ contract BuildV2Migration is Script {
         operation.target = STAKED_USDAT_PROXY;
         operation.payload = abi.encodeCall(IStakedUSDat.migrate, (expectedStrcon, deadline));
         operation.operationId =
-            keccak256(abi.encode(operation.target, operation.value, operation.payload, PREDECESSOR, salt));
+            keccak256(abi.encode(operation.target, operation.value, operation.payload, MIGRATION_PREDECESSOR, salt));
         operation.scheduleCalldata = abi.encodeCall(
             TimelockController.schedule,
-            (operation.target, operation.value, operation.payload, PREDECESSOR, salt, TIMELOCK_DELAY)
+            (operation.target, operation.value, operation.payload, MIGRATION_PREDECESSOR, salt, TIMELOCK_DELAY)
         );
         operation.executeCalldata = abi.encodeCall(
-            TimelockController.execute, (operation.target, operation.value, operation.payload, PREDECESSOR, salt)
+            TimelockController.execute,
+            (operation.target, operation.value, operation.payload, MIGRATION_PREDECESSOR, salt)
         );
     }
 
     function _validateConfiguration() private view {
         require(block.chainid == EXPECTED_CHAIN_ID, WrongChain(block.chainid));
-        require(CONFIGURATION_APPROVED, InvalidConfiguration("CONFIGURATION_APPROVED"));
+        require(MIGRATION_CONFIGURATION_APPROVED, InvalidConfiguration("MIGRATION_CONFIGURATION_APPROVED"));
         require(EXPECTED_STRCON != 0, InvalidConfiguration("EXPECTED_STRCON"));
         require(EXPECTED_EXECUTION_VEHICLE != address(0), InvalidConfiguration("EXPECTED_EXECUTION_VEHICLE"));
         require(
@@ -144,8 +116,9 @@ contract BuildV2Migration is Script {
             InvalidConfiguration("vault DEFAULT_ADMIN_ROLE")
         );
         require(
-            timelock.hashOperation(operation.target, operation.value, operation.payload, PREDECESSOR, MIGRATION_SALT)
-                == operation.operationId,
+            timelock.hashOperation(
+                operation.target, operation.value, operation.payload, MIGRATION_PREDECESSOR, MIGRATION_SALT
+            ) == operation.operationId,
             InvalidConfiguration("operation id")
         );
 

@@ -5,13 +5,45 @@ import {TimelockController} from "@openzeppelin/contracts/governance/TimelockCon
 import {Test} from "forge-std/Test.sol";
 
 import {BuildV2Migration} from "../../../script/v2/BuildV2Migration.s.sol";
+import {MigrationConfig} from "../../../script/v2/configs/MigrationConfig.sol";
 import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
 
-contract BuildV2MigrationTest is Test {
+contract BuildV2MigrationTest is Test, MigrationConfig {
     BuildV2Migration private builder;
 
     function setUp() public {
+        vm.chainId(EXPECTED_CHAIN_ID);
         builder = new BuildV2Migration();
+    }
+
+    function test_configuration_UsesSharedConstants() public view {
+        assertEq(builder.EXPECTED_CHAIN_ID(), EXPECTED_CHAIN_ID);
+        assertEq(builder.TIMELOCK_DELAY(), TIMELOCK_DELAY);
+        assertEq(builder.MAX_MIGRATION_TOLERANCE_BPS(), MAX_MIGRATION_TOLERANCE_BPS);
+        assertEq(builder.TIMELOCK(), TIMELOCK);
+        assertEq(builder.PROPOSER(), PROPOSER);
+        assertEq(builder.STAKED_USDAT_PROXY(), STAKED_USDAT_PROXY);
+        assertEq(builder.STRCON(), STRCON);
+        assertEq(builder.EXPECTED_STRCON(), EXPECTED_STRCON);
+        assertEq(builder.EXPECTED_EXECUTION_VEHICLE(), EXPECTED_EXECUTION_VEHICLE);
+        assertEq(builder.EXPECTED_MIGRATION_TOLERANCE_BPS(), EXPECTED_MIGRATION_TOLERANCE_BPS);
+        assertEq(builder.MIGRATION_DEADLINE(), MIGRATION_DEADLINE);
+        assertEq(builder.MIGRATION_PREDECESSOR(), MIGRATION_PREDECESSOR);
+        assertEq(builder.MIGRATION_SALT(), MIGRATION_SALT);
+        assertEq(builder.MIGRATION_CONFIGURATION_APPROVED(), MIGRATION_CONFIGURATION_APPROVED);
+    }
+
+    function test_run_RevertsOnWrongChain() public {
+        vm.chainId(2);
+        vm.expectRevert(abi.encodeWithSelector(BuildV2Migration.WrongChain.selector, uint256(2)));
+        builder.run();
+    }
+
+    function test_run_RevertsWhileConfigurationUnapproved() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(BuildV2Migration.InvalidConfiguration.selector, "MIGRATION_CONFIGURATION_APPROVED")
+        );
+        builder.run();
     }
 
     function test_buildOperation_EncodesExactMigrationTimelockOperation() public view {
@@ -31,14 +63,20 @@ contract BuildV2MigrationTest is Test {
                 operation.target,
                 operation.value,
                 expectedPayload,
-                builder.PREDECESSOR(),
+                builder.MIGRATION_PREDECESSOR(),
                 builder.MIGRATION_SALT(),
                 builder.TIMELOCK_DELAY()
             )
         );
         bytes memory expectedExecuteCalldata = abi.encodeCall(
             TimelockController.execute,
-            (operation.target, operation.value, expectedPayload, builder.PREDECESSOR(), builder.MIGRATION_SALT())
+            (
+                operation.target,
+                operation.value,
+                expectedPayload,
+                builder.MIGRATION_PREDECESSOR(),
+                builder.MIGRATION_SALT()
+            )
         );
 
         assertEq(operation.scheduleCalldata, expectedScheduleCalldata);
@@ -47,7 +85,11 @@ contract BuildV2MigrationTest is Test {
             operation.operationId,
             keccak256(
                 abi.encode(
-                    operation.target, operation.value, expectedPayload, builder.PREDECESSOR(), builder.MIGRATION_SALT()
+                    operation.target,
+                    operation.value,
+                    expectedPayload,
+                    builder.MIGRATION_PREDECESSOR(),
+                    builder.MIGRATION_SALT()
                 )
             )
         );
