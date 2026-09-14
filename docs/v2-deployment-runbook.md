@@ -1,285 +1,177 @@
 # V2 Deployment Runbook
 
-Execution checklist and evidence record for the v1 → v2 upgrade and subsequent
-STRC → STRCon migration. Operational decisions, observations, and evidence remain
-`TBD`. Contract addresses, role holders, constructor/initializer inputs, expected
-code hashes, and builder configuration are organized by script in
-[deployment configurations](./v2-deployment-configurations.md).
+Ethereum mainnet (`chain ID 1`). Auditor-reviewed source:
+[`f9bb4f99d9e0e021ae53a4fda5d6da5079fe8b99`](https://github.com/saturn-organization/saturn-yield-dollar/commit/f9bb4f99d9e0e021ae53a4fda5d6da5079fe8b99).
 
-Sources: [technical specification §3](./saturn-v2-spec.md#3-migration),
-[dependency deployment](../script/v2/DeployV2Dependencies.s.sol),
-[upgrade builder](../script/v2/BuildV2UpgradeBatch.s.sol), and
-[migration builder](../script/v2/BuildV2Migration.s.sol).
+## Initial parameters
 
-## 1. Reviewed build and current-state baseline
+Agreed values so far; remaining launch parameters are TBD.
 
-Build using the reviewed inputs in the configuration document and verify the live
-proxy/dependency bindings against it. Verify every role holder and control model,
-including inherited admins and the legacy oracle's own role registry. Enforce
-the separation and timelock requirements in specification §2.8; nonzero-address
-checks in the builders do not establish that those requirements are satisfied.
-
-Use `foundry.toml`, `remappings.txt`, and the pinned dependency revisions at the
-reviewed commit. Capture the actual Solidity and Foundry versions, resolved build
-profile and EVM target, optimizer settings, and any overrides in the build record.
-These values are collected from the build rather than entered as launch parameters.
-
-| Record | Value / evidence | Check |
+| Parameter | Value | Why |
 |---|---|---|
-| Build artifacts / command / configuration reference | TBD | Reproduce from the configured commit, dependencies, toolchain, and build settings. |
-| Build / test / storage-layout evidence | TBD | Include runtime and initcode size checks for all new artifacts. |
-| Configuration reviewer / review reference | TBD | Addresses, immutable bindings, roles, signers, quorums, and timelock controls. |
-| Baseline block number / hash / network verification | TBD | Same chain as all three scripts. |
-| Current vault implementation / runtime code hash | TBD | Read the existing proxy implementation. |
-| Current queue implementation / runtime code hash | TBD | Read the existing proxy implementation. |
-| Vault accounting / hard-pause snapshot | TBD | `totalAssets`, `totalSupply`, share conversions, tracked USDat, custody, unvested rewards, and pause state. |
-| Legacy mirror-seed compatibility | TBD | Vesting period within 1–90 days, rewards cap within 1–500 bps, and computed unvested STRC no greater than balance. |
-| Legacy oracle state / validation evidence | TBD | Address/hash, underlying feed, role holders, `maxPriceStaleness`, bounds, decimals, price, and round. |
-| USDat / sUSDat / STRCon unit verification | TBD | 6 / 18 / 18 decimals; execution capacity uses 6-decimal USDat units. |
-| Transition USDat buffer target / funding evidence | TBD | Mirrored STRC cannot be sold after Step 1; insufficient buffer delays queue processing. |
+| `INITIAL_EXECUTION_CAPACITY` | 6,000,000 USDat (`6_000_000e6`) | Shared buy/sell burst allowance with 20% headroom above the historical $5 million peak buying day. |
+| `INITIAL_EXECUTION_REFILL_PER_DAY` | 6,000,000 USDat/day (`6_000_000e6`) | Supports consecutive busy trading days; an empty, unused bucket refills in 24 hours. |
+| `V2_ORACLE_INITIAL_DEVIATION_BPS` | 100 bps (1%) | Rejects the largest observed feed disagreements while limiting pricing interruptions in the [historical sample](./drafts/strcon-feed-deviation-findings.md#recommendation). |
+| `EXECUTION_TOLERANCE_BPS` | 75 bps (0.75%) | Leaves 36.33 bps above the largest observed all-in buy gap while execution is manual; reassess 50 bps after [delayed-settlement testing](./drafts/strcon-execution-tolerance-testing.md). |
+| `MIGRATION_TOLERANCE_BPS` | 200 bps (2%) | Headroom above the supplied 6.6 bps valuation gap; limits the absolute whole-vault NAV change, not expected migration cost. See [migration analysis](./drafts/strcon-migration-tolerance.md). |
+| `BASE_REDEMPTION_FEE_BPS` | 10 bps (0.10%) | Initial Regular-mode cost-recovery fee above the observed 6.52–8.54 bps sell-side gaps; return conversion to USDat is fee-free. |
+| `ELEVATED_REDEMPTION_FEE_BPS` | 50 bps (0.50%) | Additional liquidity allowance for exits processed in Elevated mode. |
+| `ELEVATED_DEPOSIT_FEE_BPS` | 25 bps (0.25%) | Keeps entry cheaper than Elevated exits while contributing to purchase costs. |
 
-### Queue inherited state and transition
+## ✅ Step 1 — Deploy all necessary contracts
 
-These are snapshots and coordination records. The queue reinitializer does not
-take them as arguments or rewrite existing requests.
+Set the [dependency inputs](./v2-deployment/DeployV2Dependencies.md), including
+expected addresses and hashes for the deployment nonce. Run the deployment script:
 
-| Record | Value / evidence | Check |
-|---|---|---|
-| Queue-local pause state at upgrade | TBD | Preserved independently of vault pause. |
-| Complete legacy-request inventory / snapshot block | TBD | IDs, statuses, request fields, NFT ownership/approvals, and enumeration. |
-| Escrowed shares / funded USDat liabilities / custody | TBD | Reconcile before and after the upgrade. |
-| Legacy `InProgress` IDs / unlock or reset transactions | TBD | Unlock in v1 or reset in v2; record the complete rescan before processing resumes. |
-| Legacy-limit notice / owner grace-period end | TBD | Existing limit slots become net per-share limits without conversion. |
-| Processing-resumption time / responsible operator | TBD | After the grace period and legacy-request recovery. |
-
-## 2. Deploy and verify dependencies
-
-Completed: the user confirms deployment and Etherscan verification of all seven
-dependencies. The supplied addresses and hashes match the
-[dependency manifest](./v2-deployment/DeployV2Dependencies.md).
-The preparation instructions below remain as the deployment procedure reference.
-
-Use the reviewed [DeployV2Dependencies inputs](./v2-deployment/DeployV2Dependencies.md)
-and record the actual deployment signer and nonce sequence. The deployment plan
-included Forge's prepended deterministic linked-library deployment,
-followed by the wrapper, mirror, STRCon module, policy, queue implementation,
-and vault implementation. The populated predictions use nonce `64` for the library
-factory transaction and `65`–`70` for the six `CREATE` transactions; see the
-[dependency deployment table](./v2-deployment/DeployV2Dependencies.md).
-
-Before simulation, confirm all seven `EXPECTED_*` addresses in
-`DependenciesConfig.sol`, the configured `PRIMARY_FEED`, and all seven expected
-runtime code hashes.
-
-Read the deployer's next transaction nonce, accounting for pending transactions,
-during the final deployment simulation. Record the nonce assigned to each
-transaction, including the preceding library-deployment transaction, and recheck
-before broadcasting. If the nonce has changed, regenerate the predicted addresses
-and address-dependent expected hashes before proceeding, and update the reviewed
-`EXPECTED_*` address constants in `DependenciesConfig.sol`.
-Regenerate affected hashes if the build or bindings change.
-
-The six ordinary `CREATE` addresses depend on the deployer address and each
-transaction's nonce. Their order is wrapper, mirror, STRCon module, policy, queue
-implementation, then vault implementation. Confirm the new planned sequence
-with a simulation using the configured deployer and compare its addresses with the
-predictions and matching runtime hashes in the dependency deployment document.
-`run()` rejects any address mismatch during local execution before broadcast;
-this check does not reserve addresses or roll back transactions already submitted.
-Reconcile those predictions with the deployment receipts before using the
-addresses in the upgrade batch. The script
-passes newly created dependency addresses into later constructors automatically.
-
-The current CREATE predictions were checked with `cast compute-address` and the
-CREATE address formula. This example predicts the STRCon module at nonce `67`:
-
-```sh
-cast compute-address 0x59Ebb7143dDDd7b045dE7B0bd0F99446143F1624 --nonce 67
+```bash
+forge script script/v2/DeployV2Dependencies.s.sol:DeployV2Dependencies \
+  --rpc-url "$RPC_URL" \
+  --private-key "$PRIVATE_KEY" \
+  --broadcast \
+  --verify \
+  --etherscan-api-key "$SCANNER_API_KEY"
 ```
 
-Reproduce the library prediction using the script's CREATE2 factory
-`0x4e59b44847b379578588920cA78FbF26c0B4956C`, zero `TRADE_LOGIC_SALT`, and the
-creation-code hash recorded below. Recalculate if the library bytecode changes;
-the deployer wallet nonce does not determine this library address. Check its
-address-dependent runtime and all vault link references.
+Dry-run first by omitting `--broadcast` and `--verify`.
+Copy the output addresses into [UpgradeConfig.sol](../script/v2/configs/UpgradeConfig.sol).
 
-Expected runtime hashes are reviewed inputs in
-the configuration document; observed hashes below are on-chain measurements
-and must match those inputs, including constructor immutables and library links.
+## Step 2 — Schedule and execute the upgrade
 
-Six expected hashes were calculated for the previous `62`–`68` nonce plan on 2026-09-08 using Solidity
-`0.8.36`, optimizer `150` runs, EVM `osaka`, and IPFS metadata. All artifact metadata
-source hashes matched the local files. Local constructor execution with the exact
-configured immutables, planned sender/nonces, and library links, including the
-CREATE2 library deployment, reproduced all six hashes. These are expected values,
-not mainnet observations.
+- [ ] Completed
 
-The oracle hash was calculated and locally verified on 2026-09-11 with the confirmed
-primary-feed address and mocked 8-decimal feed responses. Live feed checks remain required.
+### Before scheduling
 
-The policy and both implementation hashes were recalculated for the `64`–`70` plan
-from current artifacts with the correct embedded addresses and library links.
-Artifact source hashes matched local files; the other four expected hashes are
-unchanged. The user subsequently confirmed the dry run and deployment succeeded.
+- Complete and approve the remaining [upgrade inputs](./v2-deployment/BuildV2UpgradeBatch.md).
+  Review changes since the auditor-reviewed commit.
+- Check current role holders and timelock controls against the configuration.
+  Resolve the spec conflict for shared parameter-manager/enforcer/unpauser and
+  blacklister/pauser holders before approval.
+- Snapshot NAV, supply, custody, unvested rewards, both pause states, and queue
+  requests/NFT ownership/approvals/liabilities. Rehearse the exact upgrade batch
+  against current mainnet state and check storage/accounting.
+- Confirm dependency bindings and live oracle prices. Check the transition USDat
+  buffer: mirrored STRC cannot be sold after the upgrade. Buffer target: TBD.
+- Notify legacy request owners and set the post-upgrade grace-period end: TBD.
+  Confirm owners will have a working way to update or cancel requests.
 
-Hashes below are from the user-supplied deployment output; Etherscan verification
-is user-confirmed. Independent post-deployment reads remain part of reconciliation.
+### Schedule and execute
 
-| Artifact | Transaction / block or existing-code evidence | Reported runtime hash | Source / ABI verification |
-|---|---|---|---|
-| `STRConTradeExecutionLogic` | TBD | `0x3fd06ec46b4894fee8cf52acd25ac1b4671db5e32644cab70d7201c9b50830e3` | Etherscan-verified (user-confirmed) |
-| `STRConPriceOracle` | TBD | `0x0e4a38c2cf995d18597294cf3d16a26222538828eacc24a711fd882b2188954f` | Etherscan-verified (user-confirmed) |
-| `STRCMirrorModule` | TBD | `0x9d36b5975c2637fc6e51e682333971f643e79d910e83f18460691077d3c573a0` | Etherscan-verified (user-confirmed) |
-| `STRConModule` | TBD | `0xa7e50e2c3b872a8e522c5b22ff5316d53f9ae2495867846b5d0fc07a343e94bb` | Etherscan-verified (user-confirmed) |
-| `STRConExecutionPolicy` | TBD | `0xe92e2d05245a5048f7c39cb31049be1fe9f70b7e1bcf1febc77cf4dbd5d50f89` | Etherscan-verified (user-confirmed) |
-| `WithdrawalQueueERC721` implementation | TBD | `0x0cee4341cb8c1bf5acc02a27454ad5dc15b3bd13a6f64d9fb03d1708ce34172e` | Etherscan-verified (user-confirmed) |
-| `StakedUSDat` implementation | TBD | `0xcc057ad6ff68536048ac4c350ce3019047b01117fe4be61401cc4c0bafecc456` | Etherscan-verified (user-confirmed) |
+The targets run `source syncprod`: set `RPC_URL`, `ADMIN` to the Fireblocks proposer address,
+and `PRIVATE_KEY` for execution, alongside the existing Fireblocks client settings.
+Scheduling verifies that `ADMIN` holds `PROPOSER_ROLE` on the five-day timelock.
 
-| Verification record | Value / evidence | Check |
+1. Set `UPGRADE_CONFIGURATION_APPROVED = true` after review and simulate scheduling:
+
+   ```bash
+   make upgrade-schedule-dry-run
+   ```
+
+   This uses the regular RPC and makes no Fireblocks signing request.
+2. Review the generated batch and operation ID. The batch upgrades the vault first
+   and queue second atomically. Schedule it through Fireblocks:
+
+   ```bash
+   make upgrade-schedule
+   ```
+
+   Record the transaction hash and on-chain ready-at time.
+3. After the five-day delay, recheck readiness and simulate execution:
+
+   ```bash
+   make upgrade-execute-dry-run
+   ```
+
+4. After a successful simulation, execute and save the transaction hash:
+
+   ```bash
+   make upgrade-execute
+   ```
+
+Each command regenerates the batch from the current configuration; the timelock
+must recognize that exact operation as ready to execute. Keep the configuration
+unchanged after scheduling; changing the batch requires a new proposal and delay.
+Unscheduled, waiting, or completed operations are refused.
+After broadcasting, the targets independently confirm the on-chain result;
+scheduling logs the actual ready-at time.
+
+Use the five-day admin timelock in [SharedConfig](../script/v2/configs/SharedConfig.sol),
+not the two-day operational-role timelock. `BuildV2UpgradeBatch` remains read-only;
+the schedule and execute targets submit transactions.
+
+### Before migration or queue processing resumes
+
+- Compare accounting, custody, requests, and pause states to the snapshot.
+  Check the mirror seed against legacy `strcBalance`, `vestingAmount`,
+  `lastDistributionTimestamp`, `vestingPeriod`, and `maxRewardsBps`.
+  The initializer copies these automatically from vault storage.
+- Check installed implementations, modules, roles, fees, tolerances, and policy
+  settings against the configuration. The vault starts in Elevated mode.
+- Have the vault operator run a small STRCon buy/sell round trip using the funded,
+  approved execution vehicle. Return `STRConModule.balance()` to zero.
+  Confirm the live migration tolerance is suitable for the observed price difference.
+- Have the queue operator call `resetLegacyInProgressRequest` for every remaining
+  `InProgress` request, then rescan all requests.
+- Resume queue processing only after the rescan is clear and owners have had the
+  full grace period. Queue pause blocks updates and cancellation; vault pause
+  also blocks cancellation. Extend the grace period if those actions were unavailable.
+
+Legacy limits are **not converted**: the old absolute `minUsdatReceived` value
+becomes `minSharePrice`, a minimum net USDat price per `1e18` shares in 6-decimal
+units, after fees. Owners need to review their limits before processing resumes.
+
+## Step 3 — Schedule and execute migration
+
+- [ ] Completed
+
+1. Stop mirror `transferInRewards` calls. Wait for
+   `STRCMirrorModule.getUnvestedAmount() == 0`; do not restart rewards.
+2. Reconcile the final off-chain STRC disposition. Fund the execution vehicle
+   with the full STRCon delivery and approve the vault to pull it.
+3. Complete the [migration inputs](./v2-deployment/BuildV2Migration.md):
+   amount, live vehicle/tolerance, deadline, and salt. Allow the five-day delay
+   plus execution time before the deadline.
+4. Confirm the vault is unpaused, the mirror is seeded and not retired,
+   recognized STRCon balance is zero, and prices/projected NAV pass the checks.
+   Approve the configuration and set `MIGRATION_CONFIGURATION_APPROVED = true`.
+5. Generate the operation:
+
+   ```bash
+   forge script script/v2/migrate/BuildV2Migration.s.sol:BuildV2Migration --rpc-url "$RPC_URL"
+   ```
+
+6. Review and submit `scheduleCalldata` from `PROPOSER` to the five-day admin
+   `TIMELOCK`, with zero ETH. Save the operation ID, calldata, transaction hash,
+   and ready-at time.
+7. After the delay, recheck prices/NAV, vehicle eligibility, funding, allowance,
+   tolerance, pause state, zero unvested rewards, and zero recognized STRCon.
+   Simulate the saved `executeCalldata`, then execute with zero ETH before the deadline.
+   The builder's five-days-ahead deadline check is for scheduling, not this final simulation.
+8. Save the execution transaction hash. Confirm the mirror is retired at zero,
+   recognized STRCon equals the delivery, custody covers it, NAV change is within
+   tolerance, and supply/queue liabilities are unchanged.
+
+Keep recognized STRCon balance at zero between the validation round trip and migration.
+
+## Step 4 — Cleanup
+
+- [ ] Completed
+
+After the upgrade has been validated, revoke these obsolete roles on the proxies:
+
+| Proxy | Roles to revoke | Current holders |
 |---|---|---|
-| Deployment signer / CREATE nonce sequence | Planned: configured signer, library factory transaction `64`, CREATE transactions `65`–`70`; actual deployment evidence: TBD | Map every deployment to the resulting configured address in the [dependency deployment table](./v2-deployment/DeployV2Dependencies.md). |
-| Nonce lookup time / block / RPC / latest and pending values | Pending: `64`; time/block/RPC/latest: TBD | User-supplied pending nonce for the configured deployer. Recheck before final simulation and broadcast. |
-| Library deployment status / live verification | Deployed and Etherscan-verified (user-confirmed); independent live evidence: TBD | Match the configured library address and hash. |
-| Library creation-code hash / predicted address / linkage | Unchanged creation-code hash: `0x0debc3575364496e82fe59e27650d769acf0516b0e60aca5348f651b2cddb483`; predicted address: `0xDF89cCf4Ead4Ea2398400DF3E44BAA595695b0b6`; deployed linkage: TBD | Reconfirm the final build, CREATE2 prediction, and deployed linkage. |
-| Complete binding reconciliation | TBD | Proxy/asset/queue, mirror/legacy oracle, wrapper/token/feeds, module/wrapper, policy/module, and implementation/library. |
-| Fresh module / policy state | TBD | Mirror unseeded, not retired, balance zero; STRCon balance zero; policy vehicle, tolerance, and all capacity fields zero. |
-| Wrapper and feed units / initial configuration | TBD | Wrapper and both feeds: 8 decimals. Initial deviation: `100` bps (`1%`), supplied by the deployment script constant; validate against the replacement primary feed per the [recommendation](./drafts/strcon-feed-deviation-findings.md#recommendation). Initial staleness: 26 hours; bounds: `20e8`–`150e8`; caps: 1,000 bps and 36 hours. |
-| Live oracle read / validation block | TBD | Both rounds, reference freshness, deviation, `sValue`, asset pause flag, bounds, and returned price. |
-| STRConModule constructor smoke test | TBD | Oracle has required decimals and returns a callable, nonzero price. |
-| Vault STRCon custody before migration | TBD | Distinguish token custody from the module's recognized balance. |
-| Governance contract/control verification | TBD | Runtime hashes, deployment/source evidence, delays, role grants, proposers, executors, cancellers, signers, and quorums for each configured timelock. |
+| Vault | `PROCESSOR_ROLE`, `COMPLIANCE_ROLE` | TBD |
+| Queue | `PROCESSOR_ROLE`, `COMPLIANCE_ROLE`, `STAKED_USDAT_ROLE` | TBD |
 
-The deployment script supplies the initial deviation constant to the wrapper's
-constructor. The listed staleness, bounds, and caps are code-defined defaults and
-checks, not additional constructor inputs. The deployment script does not provision governance timelocks;
-record verification evidence for every configured existing or newly provisioned instance.
+1. Find all current holders using role-grant/revoke events and `hasRole`.
+   Role IDs are `keccak256(bytes(roleName))`.
+2. Schedule and execute `revokeRole(roleId, holder)` through the role administrator
+   for every obsolete grant. These calls are separate from the upgrade batch.
+3. Verify the old grants are removed and approved v2 roles remain.
+   Preserve the approved `DEFAULT_ADMIN_ROLE` timelock on both proxies;
+   any extra active admins or v2 holders need separate review.
 
-## 3. Rehearse the exact batch and prepare queue owners
+Do not remove legacy oracle administration while the mirror still needs it.
+After retirement, check for other consumers before decommissioning it.
 
-Complete the [BuildV2UpgradeBatch inputs](./v2-deployment/BuildV2UpgradeBatch.md),
-run the production upgrade builder's `run()` preflights, and rehearse its exact
-generated batch against current mainnet state using the reviewed artifacts,
-deployed addresses, and production roles. Preserve pre/post storage and accounting
-comparisons. A storage-layout error or accounting mismatch blocks scheduling.
-
-The existing [mock fork test](../test/v2/fork/V2MainnetFork.t.sol) exercises pinned
-v1 state with fork-created deployments, placeholder roles, injected inventory, and
-refreshed oracle timestamps. Its helpers bypass the builders' production
-preflights; passing it does not complete the exact production rehearsal.
-
-Announce that each legacy `minUsdatReceived` slot becomes a 6-decimal minimum net
-`minSharePrice` per `1e18` shares after the active redemption fee. Preserve request
-values and communicate sufficient time after the upgrade for owners to update or
-cancel before processing resumes. Inventory every `InProgress` request and prepare
-its v1 unlock or v2 reset using the queue table above.
-
-| Record | Value / evidence |
-|---|---|
-| Current-state rehearsal block number / hash | TBD |
-| Exact artifacts / configuration / generated transactions | TBD |
-| Production preflights / rehearsal storage and accounting results | TBD |
-| Upgrade notice / timing / responsible owner | TBD |
-| Critical frontend / bot / indexer / partner readiness before Step 1 | TBD |
-
-## 4. Schedule and execute the atomic upgrade
-
-After configuration review and successful rehearsal, schedule the two
-`upgradeToAndCall` payloads as one batch through the configured five-day admin
-timelock. The builder places the vault upgrade first and queue upgrade second.
-After the delay, revalidate readiness and execute the exact scheduled batch;
-failure of either reinitializer reverts both upgrades.
-
-### Timelock operation evidence
-
-Keep the two operations separate. Step 2 is scheduled only after the validation
-gate below. Chosen timelock addresses, proposer, delay, salts, predecessor,
-Step 1 planned timestamps, and migration arguments are in deployment configurations.
-
-| Record | Step 1: atomic upgrades | Step 2: migration |
-|---|---|---|
-| Builder approval flag / review evidence | TBD | TBD |
-| Timelock / proposer / executor authority verification | TBD | TBD |
-| Execution submitter | TBD | TBD |
-| Generated targets / ETH values / inner payloads | TBD | TBD |
-| Schedule calldata | TBD | TBD |
-| Execute calldata | TBD | TBD |
-| Operation ID / on-chain hash comparison | TBD | TBD |
-| Scheduling transaction / block / timestamp | TBD | TBD |
-| Ready-at timestamp / planned execution time confirmation | TBD | TBD |
-| Pre-execution readiness / simulation evidence | TBD | TBD |
-| Execution transaction / block / timestamp | TBD | TBD |
-| Post-execution accounting / roles / bindings evidence | TBD | TBD |
-
-## 5. Validate Step 1 and recover legacy requests
-
-`StakedUSDat.initializeV2` automatically reads `strcBalance`, `vestingAmount`,
-`lastDistributionTimestamp`, `vestingPeriod`, and `maxRewardsBps` from preserved
-v1 proxy storage and passes them to `STRCMirrorModule.seed(...)`. The deployer
-does not supply seed arguments. Compare all five values and unvested rewards
-at the upgrade, alongside NAV, supply, share conversions, and custody.
-
-Verify configured roles and bindings, including derived authorization on the
-mirror, wrapper, module, and policy; these contracts have no local role registry.
-Confirm both proxies preserve their individual pause states and existing queue
-requests. Any mismatch blocks the validation gate and Step 2.
-
-| Record | Value / evidence | Check |
-|---|---|---|
-| Pre/post-upgrade state reconciliation | TBD | Vault accounting, five copied seed fields, rewards, queue requests/NFTs, liabilities, custody, and pauses. |
-| Configuration / role / dependency reconciliation | TBD | All configured holders, fees, tolerances, recovery/surplus addresses, module/policy bindings, and wrapper parameters. |
-| Code-defined initialization results | TBD | Surplus vesting: 3 days; effective mode: Elevated; `regularModeValidUntil == 0`. |
-| Derived policy capacity state | TBD | Available capacity starts at configured maximum; `lastUpdated` equals initialization timestamp. |
-| Empty STRCon accounting position | TBD | `STRConModule.balance() == 0` after Step 1 and again after the round trip. |
-| Surplus-source funding / vault allowance | TBD | Amount and approval evidence. |
-| Vault and execution-vehicle eligibility | TBD | Exact settlement addresses and vehicle control/signers/quorum evidence. |
-| Vehicle funding source / inventory target | TBD | Covers both sides of the small validation round trip. |
-| Vehicle USDat / STRCon allowances to vault | TBD | Amounts and approval references. |
-| Small buy/sell round-trip terms / transactions | TBD | Amounts, vehicle, deadlines, custody changes, and returned empty recognized position. |
-| Oracle basis / migration-tolerance review | TBD | Approved tolerance remains conservative and sufficient; any adjustment is active before Step 2 scheduling. |
-| USDon residual handling / inventory reconciliation owner | TBD | Vehicle operations outside vault accounting. |
-
-Reset each remaining inherited `InProgress` ID with
-`resetLegacyInProgressRequest`, then rescan the complete inventory. This preserves
-the queue's current pause state. Record the results in the queue table; resume
-processing only after no `InProgress` entries remain and the communicated grace
-period has ended. An unpaused vault has Elevated-mode permissions immediately
-after initialization, so withholding queue processing requires operator coordination.
-
-## 6. Prepare, schedule, and execute migration
-
-Stop `transferInRewards` and wait for `STRCMirrorModule.getUnvestedAmount() == 0`;
-the active tranche and live vesting period determine the wait. Reconcile the final
-mirrored position and off-chain STRC disposition. The execution vehicle must obtain
-and approve the full corresponding STRCon delivery before scheduling Step 2.
-
-Fill and review the [BuildV2Migration inputs](./v2-deployment/BuildV2Migration.md)
-after the round trip, then run the
-production migration builder's `run()` preflights and record its operation above.
-Confirm the approved migration tolerance is active and the deadline accommodates
-the five-day delay. Schedule `migrate(expectedStrcon, deadline)` through the admin
-timelock only after the validation gate is complete.
-
-| Record | Value / evidence | Check |
-|---|---|---|
-| Reward cutoff / vesting-completion time | TBD | Derived from the active tranche; later rewards block migration. |
-| Final mirrored position / off-chain STRC disposition | TBD | Evidence for the timelocked attestation; off-chain disposition cannot be verified on chain. |
-| Final vehicle delivery / allowance readiness | TBD | Exact configured amount, vehicle eligibility, funding, and vault approval. |
-| Migration readiness / revalidation block | TBD | Vault unpaused, deadline valid, mirror seeded/not retired/unvested zero, recognized STRCon balance zero, and current vehicle/tolerance match. |
-| Current prices / projected whole-vault NAV | TBD | Both positions price successfully and projected NAV satisfies the builder's tolerance check. |
-| Pre/post-migration accounting and custody | TBD | Exact STRCon delivery, recognized balance, whole-vault NAV tolerance, USDat, supply, and queue liabilities. |
-| Final retirement evidence | TBD | Mirror permanently retired at zero; STRCon recognized balance equals delivery and custody covers it. |
-
-Revalidate live readiness after the delay before executing the scheduled operation.
-The migration atomically pulls the exact STRCon amount, retires the mirror,
-recognizes STRCon, and verifies custody and NAV. A revert rolls back the transfer
-and both module positions. After success, the retired mirror returns zero without
-an oracle read and rejects reward/parameter mutations.
-
-## 7. Integration and operational handoff
-
-| Record | Value / evidence | Check |
-|---|---|---|
-| Final ABI / contract-address publication | TBD | Vault, queue, modules, wrapper, policy, and linked-library events emitted by the vault. |
-| Frontend / bot / indexer readiness | TBD | Changed selectors, net per-share queue limits, fees, and fail-closed oracle handling. |
-| Market-mode monitoring owner / fallback keeper / risk approver | TBD | Mode expiry and operational ownership per specification. |
-| Launch monitoring / incident-response reference | TBD | Oracle health, custody, roles, pause/unpause ownership, and specification Appendix G. |
+## Communication Plan

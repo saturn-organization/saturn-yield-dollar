@@ -3,8 +3,8 @@
 Script: [DeployV2Dependencies.s.sol](../../script/v2/DeployV2Dependencies.s.sol).
 Configuration: [DependenciesConfig.sol](../../script/v2/configs/DependenciesConfig.sol),
 which inherits [SharedConfig.sol](../../script/v2/configs/SharedConfig.sol).
-Shared [release and deployer](../v2-deployment-configurations.md);
-execution and verification [runbook](../v2-deployment-runbook.md).
+Reviewed baseline, execution, and verification:
+[deployment runbook](../v2-deployment-runbook.md).
 
 This script deploys the v2 library, oracle wrapper, accounting modules, execution
 policy, and both implementations. It does not upgrade the proxies or run migration.

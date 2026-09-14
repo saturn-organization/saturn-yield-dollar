@@ -8,7 +8,7 @@ import {
     BuildV2UpgradeBatch,
     IUUPSUpgradeable,
     IWithdrawalQueueV2Initializer
-} from "../../../script/v2/BuildV2UpgradeBatch.s.sol";
+} from "../../../script/v2/upgrade/BuildV2UpgradeBatch.s.sol";
 import {UpgradeConfig} from "../../../script/v2/configs/UpgradeConfig.sol";
 import {ISTRConExecutionPolicy} from "../../../src/v2/interfaces/ISTRConExecutionPolicy.sol";
 import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
@@ -30,8 +30,6 @@ contract BuildV2UpgradeBatchTest is Test, UpgradeConfig {
         assertEq(builder.MAX_FEE_BPS(), MAX_FEE_BPS);
         assertEq(builder.MAX_EXECUTION_TOLERANCE_BPS(), MAX_EXECUTION_TOLERANCE_BPS);
         assertEq(builder.MAX_MIGRATION_TOLERANCE_BPS(), MAX_MIGRATION_TOLERANCE_BPS);
-        assertEq(builder.EXPECTED_SCHEDULE_TIMESTAMP(), EXPECTED_SCHEDULE_TIMESTAMP);
-        assertEq(builder.EXPECTED_UPGRADE_EXECUTION_TIMESTAMP(), EXPECTED_UPGRADE_EXECUTION_TIMESTAMP);
         assertEq(builder.UPGRADE_CONFIGURATION_APPROVED(), UPGRADE_CONFIGURATION_APPROVED);
     }
 

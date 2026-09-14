@@ -1,6 +1,6 @@
 # BuildV2Migration inputs
 
-Source: [BuildV2Migration.s.sol](../../script/v2/BuildV2Migration.s.sol).
+Source: [BuildV2Migration.s.sol](../../script/v2/migrate/BuildV2Migration.s.sol).
 Configuration: [MigrationConfig.sol](../../script/v2/configs/MigrationConfig.sol),
 which inherits [SharedConfig.sol](../../script/v2/configs/SharedConfig.sol).
 Run this after the [upgrade batch](./BuildV2UpgradeBatch.md) has executed and the
@@ -25,11 +25,11 @@ The timelock must hold the vault's `DEFAULT_ADMIN_ROLE`. The script also require
 an open executor role: `TIMELOCK.hasRole(EXECUTOR_ROLE, address(0)) == true`.
 The deployer wallet and its nonce are not inputs to this builder.
 
-## Address still to set in MigrationConfig.sol
+## Execution vehicle in MigrationConfig.sol
 
 | Constant | Value | What to supply |
 |---|---|---|
-| `EXPECTED_EXECUTION_VEHICLE` | TBD | The active, validated vehicle holding the STRCon to deliver. Current placeholder: `address(0)`. Must exactly match `vault.executionPolicy().executionVehicle()`. |
+| `EXPECTED_EXECUTION_VEHICLE` | `0xb3C29aa9196785F0aa5ECA6Cb0BcF1E92D83A468` | User-confirmed delivery wallet. Must exactly match `vault.executionPolicy().executionVehicle()`. |
 
 This is a check against the live vehicle, not a request to deploy or change it.
 The vehicle must hold the full `EXPECTED_STRCON` and approve that amount of STRCon
@@ -40,9 +40,9 @@ to the vault proxy above. The vault pulls the tokens during migration.
 | Constant | Value | Requirement |
 |---|---|---|
 | `EXPECTED_STRCON` | TBD | Exact delivery amount in 18-decimal STRCon units; must be nonzero. Current placeholder: `0`. |
-| `EXPECTED_MIGRATION_TOLERANCE_BPS` | TBD | Must match the vault's live `migrationToleranceBps()` and be at most `500` bps. Current literal: `0`; zero is allowed only if reviewed and matched by the live setting. |
+| `EXPECTED_MIGRATION_TOLERANCE_BPS` | 200 bps (2%) | Must match the vault's live `migrationToleranceBps()` and be at most `500` bps. Current literal: `200`. |
 | `MIGRATION_DEADLINE` | TBD | Unix timestamp strictly later than the current block timestamp plus five days when building. Allow time for scheduling and execution. Current placeholder: `0`. |
-| `MIGRATION_SALT` | TBD | Reviewed, unique, nonzero `bytes32` for this exact operation. Current placeholder: `bytes32(0)`. |
+| `MIGRATION_SALT` | `bytes32(0)` | Zero is allowed; use the same salt when scheduling and executing. |
 | `MIGRATION_CONFIGURATION_APPROVED` | TBD | Set to `true` after reviewing the completed configuration. Currently `false`, which blocks `run()`. |
 
 The tolerance constant checks an existing vault setting; the generated migration
@@ -91,7 +91,7 @@ belong in the [deployment runbook](../v2-deployment-runbook.md).
 With `RPC_URL` set to an Ethereum mainnet RPC endpoint:
 
 ```bash
-forge script script/v2/BuildV2Migration.s.sol:BuildV2Migration --rpc-url "$RPC_URL"
+forge script script/v2/migrate/BuildV2Migration.s.sol:BuildV2Migration --rpc-url "$RPC_URL"
 ```
 
 | Generated output | Use |
@@ -102,5 +102,5 @@ forge script script/v2/BuildV2Migration.s.sol:BuildV2Migration --rpc-url "$RPC_U
 | Execute calldata | Submit separately to `TIMELOCK` after the scheduled operation is ready, with zero ETH value and before the migration deadline. |
 
 Save generated calldata, operation ID, and transaction evidence in the runbook.
-For the shared release details and script index, see
-[deployment configurations](../v2-deployment-configurations.md).
+For the reviewed baseline, see the
+[deployment runbook](../v2-deployment-runbook.md).

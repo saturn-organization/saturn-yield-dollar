@@ -1,17 +1,20 @@
 # BuildV2UpgradeBatch configuration
 
-Source: [BuildV2UpgradeBatch.s.sol](../../script/v2/BuildV2UpgradeBatch.s.sol).
+Source: [BuildV2UpgradeBatch.s.sol](../../script/v2/upgrade/BuildV2UpgradeBatch.s.sol).
 Configuration: [UpgradeConfig.sol](../../script/v2/configs/UpgradeConfig.sol),
 which inherits [SharedConfig.sol](../../script/v2/configs/SharedConfig.sol).
-Shared release: [deployment configurations](../v2-deployment-configurations.md).
+Reviewed baseline: [deployment runbook](../v2-deployment-runbook.md).
 
 Use this after [DeployV2Dependencies](./DeployV2Dependencies.md) has deployed and
 verified its contracts. This is a read-only builder: it validates production
 bindings and generates the timelock calldata for both proxy upgrades in one batch.
 Running it does not deploy, schedule, execute, or upgrade contracts.
+The Make targets use [ScheduleV2Upgrade](../../script/v2/upgrade/ScheduleV2Upgrade.s.sol)
+and [ExecuteV2Upgrade](../../script/v2/upgrade/ExecuteV2Upgrade.s.sol) for those transactions,
+sharing this builder's batch encoding and preflights.
 
-Inputs below are Solidity constants in those configuration files. `TBD` means an unresolved
-deployment output or launch decision; the current zero values and
+Contract settings below are Solidity constants in those configuration files. `TBD` means an unresolved
+deployment output or launch decision; the zero values marked `TBD` and
 `UPGRADE_CONFIGURATION_APPROVED = false` are placeholders, not approved launch settings.
 
 ## 1. Existing addresses already configured
@@ -26,7 +29,10 @@ the intended production configuration.
 | `WITHDRAWAL_QUEUE_PROXY` | `0x4Bc9FEC04F0F95e9b42a3EF18F3C96fB57923D2e` | User-confirmed; second upgrade target. |
 | `USDAT` | `0x23238f20b894f29041f48D88eE91131C395Aaa71` | User-confirmed; queue implementation asset binding. |
 | `TIMELOCK` | `0xfD5782E3BFF366601da3973aE30C583dE4F08A67` | Source constant; existing admin/upgrade timelock for both proxies. |
-| `PROPOSER` | `0x610182581C93687Ca03F4a8E7f124f8cEC616820` | Source constant; scheduling account with the timelock's proposer role. |
+
+| Environment variable | Value | Purpose |
+|---|---|---|
+| `ADMIN` | Loaded by `source syncprod` | Fireblocks sender; scheduling requires this address to hold `PROPOSER_ROLE` on `TIMELOCK`. |
 
 ## 2. Deployed dependency addresses
 
@@ -110,7 +116,7 @@ and are not extra arguments to `BuildV2UpgradeBatch`.
 | Contract version / source | TBD | TBD | TBD | TBD |
 | Minimum delay, seconds | `432000` (script requires 5 days) | `172800` (user-provided; verify live) | `172800` (user-provided; verify live) | `172800` (user-provided; verify live) |
 | Timelock admin holder(s) | TBD | TBD | TBD | TBD |
-| Proposer address(es) | `PROPOSER` above required; complete set TBD | TBD | TBD | TBD |
+| Proposer address(es) | `ADMIN` loaded by `source syncprod`; complete set TBD | TBD | TBD | TBD |
 | Executor address(es) / open execution | Open execution required via role grant to `address(0)`; complete set TBD | TBD | TBD | TBD |
 | Canceller address(es) | TBD | TBD | TBD | TBD |
 | Controlling wallet(s) / signers / approval quorum | TBD | TBD | TBD | TBD |
@@ -125,26 +131,24 @@ Basis points use `100 bps = 1%`; USDat amounts use 6 decimal places.
 
 | Constant to set | Approved value | Current value / requirement |
 |---|---|---|
-| `BASE_REDEMPTION_FEE_BPS` | TBD | `0`; no greater than elevated redemption fee. |
-| `ELEVATED_REDEMPTION_FEE_BPS` | TBD | `0`; at most `500` bps. |
-| `ELEVATED_DEPOSIT_FEE_BPS` | TBD | `0`; at most `500` bps. |
-| `EXECUTION_TOLERANCE_BPS` | TBD | `0`; at most `500` bps. |
-| `MIGRATION_TOLERANCE_BPS` | TBD | `0`; at most `500` bps. |
-| `INITIAL_EXECUTION_CAPACITY` | TBD | `0`; `uint128`, raw USDat units; initial available capacity also starts at this amount. |
-| `INITIAL_EXECUTION_REFILL_PER_DAY` | TBD | `0`; `uint128`, raw USDat units per day. |
-| `EXPECTED_SCHEDULE_TIMESTAMP` | TBD | `0`; must be nonzero Unix seconds. |
-| `EXPECTED_UPGRADE_EXECUTION_TIMESTAMP` | TBD | `0`; at least schedule timestamp plus `432000` seconds. |
-| `BATCH_SALT` | TBD | `bytes32(0)`; replace with a reviewed unique, nonzero `bytes32` salt. |
+| `BASE_REDEMPTION_FEE_BPS` | 10 bps (0.10%) | `10`; no greater than elevated redemption fee. |
+| `ELEVATED_REDEMPTION_FEE_BPS` | 50 bps (0.50%) | `50`; no less than the base redemption fee and at most `500` bps. |
+| `ELEVATED_DEPOSIT_FEE_BPS` | 25 bps (0.25%) | `25`; at most `500` bps. |
+| `EXECUTION_TOLERANCE_BPS` | 75 bps (0.75%) | `75`; at most `500` bps. |
+| `MIGRATION_TOLERANCE_BPS` | 200 bps (2%) | `200`; at most `500` bps. |
+| `INITIAL_EXECUTION_CAPACITY` | 6,000,000 USDat | `6_000_000e6`; `uint128`, raw USDat units; initial available capacity also starts at this amount. |
+| `INITIAL_EXECUTION_REFILL_PER_DAY` | 6,000,000 USDat/day | `6_000_000e6`; `uint128`, raw USDat units per day. |
+| `BATCH_SALT` | `bytes32(0)` | Zero is allowed; use the same salt when scheduling and executing. |
 | `UPGRADE_CONFIGURATION_APPROVED` | TBD — enable after review | Currently `false`; `run()` requires `true`. |
 
 `SharedConfig.sol` sets `EXPECTED_CHAIN_ID = 1`, `TIMELOCK_DELAY = 5 days`, and the
 migration tolerance cap to `500` bps. `UpgradeConfig.sol` sets
 `UPGRADE_PREDECESSOR = bytes32(0)` and fee/execution tolerance caps of `500` bps.
-The expected timestamps are review inputs; they do not schedule transactions or
-override the timelock's actual ready-at time.
+No planned timestamps are required. The timelock sets readiness to the actual
+scheduling block timestamp plus five days; execution checks readiness on-chain.
 
 The vault reads legacy seed accounting from preserved proxy storage during
-initialization. No seed snapshot, vesting timestamp, or legacy queue inventory is
+initialization. No seed accounting values, vesting timestamp, or legacy queue inventory is
 an initializer input. Those observations belong in the runbook.
 
 ## 6. Outputs and next step
@@ -155,6 +159,10 @@ batch targets and ETH values, `scheduleCalldata`, `executeCalldata`, and
 to supply beforehand. Both upgrades are encoded into the same atomic batch, with
 the vault first and the queue second.
 
+The Make targets regenerate the batch from the current configuration on each run.
+Execution requires that exact operation to be ready on-chain. Keep the
+configuration unchanged after scheduling; changing the batch requires a new proposal.
+
 Use the [runbook](../v2-deployment-runbook.md) for rehearsal, submission, the delay,
-execution evidence, and the validation round trip. After Step 1 and its validation
+execution evidence, and the validation round trip. After the upgrade and its validation
 gate, use [BuildV2Migration](./BuildV2Migration.md) for the separate migration inputs.

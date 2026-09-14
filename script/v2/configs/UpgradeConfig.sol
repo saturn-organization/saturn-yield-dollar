@@ -20,15 +20,15 @@ abstract contract UpgradeConfig is SharedConfig {
     address public constant SURPLUS_SOURCE = 0xbBeb892bAA398251EBe80809906F2Ae51EF5a783;
     address public constant EXECUTION_VEHICLE = 0xb3C29aa9196785F0aa5ECA6Cb0BcF1E92D83A468;
 
-    uint16 public constant BASE_REDEMPTION_FEE_BPS = 0;
-    uint16 public constant ELEVATED_REDEMPTION_FEE_BPS = 0;
-    uint16 public constant ELEVATED_DEPOSIT_FEE_BPS = 0;
-    uint16 public constant EXECUTION_TOLERANCE_BPS = 0;
-    uint16 public constant MIGRATION_TOLERANCE_BPS = 0;
+    uint16 public constant BASE_REDEMPTION_FEE_BPS = 10;
+    uint16 public constant ELEVATED_REDEMPTION_FEE_BPS = 50;
+    uint16 public constant ELEVATED_DEPOSIT_FEE_BPS = 25;
+    uint16 public constant EXECUTION_TOLERANCE_BPS = 75;
+    uint16 public constant MIGRATION_TOLERANCE_BPS = 200;
 
     // Six-decimal USDat units.
-    uint128 public constant INITIAL_EXECUTION_CAPACITY = 0;
-    uint128 public constant INITIAL_EXECUTION_REFILL_PER_DAY = 0;
+    uint128 public constant INITIAL_EXECUTION_CAPACITY = 6_000_000e6;
+    uint128 public constant INITIAL_EXECUTION_REFILL_PER_DAY = 6_000_000e6;
 
     // TODO: Set approved vault role holders.
     address public constant VAULT_PARAMETER_MANAGER = 0x6F72de4F529a03Bfa883825152656a8c62CBB626;
@@ -45,9 +45,6 @@ abstract contract UpgradeConfig is SharedConfig {
     address public constant QUEUE_PAUSER = 0xf5a93281ac8604f99755cc489317e75aC334cfE2;
     address public constant QUEUE_UNPAUSER = 0x6F72de4F529a03Bfa883825152656a8c62CBB626;
 
-    // Step 1 operation. TODO: Set Unix timestamps and a unique, nonzero batch salt.
-    uint64 public constant EXPECTED_SCHEDULE_TIMESTAMP = 0;
-    uint64 public constant EXPECTED_UPGRADE_EXECUTION_TIMESTAMP = 0;
     bytes32 public constant UPGRADE_PREDECESSOR = bytes32(0);
     bytes32 public constant BATCH_SALT = bytes32(0);
     bool public constant UPGRADE_CONFIGURATION_APPROVED = false;

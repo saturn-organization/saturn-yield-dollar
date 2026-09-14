@@ -7,11 +7,11 @@ import {TimelockController} from "@openzeppelin/contracts/governance/TimelockCon
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Script, console} from "forge-std/Script.sol";
 
-import {ISTRConExecutionPolicy} from "../../src/v2/interfaces/ISTRConExecutionPolicy.sol";
-import {IStakedUSDat} from "../../src/v2/interfaces/IStakedUSDat.sol";
-import {ISTRCMirrorModule} from "../../src/v2/interfaces/modules/ISTRCMirrorModule.sol";
-import {ISTRConModule} from "../../src/v2/interfaces/modules/ISTRConModule.sol";
-import {MigrationConfig} from "./configs/MigrationConfig.sol";
+import {ISTRConExecutionPolicy} from "../../../src/v2/interfaces/ISTRConExecutionPolicy.sol";
+import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
+import {ISTRCMirrorModule} from "../../../src/v2/interfaces/modules/ISTRCMirrorModule.sol";
+import {ISTRConModule} from "../../../src/v2/interfaces/modules/ISTRConModule.sol";
+import {MigrationConfig} from "../configs/MigrationConfig.sol";
 
 interface IPausableView {
     function paused() external view returns (bool);
@@ -24,7 +24,7 @@ interface IPausableView {
  * `scheduleCalldata` from PROPOSER to TIMELOCK through Fireblocks.
  *
  * Usage (build calldata only):
- *   forge script script/v2/BuildV2Migration.s.sol:BuildV2Migration --rpc-url $RPC_URL
+ *   forge script script/v2/migrate/BuildV2Migration.s.sol:BuildV2Migration --rpc-url $RPC_URL
  *
  * Submit the generated schedule calldata with Fireblocks:
  *   fireblocks-json-rpc --http -- cast send $TIMELOCK $SCHEDULE_CALLDATA \
@@ -98,7 +98,6 @@ contract BuildV2Migration is Script, MigrationConfig {
             EXPECTED_MIGRATION_TOLERANCE_BPS <= MAX_MIGRATION_TOLERANCE_BPS,
             InvalidConfiguration("EXPECTED_MIGRATION_TOLERANCE_BPS")
         );
-        require(MIGRATION_SALT != bytes32(0), InvalidConfiguration("MIGRATION_SALT"));
         require(MIGRATION_DEADLINE > block.timestamp + TIMELOCK_DELAY, InvalidConfiguration("MIGRATION_DEADLINE"));
     }
 

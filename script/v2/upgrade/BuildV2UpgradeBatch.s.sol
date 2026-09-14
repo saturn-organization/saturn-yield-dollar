@@ -5,11 +5,11 @@ import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol"
 import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
 import {Script, console} from "forge-std/Script.sol";
 
-import {ISTRConExecutionPolicy} from "../../src/v2/interfaces/ISTRConExecutionPolicy.sol";
-import {IStakedUSDat} from "../../src/v2/interfaces/IStakedUSDat.sol";
-import {ISTRCMirrorModule} from "../../src/v2/interfaces/modules/ISTRCMirrorModule.sol";
-import {ISTRConModule} from "../../src/v2/interfaces/modules/ISTRConModule.sol";
-import {UpgradeConfig} from "./configs/UpgradeConfig.sol";
+import {ISTRConExecutionPolicy} from "../../../src/v2/interfaces/ISTRConExecutionPolicy.sol";
+import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
+import {ISTRCMirrorModule} from "../../../src/v2/interfaces/modules/ISTRCMirrorModule.sol";
+import {ISTRConModule} from "../../../src/v2/interfaces/modules/ISTRConModule.sol";
+import {UpgradeConfig} from "../configs/UpgradeConfig.sol";
 
 interface IUUPSUpgradeable {
     function upgradeToAndCall(address newImplementation, bytes calldata data) external payable;
@@ -27,20 +27,13 @@ interface IWithdrawalQueueImplementationBindings {
 /**
  * @title BuildV2UpgradeBatch
  * @notice Builds the exact atomic Step-1 schedule and execution calldata without broadcasting.
- * @dev Set the upgrade configuration in UpgradeConfig.sol, review the operation id and calldata, then
- * submit `scheduleCalldata` from PROPOSER to TIMELOCK through Fireblocks. After the delay,
- * submit the matching `executeCalldata` to TIMELOCK from any executor.
+ * @dev Shared encoding and preflights for ScheduleV2Upgrade and ExecuteV2Upgrade.
  *
  * Usage (build calldata only):
- *   forge script script/v2/BuildV2UpgradeBatch.s.sol:BuildV2UpgradeBatch --rpc-url $RPC_URL
+ *   forge script script/v2/upgrade/BuildV2UpgradeBatch.s.sol:BuildV2UpgradeBatch --rpc-url $RPC_URL
  *
- * Submit the generated schedule calldata with Fireblocks:
- *   fireblocks-json-rpc --http -- cast send $TIMELOCK $SCHEDULE_CALLDATA \
- *     --from $ADMIN --unlocked --rpc-url {}
- *
- * Submit the generated execute calldata after the timelock delay:
- *   fireblocks-json-rpc --http -- cast send $TIMELOCK $EXECUTE_CALLDATA \
- *     --from $EXECUTOR --unlocked --rpc-url {}
+ * Schedule with Fireblocks: make upgrade-schedule
+ * Execute after the delay: make upgrade-execute
  */
 contract BuildV2UpgradeBatch is Script, UpgradeConfig {
     error InvalidConfiguration(string field);
@@ -191,18 +184,11 @@ contract BuildV2UpgradeBatch is Script, UpgradeConfig {
         _requireSet(QUEUE_PAUSER, "QUEUE_PAUSER");
         _requireSet(QUEUE_UNPAUSER, "QUEUE_UNPAUSER");
 
-        require(BATCH_SALT != bytes32(0), InvalidConfiguration("BATCH_SALT"));
         require(BASE_REDEMPTION_FEE_BPS <= ELEVATED_REDEMPTION_FEE_BPS, InvalidConfiguration("redemption fee ordering"));
         require(ELEVATED_REDEMPTION_FEE_BPS <= MAX_FEE_BPS, InvalidConfiguration("ELEVATED_REDEMPTION_FEE_BPS"));
         require(ELEVATED_DEPOSIT_FEE_BPS <= MAX_FEE_BPS, InvalidConfiguration("ELEVATED_DEPOSIT_FEE_BPS"));
         require(EXECUTION_TOLERANCE_BPS <= MAX_EXECUTION_TOLERANCE_BPS, InvalidConfiguration("EXECUTION_TOLERANCE_BPS"));
         require(MIGRATION_TOLERANCE_BPS <= MAX_MIGRATION_TOLERANCE_BPS, InvalidConfiguration("MIGRATION_TOLERANCE_BPS"));
-
-        require(EXPECTED_SCHEDULE_TIMESTAMP != 0, InvalidConfiguration("EXPECTED_SCHEDULE_TIMESTAMP"));
-        require(
-            EXPECTED_UPGRADE_EXECUTION_TIMESTAMP >= uint256(EXPECTED_SCHEDULE_TIMESTAMP) + TIMELOCK_DELAY,
-            InvalidConfiguration("EXPECTED_UPGRADE_EXECUTION_TIMESTAMP")
-        );
     }
 
     function _validateProductionBindings(UpgradeBatch memory batch) private view {
@@ -217,7 +203,6 @@ contract BuildV2UpgradeBatch is Script, UpgradeConfig {
 
         TimelockController timelock = TimelockController(payable(TIMELOCK));
         require(timelock.getMinDelay() == TIMELOCK_DELAY, InvalidConfiguration("TIMELOCK_DELAY"));
-        require(timelock.hasRole(timelock.PROPOSER_ROLE(), PROPOSER), InvalidConfiguration("PROPOSER_ROLE"));
         require(timelock.hasRole(timelock.EXECUTOR_ROLE(), address(0)), InvalidConfiguration("open EXECUTOR_ROLE"));
         require(
             IAccessControl(STAKED_USDAT_PROXY).hasRole(bytes32(0), TIMELOCK),
@@ -278,8 +263,6 @@ contract BuildV2UpgradeBatch is Script, UpgradeConfig {
         console.log("=== Saturn V2 Atomic Upgrade Batch ===");
         console.log("Operation ID:");
         console.logBytes32(batch.operationId);
-        console.log("Expected schedule timestamp:", EXPECTED_SCHEDULE_TIMESTAMP);
-        console.log("Expected execution timestamp:", EXPECTED_UPGRADE_EXECUTION_TIMESTAMP);
         console.log("Initial market mode: Elevated");
 
         console.log("Vault upgradeToAndCall payload:");
@@ -288,7 +271,7 @@ contract BuildV2UpgradeBatch is Script, UpgradeConfig {
         console.logBytes(batch.payloads[1]);
 
         console.log("=== Fireblocks Schedule Transaction ===");
-        console.log("From:", PROPOSER);
+        console.log("Sender: ADMIN (Fireblocks proposer)");
         console.log("To:", TIMELOCK);
         console.log("Value: 0");
         console.log("Calldata:");

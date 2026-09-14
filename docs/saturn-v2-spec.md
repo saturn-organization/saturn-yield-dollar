@@ -1087,8 +1087,8 @@ For storage compatibility, the v1 `depositFeeBps` slot stores
 | elevated deposit fee (`elevatedDepositFeeBps`) | stays in the vault | anti-dilution against higher-risk entry windows; `setElevatedDepositFee` (`PARAMETER_MANAGER_ROLE`), capped at 500 bps |
 | redemption fee (`baseRedemptionFeeBps` / `elevatedRedemptionFeeBps`) | stays in the vault | protects remaining holders against liquidity-sensitive exits; `setRedemptionFees` (`PARAMETER_MANAGER_ROLE`), `base ≤ elevated ≤ 500`; the net payout limit is checked after the active fee; each retained fee immediately accrues to remaining shares |
 
-The intended launch range for the redemption-fee tiers is approximately 5–10 bps; the exact
-base and elevated values remain approved launch parameters.
+The approved launch fees are **10 bps base redemption**, **50 bps elevated redemption**,
+and **25 bps elevated deposit**. Regular deposits remain fee-free (0 bps).
 
 `previewDeposit`/`previewMint` include `depositFeeBps()`. `previewWithdraw` returns zero because
 `withdraw()` is disabled. `previewRedeem(shares)` returns the same net payout used by

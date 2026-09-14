@@ -9,8 +9,8 @@ import {Test} from "forge-std/Test.sol";
 
 import {StakedUSDat as StakedUSDatV1} from "../../../src/v1/StakedUSDat.sol";
 import {WithdrawalQueueERC721 as WithdrawalQueueV1} from "../../../src/v1/WithdrawalQueueERC721.sol";
-import {BuildV2Migration} from "../../../script/v2/BuildV2Migration.s.sol";
-import {BuildV2UpgradeBatch} from "../../../script/v2/BuildV2UpgradeBatch.s.sol";
+import {BuildV2Migration} from "../../../script/v2/migrate/BuildV2Migration.s.sol";
+import {BuildV2UpgradeBatch} from "../../../script/v2/upgrade/BuildV2UpgradeBatch.s.sol";
 import {DeployV2Dependencies} from "../../../script/v2/DeployV2Dependencies.s.sol";
 import {STRConExecutionPolicy} from "../../../src/v2/STRConExecutionPolicy.sol";
 import {StakedUSDat as StakedUSDatV2} from "../../../src/v2/StakedUSDat.sol";

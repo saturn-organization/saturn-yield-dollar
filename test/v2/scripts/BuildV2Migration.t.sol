@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
 import {Test} from "forge-std/Test.sol";
 
-import {BuildV2Migration} from "../../../script/v2/BuildV2Migration.s.sol";
+import {BuildV2Migration} from "../../../script/v2/migrate/BuildV2Migration.s.sol";
 import {MigrationConfig} from "../../../script/v2/configs/MigrationConfig.sol";
 import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
 
