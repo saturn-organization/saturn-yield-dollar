@@ -32,129 +32,122 @@ forge script script/v2/DeployV2Dependencies.s.sol:DeployV2Dependencies \
   --etherscan-api-key "$SCANNER_API_KEY"
 ```
 
-Dry-run first by omitting `--broadcast` and `--verify`.
 Copy the output addresses into [UpgradeConfig.sol](../script/v2/configs/UpgradeConfig.sol).
 
-## Step 2 — Schedule and execute the upgrade
+### Deployed addresses
 
-- [ ] Completed
+| Contract | Address |
+|---|---|
+| STRConTradeExecutionLogic library | `0xDF89cCf4Ead4Ea2398400DF3E44BAA595695b0b6` |
+| STRConPriceOracle | `0xc3200E39B18f9F208c551155a0F4F2299Bb827E9` |
+| STRCMirrorModule | `0x5f860f46BEaA5A3fEE7726329a079243eCA4B5c1` |
+| STRConModule | `0x5f7bd5C95EE38706C4c4B609D44ABF63Ad8b2C4F` |
+| STRConExecutionPolicy | `0x30A8faEAd711d5c10285250d690B84caF50622A9` |
+| WithdrawalQueueERC721 implementation | `0x0Bb1Bcfb13987a647FE2f7db5f73C03F57696d73` |
+| StakedUSDat implementation | `0x188597b16D391cF7FB74b7f12e4f736B8a1B2516` |
 
-### Before scheduling
+## Step 2 — Schedule and execute the upgrade (5 days)
 
-- Complete and approve the remaining [upgrade inputs](./v2-deployment/BuildV2UpgradeBatch.md).
-  Review changes since the auditor-reviewed commit.
-- Check current role holders and timelock controls against the configuration.
-  Resolve the spec conflict for shared parameter-manager/enforcer/unpauser and
-  blacklister/pauser holders before approval.
-- Snapshot NAV, supply, custody, unvested rewards, both pause states, and queue
-  requests/NFT ownership/approvals/liabilities. Rehearse the exact upgrade batch
-  against current mainnet state and check storage/accounting.
-- Confirm dependency bindings and live oracle prices. Check the transition USDat
-  buffer: mirrored STRC cannot be sold after the upgrade. Buffer target: TBD.
-- Notify legacy request owners and set the post-upgrade grace-period end: TBD.
-  Confirm owners will have a working way to update or cancel requests.
+### Overview
 
-### Schedule and execute
+- Minimum duration: five days between scheduling and execution.
+- Set `UPGRADE_CONFIGURATION_APPROVED = true` in
+  [UpgradeConfig.sol](../script/v2/configs/UpgradeConfig.sol).
+- Switch the frontend to v2 immediately after the upgrade executes.
+- The vault starts in **Elevated** mode: 25 bps deposits and 50 bps redemptions.
+  Regular mode requires a separate `authorizeRegularMode(validUntil)` call by
+  the market-mode manager. Existing vault and queue pause states are preserved.
+- After the upgrade, withdrawals can only be processed from available USDat in
+  the vault. The legacy STRC position cannot be sold to replenish that buffer.
+- Operator hold: keep processing stopped until migration is complete, legacy
+  `InProgress` requests are cleared, and the owner grace period has ended.
 
-The targets run `source syncprod`: set `RPC_URL`, `ADMIN` to the Fireblocks proposer address,
-and `PRIVATE_KEY` for execution, alongside the existing Fireblocks client settings.
-Scheduling verifies that `ADMIN` holds `PROPOSER_ROLE` on the five-day timelock.
+### Execution steps
 
-1. Set `UPGRADE_CONFIGURATION_APPROVED = true` after review and simulate scheduling:
-
-   ```bash
-   make upgrade-schedule-dry-run
-   ```
-
-   This uses the regular RPC and makes no Fireblocks signing request.
-2. Review the generated batch and operation ID. The batch upgrades the vault first
-   and queue second atomically. Schedule it through Fireblocks:
+1. Propose the upgrade through Fireblocks:
 
    ```bash
    make upgrade-schedule
    ```
 
-   Record the transaction hash and on-chain ready-at time.
-3. After the five-day delay, recheck readiness and simulate execution:
-
-   ```bash
-   make upgrade-execute-dry-run
-   ```
-
-4. After a successful simulation, execute and save the transaction hash:
+2. After the five-day timelock delay, execute with the deployer key:
 
    ```bash
    make upgrade-execute
    ```
 
-Each command regenerates the batch from the current configuration; the timelock
-must recognize that exact operation as ready to execute. Keep the configuration
-unchanged after scheduling; changing the batch requires a new proposal and delay.
-Unscheduled, waiting, or completed operations are refused.
-After broadcasting, the targets independently confirm the on-chain result;
-scheduling logs the actual ready-at time.
-
-Use the five-day admin timelock in [SharedConfig](../script/v2/configs/SharedConfig.sol),
-not the two-day operational-role timelock. `BuildV2UpgradeBatch` remains read-only;
-the schedule and execute targets submit transactions.
-
-### Before migration or queue processing resumes
-
-- Compare accounting, custody, requests, and pause states to the snapshot.
-  Check the mirror seed against legacy `strcBalance`, `vestingAmount`,
-  `lastDistributionTimestamp`, `vestingPeriod`, and `maxRewardsBps`.
-  The initializer copies these automatically from vault storage.
-- Check installed implementations, modules, roles, fees, tolerances, and policy
-  settings against the configuration. The vault starts in Elevated mode.
-- Have the vault operator run a small STRCon buy/sell round trip using the funded,
-  approved execution vehicle. Return `STRConModule.balance()` to zero.
-  Confirm the live migration tolerance is suitable for the observed price difference.
-- Have the queue operator call `resetLegacyInProgressRequest` for every remaining
-  `InProgress` request, then rescan all requests.
-- Resume queue processing only after the rescan is clear and owners have had the
-  full grace period. Queue pause blocks updates and cancellation; vault pause
-  also blocks cancellation. Extend the grace period if those actions were unavailable.
-
-Legacy limits are **not converted**: the old absolute `minUsdatReceived` value
-becomes `minSharePrice`, a minimum net USDat price per `1e18` shares in 6-decimal
-units, after fees. Owners need to review their limits before processing resumes.
-
 ## Step 3 — Schedule and execute migration
 
-- [ ] Completed
+### Overview
 
-1. Stop mirror `transferInRewards` calls. Wait for
-   `STRCMirrorModule.getUnvestedAmount() == 0`; do not restart rewards.
-2. Reconcile the final off-chain STRC disposition. Fund the execution vehicle
-   with the full STRCon delivery and approve the vault to pull it.
-3. Complete the [migration inputs](./v2-deployment/BuildV2Migration.md):
-   amount, live vehicle/tolerance, deadline, and salt. Allow the five-day delay
-   plus execution time before the deadline.
-4. Confirm the vault is unpaused, the mirror is seeded and not retired,
-   recognized STRCon balance is zero, and prices/projected NAV pass the checks.
-   Approve the configuration and set `MIGRATION_CONFIGURATION_APPROVED = true`.
-5. Generate the operation:
+- Duration: off-chain transfers and minting, followed by a minimum five-day
+  timelock delay. Total time depends on the settlement timings below.
+- Stop mirror `transferInRewards` calls. At scheduling and execution, the vault
+  must be unpaused, the mirror fully vested (`getUnvestedAmount() == 0`), and
+  the recognized STRCon module balance zero.
+- Migration pulls STRCon from the execution vehicle into the vault, retires
+  the STRC mirror, and recognizes the STRCon position. The absolute whole-vault
+  NAV change must be within 200 bps (2%).
 
-   ```bash
-   forge script script/v2/migrate/BuildV2Migration.s.sol:BuildV2Migration --rpc-url "$RPC_URL"
+### Execution steps
+
+1. **Move STRC from Clear Street to Alpaca.** Planning estimate: T+1 day.
+
+2. **Mint STRCon through ITN** to the Saturn Fund Ltd. Tres-Ondo Account:
+   `0xeAB18842D6ba63BCCd556e27f55ee7790907002B`.
+   Timing is unconfirmed; current estimate: T+1 day.
+
+3. **Redeem from the fund in STRCon** and send the tokens to the Saturn Global
+   Capital Investments Ltd. Fireblocks Processor wallet:
+   `0x09D6E34cE24D54890fF0BC6a090b5f880F8C729f`.
+   Timing: TBD.
+
+4. **Transfer STRCon to the execution vehicle** in Saturn Vault Corporation:
+   `0xb3C29aa9196785F0aa5ECA6Cb0BcF1E92D83A468`.
+
+5. **Date the deed of gift legal contract.**
+
+6. **Verify the STRCon delivery and valuation.** Use human-readable amounts,
+   sValue, and prices, not raw contract integers:
+
+   ```text
+   Expected STRCon tokens = STRC shares converted / sValue used for minting
+   STRCon value = delivered STRCon tokens × current STRCon oracle price
+   STRC value = STRC shares in mirror × current STRC oracle price
+   NAV change (%) = abs(STRCon value − STRC value) / total vault NAV × 100
+   Pass: abs(STRCon value − STRC value) ≤ total vault NAV × 0.02
    ```
 
-6. Review and submit `scheduleCalldata` from `PROPOSER` to the five-day admin
-   `TIMELOCK`, with zero ETH. Save the operation ID, calldata, transaction hash,
-   and ready-at time.
-7. After the delay, recheck prices/NAV, vehicle eligibility, funding, allowance,
-   tolerance, pause state, zero unvested rewards, and zero recognized STRCon.
-   Simulate the saved `executeCalldata`, then execute with zero ETH before the deadline.
-   The builder's five-days-ahead deadline check is for scheduling, not this final simulation.
-8. Save the execution transaction hash. Confirm the mirror is retired at zero,
-   recognized STRCon equals the delivery, custody covers it, NAV change is within
-   tolerance, and supply/queue liabilities are unchanged.
+   Set in [MigrationConfig.sol](../script/v2/configs/MigrationConfig.sol):
 
-Keep recognized STRCon balance at zero between the validation round trip and migration.
+   ```text
+   EXPECTED_STRCON = delivered STRCon tokens × 10^18
+   MIGRATION_DEADLINE = chosen Unix expiry timestamp
+   MIGRATION_CONFIGURATION_APPROVED = true
+   ```
 
-## Step 4 — Cleanup
+7. **Approve the vault to pull the STRCon amount from the execution vehicle.**
+   From `0xb3C29aa9196785F0aa5ECA6Cb0BcF1E92D83A468`, approve the vault proxy
+   (`0xD166337499E176bbC38a1FBd113Ab144e5bd2Df7`) for `EXPECTED_STRCON`.
 
-- [ ] Completed
+8. **Schedule migration through Fireblocks:**
+
+   ```bash
+   make migrate-schedule
+   ```
+
+9. **Execute the scheduled migration after the five-day delay:**
+
+   ```bash
+   make migrate-execute
+   ```
+
+   Both phases recheck live readiness. Keep the configuration unchanged after
+   scheduling and execute before the original deadline.
+   Confirm the mirror is retired at zero and the vault's STRCon custody and
+   recognized balance reflect the delivery.
+
+## Step 4 — Cleanup (To Do)
 
 After the upgrade has been validated, revoke these obsolete roles on the proxies:
 
@@ -174,4 +167,14 @@ After the upgrade has been validated, revoke these obsolete roles on the proxies
 Do not remove legacy oracle administration while the mirror still needs it.
 After retirement, check for other consumers before decommissioning it.
 
-## Communication Plan
+## Communication Plan (To Do)
+
+1. Before upgrade execution, notify legacy request owners that processing will
+   remain stopped until migration and the owner grace period are complete.
+   Explain that existing limits are not converted: the old absolute
+   `minUsdatReceived` value becomes `minSharePrice`, a minimum net USDat payout
+   per `1e18` shares in 6-decimal units, after fees.
+2. Publish the post-upgrade grace-period end (**TBD**) and instructions for
+   updating or cancelling requests. Confirm owners have a working way to do both.
+   Queue pause blocks both actions; vault pause also blocks cancellation.
+   Extend the grace period if those actions were unavailable.

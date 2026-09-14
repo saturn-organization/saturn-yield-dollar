@@ -6,7 +6,10 @@ which inherits [SharedConfig.sol](../../script/v2/configs/SharedConfig.sol).
 Run this after the [upgrade batch](./BuildV2UpgradeBatch.md) has executed and the
 validation buy/sell round trip has completed. It validates live migration readiness
 and generates the timelock transactions for `migrate(expectedStrcon, deadline)`.
-It deploys no contracts and broadcasts no transactions.
+The builder deploys no contracts and broadcasts no transactions. The
+[schedule script](../../script/v2/migrate/ScheduleV2Migration.s.sol) and
+[execute script](../../script/v2/migrate/ExecuteV2Migration.s.sol) use the same
+configuration to submit and verify the operation through the Make targets below.
 
 The values below are Solidity constants in those configuration files, not environment-variable
 inputs. Complete the remaining inputs after validation, review them, and then set
@@ -18,12 +21,13 @@ inputs. Complete the remaining inputs after validation, review them, and then se
 |---|---|---|
 | `STAKED_USDAT_PROXY` | `0xD166337499E176bbC38a1FBd113Ab144e5bd2Df7` | User-confirmed existing vault proxy; must already run v2. |
 | `TIMELOCK` | `0xfD5782E3BFF366601da3973aE30C583dE4F08A67` | Configured address; verify the intended admin timelock and its live controls. |
-| `PROPOSER` | `0x610182581C93687Ca03F4a8E7f124f8cEC616820` | Configured address; must hold `PROPOSER_ROLE` on `TIMELOCK`. |
 | `STRCON` | `0xECABE1Ff8a9e1dC55899cf58dac8497ecE5Ae84c` | Configured token address; must equal the active STRCon module's `ASSET()`. |
 
 The timelock must hold the vault's `DEFAULT_ADMIN_ROLE`. The script also requires
 an open executor role: `TIMELOCK.hasRole(EXECUTOR_ROLE, address(0)) == true`.
-The deployer wallet and its nonce are not inputs to this builder.
+Scheduling requires the Fireblocks sender supplied as `ADMIN` to hold
+`PROPOSER_ROLE` on `TIMELOCK`. Execution uses `PRIVATE_KEY` with the open executor
+role. The deployer wallet and its nonce are not inputs to this builder.
 
 ## Execution vehicle in MigrationConfig.sol
 
@@ -41,7 +45,7 @@ to the vault proxy above. The vault pulls the tokens during migration.
 |---|---|---|
 | `EXPECTED_STRCON` | TBD | Exact delivery amount in 18-decimal STRCon units; must be nonzero. Current placeholder: `0`. |
 | `EXPECTED_MIGRATION_TOLERANCE_BPS` | 200 bps (2%) | Must match the vault's live `migrationToleranceBps()` and be at most `500` bps. Current literal: `200`. |
-| `MIGRATION_DEADLINE` | TBD | Unix timestamp strictly later than the current block timestamp plus five days when building. Allow time for scheduling and execution. Current placeholder: `0`. |
+| `MIGRATION_DEADLINE` | TBD | Unix timestamp strictly later than the current block timestamp plus five days when building or scheduling. Execution requires the current timestamp to be at or before this original deadline. Allow time for scheduling and execution. Current placeholder: `0`. |
 | `MIGRATION_SALT` | `bytes32(0)` | Zero is allowed; use the same salt when scheduling and executing. |
 | `MIGRATION_CONFIGURATION_APPROVED` | TBD | Set to `true` after reviewing the completed configuration. Currently `false`, which blocks `run()`. |
 
@@ -81,26 +85,57 @@ modules when reading prices; they are not migration-builder inputs.
   NAV and mirror value, and the projected whole-vault NAV change must fit the
   configured tolerance.
 - Recheck live readiness after the timelock delay, before execution. Prices,
-  funding, allowances, vehicle, and deadline can change after calldata is built.
+  funding, allowances, and vehicle can change after scheduling. The execution
+  script rechecks live readiness against the unchanged configuration and
+  original deadline; it does not require another five days before that deadline.
 
 Full sequencing and post-execution evidence, including permanent mirror retirement,
 belong in the [deployment runbook](../v2-deployment-runbook.md).
 
-## Run and collect outputs
+## Schedule and execute
 
-With `RPC_URL` set to an Ethereum mainnet RPC endpoint:
+The targets run `source syncprod`. Set `RPC_URL` to an Ethereum mainnet RPC
+endpoint, `ADMIN` to the Fireblocks proposer address, and `PRIVATE_KEY` to the
+execution key, alongside the existing Fireblocks client settings.
+
+```bash
+make migrate-schedule-dry-run
+make migrate-schedule
+```
+
+The scheduling dry run uses the regular RPC and makes no Fireblocks signing
+request. Scheduling submits through Fireblocks with zero ETH, then independently
+checks the on-chain operation and reports its ready-at time. Record the operation
+ID, transaction hash, and ready-at time.
+
+After the five-day delay, while the original deadline has not expired:
+
+```bash
+make migrate-execute-dry-run
+make migrate-execute
+```
+
+Execution uses `RPC_URL` and `PRIVATE_KEY`. Both execution commands revalidate
+live migration readiness and require the exact configured operation to be ready
+on the timelock. Unscheduled, waiting, or completed operations are refused.
+The broadcast target then independently checks that the matching timelock
+operation is complete. Save the execution transaction hash and verify the
+postconditions in the deployment runbook.
+
+Keep the reviewed configuration unchanged after scheduling, including the exact
+delivery amount, deadline, predecessor, and salt. A changed operation requires
+a new proposal and delay. The scripts generate matching calldata directly;
+no payload files or manual copying are needed.
+
+## Optional read-only inspection
+
+To inspect the migration payload, operation ID, and timelock calldata before
+scheduling:
 
 ```bash
 forge script script/v2/migrate/BuildV2Migration.s.sol:BuildV2Migration --rpc-url "$RPC_URL"
 ```
 
-| Generated output | Use |
-|---|---|
-| Vault migration payload | Encoded `migrate(EXPECTED_STRCON, MIGRATION_DEADLINE)` call targeting the vault proxy. |
-| Operation ID | Identify this exact target, zero ETH value, payload, predecessor, and salt. |
-| Schedule calldata | Submit separately from `PROPOSER` to `TIMELOCK`, with zero ETH value. |
-| Execute calldata | Submit separately to `TIMELOCK` after the scheduled operation is ready, with zero ETH value and before the migration deadline. |
-
-Save generated calldata, operation ID, and transaction evidence in the runbook.
-For the reviewed baseline, see the
-[deployment runbook](../v2-deployment-runbook.md).
+This builder applies the scheduling deadline check. Use
+`make migrate-execute-dry-run` for simulation after the timelock delay.
+For the reviewed baseline, see the [deployment runbook](../v2-deployment-runbook.md).
