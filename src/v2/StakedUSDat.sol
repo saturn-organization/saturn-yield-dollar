@@ -507,7 +507,7 @@ contract StakedUSDat is
         external
         nonReentrant
         whenNotPaused
-        onlyRole(DEFAULT_ADMIN_ROLE)
+        onlyRole(PARAMETER_MANAGER_ROLE)
         notZero(expectedStrcon)
     {
         _requireUnexpiredDeadline(deadline);

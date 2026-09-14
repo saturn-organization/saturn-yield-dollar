@@ -177,13 +177,51 @@ contract StakedUSDatMigrationTest is Test {
         _assertUnchanged(retiredState);
     }
 
-    function test_migrate_EnforcesAdminPauseDeadlineAndNonzeroAmount() public {
+    function test_migrate_ParameterManagerWithoutAdminCanMigrate() public {
+        address parameterManager = makeAddr("migrationParameterManager");
+        vault.grantRole(vault.PARAMETER_MANAGER_ROLE(), parameterManager);
+        assertTrue(vault.hasRole(vault.PARAMETER_MANAGER_ROLE(), parameterManager));
+        assertFalse(vault.hasRole(vault.DEFAULT_ADMIN_ROLE(), parameterManager));
+        _finishVesting();
+        _fundVehicle(EXACT_STRCON);
+        Snapshot memory beforeState = _snapshot();
+
+        vm.prank(parameterManager);
+        vault.migrate(EXACT_STRCON, block.timestamp);
+
+        assertTrue(mirror.retired());
+        assertEq(mirror.balance(), 0);
+        assertEq(strconModule.balance(), EXACT_STRCON);
+        assertEq(vault.totalAssets(), beforeState.nav);
+        assertEq(strcon.balanceOf(address(vault)), beforeState.vaultStrcon + EXACT_STRCON);
+        assertEq(strcon.balanceOf(vehicle), beforeState.vehicleStrcon - EXACT_STRCON);
+    }
+
+    function test_migrate_AdminWithoutParameterManagerCannotMigrate() public {
+        vault.revokeRole(vault.PARAMETER_MANAGER_ROLE(), address(this));
+        assertTrue(vault.hasRole(vault.DEFAULT_ADMIN_ROLE(), address(this)));
+        assertFalse(vault.hasRole(vault.PARAMETER_MANAGER_ROLE(), address(this)));
+        _finishVesting();
         _fundVehicle(EXACT_STRCON);
         Snapshot memory beforeState = _snapshot();
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                IAccessControl.AccessControlUnauthorizedAccount.selector, unauthorized, vault.DEFAULT_ADMIN_ROLE()
+                IAccessControl.AccessControlUnauthorizedAccount.selector, address(this), vault.PARAMETER_MANAGER_ROLE()
+            )
+        );
+        vault.migrate(EXACT_STRCON, block.timestamp);
+
+        _assertUnchanged(beforeState);
+    }
+
+    function test_migrate_EnforcesParameterManagerPauseDeadlineAndNonzeroAmount() public {
+        _fundVehicle(EXACT_STRCON);
+        Snapshot memory beforeState = _snapshot();
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector, unauthorized, vault.PARAMETER_MANAGER_ROLE()
             )
         );
         vm.prank(unauthorized);
