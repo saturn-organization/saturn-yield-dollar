@@ -508,7 +508,7 @@ interface IStakedUSDat is IERC4626 {
 
     /**
      * @notice Replaces the legacy STRC mirror position with an exact STRCon delivery.
-     * @dev Only callable once by DEFAULT_ADMIN_ROLE while unpaused.
+     * @dev Only callable once by PARAMETER_MANAGER_ROLE while unpaused.
      * @param expectedStrcon The exact STRCon amount pulled from the execution vehicle.
      * @param deadline The inclusive migration deadline.
      */

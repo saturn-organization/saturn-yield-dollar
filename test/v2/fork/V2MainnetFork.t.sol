@@ -42,6 +42,7 @@ contract V2MockMainnetForkTest is Test {
     uint256 private constant PINNED_MAINNET_BLOCK = 25_627_322;
     uint256 private constant MAINNET_CHAIN_ID = 1;
     uint256 private constant TIMELOCK_DELAY = 5 days;
+    uint256 private constant PARAMETER_TIMELOCK_DELAY = 2 days;
     uint256 private constant REQUEST_WORDS = 5;
     uint256 private constant REQUESTED_STATUS = 1;
     uint256 private constant IN_PROGRESS_STATUS = 2;
@@ -70,7 +71,6 @@ contract V2MockMainnetForkTest is Test {
     bytes32 private constant V1_WITHDRAWAL_QUEUE_CODEHASH =
         0x4bbdf6f68aaefdf98290c5662e7bb0c9d566ffa1e0abff19a5332cf81246ffe1;
 
-    address private constant PARAMETER_MANAGER = address(0x1001);
     address private constant MARKET_MODE_MANAGER = address(0x1002);
     address private constant OPERATOR = address(0x1003);
     address private constant BLACKLISTER = address(0x1004);
@@ -158,6 +158,7 @@ contract V2MockMainnetForkTest is Test {
     StakedUSDatV2 private _vaultV2;
     WithdrawalQueueV2 private _queueV2;
     TimelockController private _timelock;
+    TimelockController private _parameterTimelock;
 
     DeployV2Dependencies private _dependencyDeployer;
     BuildV2UpgradeBatch private _upgradeBuilder;
@@ -232,6 +233,12 @@ contract V2MockMainnetForkTest is Test {
     }
 
     function _deployV2Dependencies() private {
+        address[] memory proposers = new address[](1);
+        proposers[0] = PROPOSER;
+        address[] memory executors = new address[](1);
+        executors[0] = address(0);
+        _parameterTimelock = new TimelockController(PARAMETER_TIMELOCK_DELAY, proposers, executors, address(0));
+
         _dependencyDeployer = new DeployV2Dependencies();
         _upgradeBuilder = new BuildV2UpgradeBatch();
         _migrationBuilder = new BuildV2Migration();
@@ -313,7 +320,7 @@ contract V2MockMainnetForkTest is Test {
             initialExecutionRefillPerDay: EXECUTION_REFILL_PER_DAY
         });
         IStakedUSDat.V2Roles memory roles = IStakedUSDat.V2Roles({
-            parameterManager: PARAMETER_MANAGER,
+            parameterManager: address(_parameterTimelock),
             marketModeManager: MARKET_MODE_MANAGER,
             operator: OPERATOR,
             surplusManager: SURPLUS_MANAGER,
@@ -378,14 +385,22 @@ contract V2MockMainnetForkTest is Test {
         vm.prank(EXECUTION_VEHICLE);
         IERC20(STRCON).approve(STAKED_USDAT_PROXY, expectedStrcon);
 
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector, TIMELOCK, _vaultV2.PARAMETER_MANAGER_ROLE()
+            )
+        );
+        vm.prank(TIMELOCK);
+        _vaultV2.migrate(expectedStrcon, block.timestamp);
+
         BuildV2Migration.MigrationOperation memory operation = _scheduleMigration(expectedStrcon);
         MigrationSnapshot memory before_ = _snapshotMigration(expectedStrcon);
 
-        _callAs(EXECUTOR, TIMELOCK, operation.executeCalldata);
-        assertTrue(_timelock.isOperationDone(operation.operationId));
+        _callAs(EXECUTOR, address(_parameterTimelock), operation.executeCalldata);
+        assertTrue(_parameterTimelock.isOperationDone(operation.operationId));
         _assertMigration(before_);
 
-        vm.prank(TIMELOCK);
+        vm.prank(address(_parameterTimelock));
         vm.expectRevert(IStakedUSDat.InvalidModule.selector);
         _vaultV2.migrate(expectedStrcon, block.timestamp);
     }
@@ -394,15 +409,32 @@ contract V2MockMainnetForkTest is Test {
         private
         returns (BuildV2Migration.MigrationOperation memory operation)
     {
-        uint256 deadline = block.timestamp + TIMELOCK_DELAY + 1 days;
+        uint256 deadline = block.timestamp + PARAMETER_TIMELOCK_DELAY + 1 days;
         operation = _migrationBuilder.buildOperation(expectedStrcon, deadline, MIGRATION_SALT);
         assertEq(operation.target, STAKED_USDAT_PROXY);
+        // This fork-local controller uses a separate delay from the production builder configuration.
+        operation.scheduleCalldata = abi.encodeCall(
+            TimelockController.schedule,
+            (operation.target, operation.value, operation.payload, bytes32(0), MIGRATION_SALT, PARAMETER_TIMELOCK_DELAY)
+        );
 
         uint256 scheduledAt = block.timestamp;
-        _callAs(PROPOSER, TIMELOCK, operation.scheduleCalldata);
-        assertEq(_timelock.getTimestamp(operation.operationId), scheduledAt + TIMELOCK_DELAY);
+        _callAs(PROPOSER, address(_parameterTimelock), operation.scheduleCalldata);
+        assertEq(_parameterTimelock.getMinDelay(), PARAMETER_TIMELOCK_DELAY);
+        assertEq(_parameterTimelock.getTimestamp(operation.operationId), scheduledAt + PARAMETER_TIMELOCK_DELAY);
 
-        vm.warp(scheduledAt + TIMELOCK_DELAY);
+        vm.warp(scheduledAt + PARAMETER_TIMELOCK_DELAY - 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TimelockController.TimelockUnexpectedOperationState.selector,
+                operation.operationId,
+                bytes32(uint256(1) << uint8(TimelockController.OperationState.Ready))
+            )
+        );
+        vm.prank(EXECUTOR);
+        _parameterTimelock.execute(operation.target, operation.value, operation.payload, bytes32(0), MIGRATION_SALT);
+
+        vm.warp(scheduledAt + PARAMETER_TIMELOCK_DELAY);
         _refreshOracleRounds();
     }
 
@@ -649,7 +681,9 @@ contract V2MockMainnetForkTest is Test {
 
     function _assertV2Roles() private view {
         assertTrue(_vaultV2.hasRole(_vaultV2.DEFAULT_ADMIN_ROLE(), TIMELOCK));
-        assertTrue(_vaultV2.hasRole(_vaultV2.PARAMETER_MANAGER_ROLE(), PARAMETER_MANAGER));
+        assertFalse(_vaultV2.hasRole(_vaultV2.PARAMETER_MANAGER_ROLE(), TIMELOCK));
+        assertTrue(_vaultV2.hasRole(_vaultV2.PARAMETER_MANAGER_ROLE(), address(_parameterTimelock)));
+        assertFalse(_vaultV2.hasRole(_vaultV2.DEFAULT_ADMIN_ROLE(), address(_parameterTimelock)));
         assertTrue(_vaultV2.hasRole(_vaultV2.MARKET_MODE_MANAGER_ROLE(), MARKET_MODE_MANAGER));
         assertTrue(_vaultV2.hasRole(_vaultV2.OPERATOR_ROLE(), OPERATOR));
         assertTrue(_vaultV2.hasRole(_vaultV2.SURPLUS_MANAGER_ROLE(), SURPLUS_MANAGER));
