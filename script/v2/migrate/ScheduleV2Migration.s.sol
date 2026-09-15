@@ -16,7 +16,7 @@ contract ScheduleV2Migration is Script, MigrationConfig {
 
     function run() external returns (bytes32 operationId) {
         if (block.chainid != EXPECTED_CHAIN_ID) revert WrongChain(block.chainid);
-        TimelockController timelock = TimelockController(payable(TIMELOCK));
+        TimelockController timelock = TimelockController(payable(MIGRATION_TIMELOCK));
         if (!timelock.hasRole(timelock.PROPOSER_ROLE(), msg.sender)) revert UnauthorizedProposer(msg.sender);
         BuildV2Migration.MigrationOperation memory operation = _validatedOperation();
         operationId = operation.operationId;
@@ -26,7 +26,12 @@ contract ScheduleV2Migration is Script, MigrationConfig {
 
         vm.startBroadcast(msg.sender);
         timelock.schedule(
-            operation.target, operation.value, operation.payload, MIGRATION_PREDECESSOR, MIGRATION_SALT, TIMELOCK_DELAY
+            operation.target,
+            operation.value,
+            operation.payload,
+            MIGRATION_PREDECESSOR,
+            MIGRATION_SALT,
+            MIGRATION_TIMELOCK_DELAY
         );
         vm.stopBroadcast();
 
@@ -38,7 +43,7 @@ contract ScheduleV2Migration is Script, MigrationConfig {
     function checkScheduled() external returns (bytes32 operationId, uint256 readyAt) {
         if (block.chainid != EXPECTED_CHAIN_ID) revert WrongChain(block.chainid);
         operationId = new BuildV2Migration().buildOperation().operationId;
-        TimelockController timelock = TimelockController(payable(TIMELOCK));
+        TimelockController timelock = TimelockController(payable(MIGRATION_TIMELOCK));
         if (!timelock.isOperationPending(operationId)) revert OperationNotScheduled(operationId);
         readyAt = timelock.getTimestamp(operationId);
         console.log("Confirmed scheduled operation:");

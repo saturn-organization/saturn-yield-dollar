@@ -36,16 +36,16 @@ the intended production configuration.
 
 ## 2. Deployed dependency addresses
 
-All five constants are populated in `UpgradeConfig.sol` from the supplied deployment
-manifest. Deployment and Etherscan verification are user-confirmed.
+All five constants are populated in `UpgradeConfig.sol` from the latest deployment
+record. Confirm Etherscan verification for these replacement addresses before scheduling.
 
 | Constant to set | Value | Deployment output |
 |---|---|---|
-| `STAKED_USDAT_IMPLEMENTATION` | `0x188597b16D391cF7FB74b7f12e4f736B8a1B2516` | `deployed.stakedUsdatImplementation` |
-| `WITHDRAWAL_QUEUE_IMPLEMENTATION` | `0x0Bb1Bcfb13987a647FE2f7db5f73C03F57696d73` | `deployed.withdrawalQueueImplementation` |
-| `STRC_MIRROR_MODULE` | `0x5f860f46BEaA5A3fEE7726329a079243eCA4B5c1` | `deployed.strcMirrorModule` |
-| `STRCON_MODULE` | `0x5f7bd5C95EE38706C4c4B609D44ABF63Ad8b2C4F` | `deployed.strconModule` |
-| `EXECUTION_POLICY` | `0x30A8faEAd711d5c10285250d690B84caF50622A9` | `deployed.executionPolicy` |
+| `STAKED_USDAT_IMPLEMENTATION` | `0x2b7074CF6681382b70E239063931ebE83C0f4E0A` | `deployed.stakedUsdatImplementation` |
+| `WITHDRAWAL_QUEUE_IMPLEMENTATION` | `0xdAF6f8523D7A707D173A12041e1523FDF1373f23` | `deployed.withdrawalQueueImplementation` |
+| `STRC_MIRROR_MODULE` | `0xa2Cf4B9410cEbcDCeb3cFf772aC0219F6D1105C9` | `deployed.strcMirrorModule` |
+| `STRCON_MODULE` | `0x3C0f0b502aa7C2ed85620f7f52B8eFb8049b1ECf` | `deployed.strconModule` |
+| `EXECUTION_POLICY` | `0x69a4cc75f654Eb5fF0eD73E0153Fd17Fc66878dc` | `deployed.executionPolicy` |
 
 The wrapper oracle and linked library addresses are already bound into these
 deployments. This step needs no additional inputs for the wrapper, linked library,

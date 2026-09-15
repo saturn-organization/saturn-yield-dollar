@@ -1,6 +1,6 @@
 # V2 Deployment Runbook
 
-Ethereum mainnet (`chain ID 1`). Auditor-reviewed source:
+Ethereum mainnet (`chain ID 1`). Auditor-reviewed baseline:
 [`f9bb4f99d9e0e021ae53a4fda5d6da5079fe8b99`](https://github.com/saturn-organization/saturn-yield-dollar/commit/f9bb4f99d9e0e021ae53a4fda5d6da5079fe8b99).
 
 ## Initial parameters
@@ -29,6 +29,7 @@ forge script script/v2/DeployV2Dependencies.s.sol:DeployV2Dependencies \
   --private-key "$PRIVATE_KEY" \
   --broadcast \
   --verify \
+  --verifier etherscan \
   --etherscan-api-key "$SCANNER_API_KEY"
 ```
 
@@ -38,13 +39,13 @@ Copy the output addresses into [UpgradeConfig.sol](../script/v2/configs/UpgradeC
 
 | Contract | Address |
 |---|---|
-| STRConTradeExecutionLogic library | `0xDF89cCf4Ead4Ea2398400DF3E44BAA595695b0b6` |
-| STRConPriceOracle | `0xc3200E39B18f9F208c551155a0F4F2299Bb827E9` |
-| STRCMirrorModule | `0x5f860f46BEaA5A3fEE7726329a079243eCA4B5c1` |
-| STRConModule | `0x5f7bd5C95EE38706C4c4B609D44ABF63Ad8b2C4F` |
-| STRConExecutionPolicy | `0x30A8faEAd711d5c10285250d690B84caF50622A9` |
-| WithdrawalQueueERC721 implementation | `0x0Bb1Bcfb13987a647FE2f7db5f73C03F57696d73` |
-| StakedUSDat implementation | `0x188597b16D391cF7FB74b7f12e4f736B8a1B2516` |
+| STRConTradeExecutionLogic library | `0x5756699Ee0EB8247A334671E2b17228256cC7A47` |
+| STRConPriceOracle | `0x8201ff053Bb7C96c10Fb9611934C14142B2702dE` |
+| STRCMirrorModule | `0xa2Cf4B9410cEbcDCeb3cFf772aC0219F6D1105C9` |
+| STRConModule | `0x3C0f0b502aa7C2ed85620f7f52B8eFb8049b1ECf` |
+| STRConExecutionPolicy | `0x69a4cc75f654Eb5fF0eD73E0153Fd17Fc66878dc` |
+| WithdrawalQueueERC721 implementation | `0xdAF6f8523D7A707D173A12041e1523FDF1373f23` |
+| StakedUSDat implementation | `0x2b7074CF6681382b70E239063931ebE83C0f4E0A` |
 
 ## Step 2 — Schedule and execute the upgrade (5 days)
 
@@ -80,8 +81,10 @@ Copy the output addresses into [UpgradeConfig.sol](../script/v2/configs/UpgradeC
 
 ### Overview
 
-- Duration: off-chain transfers and minting, followed by a minimum five-day
+- Duration: off-chain transfers and minting, followed by a minimum two-day
   timelock delay. Total time depends on the settlement timings below.
+- Migration uses the `PARAMETER_MANAGER_ROLE` timelock:
+  `0x6F72de4F529a03Bfa883825152656a8c62CBB626`.
 - Stop mirror `transferInRewards` calls. At scheduling and execution, the vault
   must be unpaused, the mirror fully vested (`getUnvestedAmount() == 0`), and
   the recognized STRCon module balance zero.
@@ -136,7 +139,7 @@ Copy the output addresses into [UpgradeConfig.sol](../script/v2/configs/UpgradeC
    make migrate-schedule
    ```
 
-9. **Execute the scheduled migration after the five-day delay:**
+9. **Execute the scheduled migration after the two-day delay:**
 
    ```bash
    make migrate-execute

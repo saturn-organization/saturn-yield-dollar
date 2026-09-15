@@ -4,6 +4,10 @@ pragma solidity ^0.8.20;
 import {SharedConfig} from "./SharedConfig.sol";
 
 abstract contract MigrationConfig is SharedConfig {
+    address public constant MIGRATION_TIMELOCK = 0x6F72de4F529a03Bfa883825152656a8c62CBB626;
+    address public constant MIGRATION_PROPOSER = 0x7A5A4064005584bc727666ec82548A9139d5F21e;
+    uint256 public constant MIGRATION_TIMELOCK_DELAY = 2 days;
+
     // Step 2 operation. TODO: Set after the upgrade validation round trip.
     // Vehicle and tolerance attest live state; they are independent of initial settings.
     uint256 public constant EXPECTED_STRCON = 0; // 18-decimal STRCon units.

@@ -8,11 +8,11 @@ abstract contract UpgradeConfig is SharedConfig {
     uint16 public constant MAX_FEE_BPS = 500;
     uint16 public constant MAX_EXECUTION_TOLERANCE_BPS = 500;
 
-    address public constant STAKED_USDAT_IMPLEMENTATION = 0x188597b16D391cF7FB74b7f12e4f736B8a1B2516;
-    address public constant WITHDRAWAL_QUEUE_IMPLEMENTATION = 0x0Bb1Bcfb13987a647FE2f7db5f73C03F57696d73;
-    address public constant STRC_MIRROR_MODULE = 0x5f860f46BEaA5A3fEE7726329a079243eCA4B5c1;
-    address public constant STRCON_MODULE = 0x5f7bd5C95EE38706C4c4B609D44ABF63Ad8b2C4F;
-    address public constant EXECUTION_POLICY = 0x30A8faEAd711d5c10285250d690B84caF50622A9;
+    address public constant STAKED_USDAT_IMPLEMENTATION = 0x2b7074CF6681382b70E239063931ebE83C0f4E0A;
+    address public constant WITHDRAWAL_QUEUE_IMPLEMENTATION = 0xdAF6f8523D7A707D173A12041e1523FDF1373f23;
+    address public constant STRC_MIRROR_MODULE = 0xa2Cf4B9410cEbcDCeb3cFf772aC0219F6D1105C9;
+    address public constant STRCON_MODULE = 0x3C0f0b502aa7C2ed85620f7f52B8eFb8049b1ECf;
+    address public constant EXECUTION_POLICY = 0x69a4cc75f654Eb5fF0eD73E0153Fd17Fc66878dc;
 
     // TODO: Set approved upgrade configuration. Zeros are unapproved placeholders.
     address public constant RECOVERY_ADDRESS = 0x6e5301A99E321f535C9e077f8f7F98770229B1a4;

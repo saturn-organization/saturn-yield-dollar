@@ -83,7 +83,14 @@ contract BuildV2Migration is Script, MigrationConfig {
             keccak256(abi.encode(operation.target, operation.value, operation.payload, MIGRATION_PREDECESSOR, salt));
         operation.scheduleCalldata = abi.encodeCall(
             TimelockController.schedule,
-            (operation.target, operation.value, operation.payload, MIGRATION_PREDECESSOR, salt, TIMELOCK_DELAY)
+            (
+                operation.target,
+                operation.value,
+                operation.payload,
+                MIGRATION_PREDECESSOR,
+                salt,
+                MIGRATION_TIMELOCK_DELAY
+            )
         );
         operation.executeCalldata = abi.encodeCall(
             TimelockController.execute,
@@ -105,23 +112,23 @@ contract BuildV2Migration is Script, MigrationConfig {
 
     function _validateDeadline(uint256 deadline, bool forScheduling) internal view {
         if (forScheduling) {
-            require(deadline > block.timestamp + TIMELOCK_DELAY, InvalidConfiguration("MIGRATION_DEADLINE"));
+            require(deadline > block.timestamp + MIGRATION_TIMELOCK_DELAY, InvalidConfiguration("MIGRATION_DEADLINE"));
         } else {
             require(block.timestamp <= deadline, InvalidConfiguration("MIGRATION_DEADLINE"));
         }
     }
 
-    function _validateProductionState(MigrationOperation memory operation) private view {
-        _requireCode(TIMELOCK);
+    function _validateProductionState(MigrationOperation memory operation) internal view {
+        _requireCode(MIGRATION_TIMELOCK);
         _requireCode(STAKED_USDAT_PROXY);
         _requireCode(STRCON);
 
-        TimelockController timelock = TimelockController(payable(TIMELOCK));
-        require(timelock.getMinDelay() == TIMELOCK_DELAY, InvalidConfiguration("TIMELOCK_DELAY"));
+        TimelockController timelock = TimelockController(payable(MIGRATION_TIMELOCK));
+        require(timelock.getMinDelay() == MIGRATION_TIMELOCK_DELAY, InvalidConfiguration("MIGRATION_TIMELOCK_DELAY"));
         require(timelock.hasRole(timelock.EXECUTOR_ROLE(), address(0)), InvalidConfiguration("open EXECUTOR_ROLE"));
         require(
-            IAccessControl(STAKED_USDAT_PROXY).hasRole(bytes32(0), TIMELOCK),
-            InvalidConfiguration("vault DEFAULT_ADMIN_ROLE")
+            IAccessControl(STAKED_USDAT_PROXY).hasRole(keccak256("PARAMETER_MANAGER_ROLE"), MIGRATION_TIMELOCK),
+            InvalidConfiguration("vault PARAMETER_MANAGER_ROLE")
         );
         require(
             timelock.hashOperation(
@@ -193,13 +200,14 @@ contract BuildV2Migration is Script, MigrationConfig {
         console.logBytes(operation.payload);
 
         console.log("=== Fireblocks Schedule Transaction ===");
-        console.log("To:", TIMELOCK);
+        console.log("Proposer:", MIGRATION_PROPOSER);
+        console.log("To:", MIGRATION_TIMELOCK);
         console.log("Value: 0");
         console.log("Calldata:");
         console.logBytes(operation.scheduleCalldata);
 
         console.log("=== Open-Executor Transaction After Delay ===");
-        console.log("To:", TIMELOCK);
+        console.log("To:", MIGRATION_TIMELOCK);
         console.log("Value: 0");
         console.log("Calldata:");
         console.logBytes(operation.executeCalldata);

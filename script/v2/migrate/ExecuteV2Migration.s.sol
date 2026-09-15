@@ -18,7 +18,7 @@ contract ExecuteV2Migration is Script, MigrationConfig {
         if (block.chainid != EXPECTED_CHAIN_ID) revert WrongChain(block.chainid);
         BuildV2Migration.MigrationOperation memory operation = _validatedOperation();
         operationId = operation.operationId;
-        TimelockController timelock = TimelockController(payable(TIMELOCK));
+        TimelockController timelock = TimelockController(payable(MIGRATION_TIMELOCK));
 
         if (timelock.isOperationDone(operationId)) revert AlreadyExecuted(operationId);
         if (!timelock.isOperationReady(operationId)) {
@@ -40,7 +40,7 @@ contract ExecuteV2Migration is Script, MigrationConfig {
     function checkExecuted() external returns (bytes32 operationId) {
         if (block.chainid != EXPECTED_CHAIN_ID) revert WrongChain(block.chainid);
         operationId = new BuildV2Migration().buildOperation().operationId;
-        if (!TimelockController(payable(TIMELOCK)).isOperationDone(operationId)) {
+        if (!TimelockController(payable(MIGRATION_TIMELOCK)).isOperationDone(operationId)) {
             revert OperationNotExecuted(operationId);
         }
         console.log("Confirmed executed operation:");

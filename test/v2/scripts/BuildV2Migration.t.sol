@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
 import {Test} from "forge-std/Test.sol";
 
@@ -11,6 +12,20 @@ import {IStakedUSDat} from "../../../src/v2/interfaces/IStakedUSDat.sol";
 contract BuildV2MigrationHarness is BuildV2Migration {
     function validateDeadline(uint256 deadline, bool forScheduling) external view {
         _validateDeadline(deadline, forScheduling);
+    }
+
+    function validateProductionState() external view {
+        _validateProductionState(buildOperation());
+    }
+}
+
+contract MigrationPreflightVaultMock is AccessControl {
+    constructor(address timelock, bool parameterManager) {
+        _grantRole(parameterManager ? keccak256("PARAMETER_MANAGER_ROLE") : DEFAULT_ADMIN_ROLE, timelock);
+    }
+
+    function paused() external pure returns (bool) {
+        return true;
     }
 }
 
@@ -27,9 +42,14 @@ contract BuildV2MigrationTest is Test, MigrationConfig {
     function test_configuration_UsesSharedConstants() public view {
         assertEq(builder.EXPECTED_CHAIN_ID(), EXPECTED_CHAIN_ID);
         assertEq(builder.TIMELOCK_DELAY(), TIMELOCK_DELAY);
+        assertEq(builder.TIMELOCK_DELAY(), 5 days);
+        assertEq(builder.MIGRATION_TIMELOCK_DELAY(), MIGRATION_TIMELOCK_DELAY);
+        assertEq(builder.MIGRATION_TIMELOCK_DELAY(), 2 days);
         assertEq(builder.MAX_MIGRATION_TOLERANCE_BPS(), MAX_MIGRATION_TOLERANCE_BPS);
         assertEq(builder.TIMELOCK(), TIMELOCK);
         assertEq(builder.PROPOSER(), PROPOSER);
+        assertEq(builder.MIGRATION_TIMELOCK(), MIGRATION_TIMELOCK);
+        assertEq(builder.MIGRATION_PROPOSER(), MIGRATION_PROPOSER);
         assertEq(builder.STAKED_USDAT_PROXY(), STAKED_USDAT_PROXY);
         assertEq(builder.STRCON(), STRCON);
         assertEq(builder.EXPECTED_STRCON(), EXPECTED_STRCON);
@@ -69,7 +89,7 @@ contract BuildV2MigrationTest is Test, MigrationConfig {
 
     function test_validateDeadline_SchedulingRequiresTimeBeyondDelay() public {
         vm.warp(1_800_000_000);
-        uint256 readyAt = block.timestamp + TIMELOCK_DELAY;
+        uint256 readyAt = block.timestamp + MIGRATION_TIMELOCK_DELAY;
 
         vm.expectRevert(abi.encodeWithSelector(BuildV2Migration.InvalidConfiguration.selector, "MIGRATION_DEADLINE"));
         harness.validateDeadline(readyAt - 1, true);
@@ -78,13 +98,13 @@ contract BuildV2MigrationTest is Test, MigrationConfig {
         harness.validateDeadline(readyAt + 1, true);
     }
 
-    function test_validateDeadline_ExecutionUsesOriginalDeadlineAfterFiveDays() public {
+    function test_validateDeadline_ExecutionUsesOriginalDeadlineAfterTwoDays() public {
         vm.warp(1_800_000_000);
-        assertEq(TIMELOCK_DELAY, 5 days);
-        uint256 deadline = block.timestamp + TIMELOCK_DELAY + 1;
+        assertEq(MIGRATION_TIMELOCK_DELAY, 2 days);
+        uint256 deadline = block.timestamp + MIGRATION_TIMELOCK_DELAY + 1;
         harness.validateDeadline(deadline, true);
 
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
+        vm.warp(block.timestamp + MIGRATION_TIMELOCK_DELAY);
         harness.validateDeadline(deadline, false);
         vm.expectRevert(abi.encodeWithSelector(BuildV2Migration.InvalidConfiguration.selector, "MIGRATION_DEADLINE"));
         harness.validateDeadline(deadline, true);
@@ -105,15 +125,35 @@ contract BuildV2MigrationTest is Test, MigrationConfig {
         harness.validateDeadline(deadline, false);
     }
 
+    function test_validateProductionState_AcceptsParameterManagerWithoutAdmin() public {
+        _setUpProductionPreflight(true);
+        assertTrue(AccessControl(STAKED_USDAT_PROXY).hasRole(keccak256("PARAMETER_MANAGER_ROLE"), MIGRATION_TIMELOCK));
+        assertFalse(AccessControl(STAKED_USDAT_PROXY).hasRole(bytes32(0), MIGRATION_TIMELOCK));
+
+        vm.expectRevert(abi.encodeWithSelector(BuildV2Migration.InvalidConfiguration.selector, "vault paused"));
+        harness.validateProductionState();
+    }
+
+    function test_validateProductionState_RejectsAdminWithoutParameterManager() public {
+        _setUpProductionPreflight(false);
+        assertTrue(AccessControl(STAKED_USDAT_PROXY).hasRole(bytes32(0), MIGRATION_TIMELOCK));
+        assertFalse(AccessControl(STAKED_USDAT_PROXY).hasRole(keccak256("PARAMETER_MANAGER_ROLE"), MIGRATION_TIMELOCK));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(BuildV2Migration.InvalidConfiguration.selector, "vault PARAMETER_MANAGER_ROLE")
+        );
+        harness.validateProductionState();
+    }
+
     function test_buildOperation_PreservesTermsAcrossSchedulingAndExecution() public {
         vm.warp(1_800_000_000);
         uint256 expectedStrcon = 100_000 ether;
-        uint256 deadline = block.timestamp + TIMELOCK_DELAY + 1;
+        uint256 deadline = block.timestamp + MIGRATION_TIMELOCK_DELAY + 1;
         BuildV2Migration.MigrationOperation memory scheduled =
             builder.buildOperation(expectedStrcon, deadline, MIGRATION_SALT);
         harness.validateDeadline(deadline, true);
 
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
+        vm.warp(block.timestamp + MIGRATION_TIMELOCK_DELAY);
         harness.validateDeadline(deadline, false);
         BuildV2Migration.MigrationOperation memory executing =
             builder.buildOperation(expectedStrcon, deadline, MIGRATION_SALT);
@@ -130,8 +170,9 @@ contract BuildV2MigrationTest is Test, MigrationConfig {
         bytes memory expectedPayload =
             abi.encodeCall(IStakedUSDat.migrate, (builder.EXPECTED_STRCON(), builder.MIGRATION_DEADLINE()));
 
-        assertEq(builder.TIMELOCK(), 0xfD5782E3BFF366601da3973aE30C583dE4F08A67);
-        assertEq(builder.PROPOSER(), 0x610182581C93687Ca03F4a8E7f124f8cEC616820);
+        assertEq(builder.MIGRATION_TIMELOCK(), 0x6F72de4F529a03Bfa883825152656a8c62CBB626);
+        assertEq(builder.MIGRATION_PROPOSER(), 0x7A5A4064005584bc727666ec82548A9139d5F21e);
+        assertEq(builder.MIGRATION_TIMELOCK_DELAY(), 2 days);
         assertEq(operation.target, builder.STAKED_USDAT_PROXY());
         assertEq(operation.value, 0);
         assertEq(operation.payload, expectedPayload);
@@ -144,7 +185,7 @@ contract BuildV2MigrationTest is Test, MigrationConfig {
                 expectedPayload,
                 builder.MIGRATION_PREDECESSOR(),
                 builder.MIGRATION_SALT(),
-                builder.TIMELOCK_DELAY()
+                builder.MIGRATION_TIMELOCK_DELAY()
             )
         );
         bytes memory expectedExecuteCalldata = abi.encodeCall(
@@ -172,5 +213,23 @@ contract BuildV2MigrationTest is Test, MigrationConfig {
                 )
             )
         );
+    }
+
+    function _setUpProductionPreflight(bool parameterManager) private {
+        address[] memory proposers = new address[](1);
+        proposers[0] = MIGRATION_PROPOSER;
+        address[] memory executors = new address[](1);
+        executors[0] = address(0);
+        deployCodeTo(
+            "TimelockController.sol:TimelockController",
+            abi.encode(MIGRATION_TIMELOCK_DELAY, proposers, executors, address(0)),
+            MIGRATION_TIMELOCK
+        );
+        deployCodeTo(
+            "BuildV2Migration.t.sol:MigrationPreflightVaultMock",
+            abi.encode(MIGRATION_TIMELOCK, parameterManager),
+            STAKED_USDAT_PROXY
+        );
+        vm.etch(STRCON, hex"00");
     }
 }

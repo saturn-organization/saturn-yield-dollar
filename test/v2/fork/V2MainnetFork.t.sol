@@ -59,6 +59,7 @@ contract V2MockMainnetForkTest is Test {
 
     address private constant TIMELOCK = 0xfD5782E3BFF366601da3973aE30C583dE4F08A67;
     address private constant PROPOSER = 0x610182581C93687Ca03F4a8E7f124f8cEC616820;
+    address private constant MIGRATION_PROPOSER = 0x7A5A4064005584bc727666ec82548A9139d5F21e;
 
     address private constant SYNTHETIC_SHARES_ORACLE = 0x9BC39DB6fbB44B91a48b8D5A6C208B82B1741bE6;
     address private constant PRIMARY_FEED = 0xC353ac4b425f818Ad87E228bf816E15c2173AC07;
@@ -234,7 +235,7 @@ contract V2MockMainnetForkTest is Test {
 
     function _deployV2Dependencies() private {
         address[] memory proposers = new address[](1);
-        proposers[0] = PROPOSER;
+        proposers[0] = MIGRATION_PROPOSER;
         address[] memory executors = new address[](1);
         executors[0] = address(0);
         _parameterTimelock = new TimelockController(PARAMETER_TIMELOCK_DELAY, proposers, executors, address(0));
@@ -267,8 +268,9 @@ contract V2MockMainnetForkTest is Test {
 
         assertEq(_upgradeBuilder.TIMELOCK(), TIMELOCK);
         assertEq(_upgradeBuilder.PROPOSER(), PROPOSER);
-        assertEq(_migrationBuilder.TIMELOCK(), TIMELOCK);
-        assertEq(_migrationBuilder.PROPOSER(), PROPOSER);
+        assertEq(_migrationBuilder.MIGRATION_TIMELOCK(), 0x6F72de4F529a03Bfa883825152656a8c62CBB626);
+        assertEq(_migrationBuilder.MIGRATION_PROPOSER(), MIGRATION_PROPOSER);
+        assertEq(_migrationBuilder.MIGRATION_TIMELOCK_DELAY(), PARAMETER_TIMELOCK_DELAY);
     }
 
     function _assertUninitializedBindings() private view {
@@ -412,14 +414,9 @@ contract V2MockMainnetForkTest is Test {
         uint256 deadline = block.timestamp + PARAMETER_TIMELOCK_DELAY + 1 days;
         operation = _migrationBuilder.buildOperation(expectedStrcon, deadline, MIGRATION_SALT);
         assertEq(operation.target, STAKED_USDAT_PROXY);
-        // This fork-local controller uses a separate delay from the production builder configuration.
-        operation.scheduleCalldata = abi.encodeCall(
-            TimelockController.schedule,
-            (operation.target, operation.value, operation.payload, bytes32(0), MIGRATION_SALT, PARAMETER_TIMELOCK_DELAY)
-        );
 
         uint256 scheduledAt = block.timestamp;
-        _callAs(PROPOSER, address(_parameterTimelock), operation.scheduleCalldata);
+        _callAs(MIGRATION_PROPOSER, address(_parameterTimelock), operation.scheduleCalldata);
         assertEq(_parameterTimelock.getMinDelay(), PARAMETER_TIMELOCK_DELAY);
         assertEq(_parameterTimelock.getTimestamp(operation.operationId), scheduledAt + PARAMETER_TIMELOCK_DELAY);
 

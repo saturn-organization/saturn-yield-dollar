@@ -51,15 +51,15 @@ contract ExecuteV2MigrationHarness is ExecuteV2Migration {
 contract MigrationWorkflowTarget {
     error MigrationRejected();
 
-    address public immutable ADMIN;
+    address public immutable PARAMETER_MANAGER;
     uint256 public expectedStrcon;
     uint256 public deadline;
     bytes32 public payloadHash;
     uint256 public migrationCount;
     bool public failMigration;
 
-    constructor(address admin) {
-        ADMIN = admin;
+    constructor(address parameterManager) {
+        PARAMETER_MANAGER = parameterManager;
     }
 
     function setFailMigration(bool value) external {
@@ -67,7 +67,7 @@ contract MigrationWorkflowTarget {
     }
 
     function migrate(uint256 expectedStrcon_, uint256 deadline_) external {
-        require(msg.sender == ADMIN, "not timelock");
+        require(msg.sender == PARAMETER_MANAGER, "not timelock");
         expectedStrcon = expectedStrcon_;
         deadline = deadline_;
         payloadHash = keccak256(msg.data);
@@ -91,19 +91,21 @@ contract V2MigrationWorkflowTest is Test, MigrationConfig {
         vm.warp(1_800_000_000);
 
         address[] memory proposers = new address[](1);
-        proposers[0] = PROPOSER;
+        proposers[0] = MIGRATION_PROPOSER;
         address[] memory executors = new address[](1);
         executors[0] = address(0);
         deployCodeTo(
             "TimelockController.sol:TimelockController",
-            abi.encode(TIMELOCK_DELAY, proposers, executors, address(this)),
-            TIMELOCK
+            abi.encode(MIGRATION_TIMELOCK_DELAY, proposers, executors, address(this)),
+            MIGRATION_TIMELOCK
         );
-        timelock = TimelockController(payable(TIMELOCK));
+        timelock = TimelockController(payable(MIGRATION_TIMELOCK));
 
-        deployCodeTo("V2MigrationWorkflow.t.sol:MigrationWorkflowTarget", abi.encode(TIMELOCK), STAKED_USDAT_PROXY);
+        deployCodeTo(
+            "V2MigrationWorkflow.t.sol:MigrationWorkflowTarget", abi.encode(MIGRATION_TIMELOCK), STAKED_USDAT_PROXY
+        );
         vault = MigrationWorkflowTarget(STAKED_USDAT_PROXY);
-        vm.etch(PROPOSER, type(MigrationWorkflowCaller).runtimeCode);
+        vm.etch(MIGRATION_PROPOSER, type(MigrationWorkflowCaller).runtimeCode);
         vm.etch(DEPLOYER, type(MigrationWorkflowCaller).runtimeCode);
 
         operation = new BuildV2Migration().buildOperation();
@@ -113,7 +115,7 @@ contract V2MigrationWorkflowTest is Test, MigrationConfig {
 
     function test_scheduleAndExecute_UsesExactOperationAndOpenExecutor() public {
         uint256 scheduledAt = block.timestamp;
-        assertEq(TIMELOCK_DELAY, 5 days);
+        assertEq(MIGRATION_TIMELOCK_DELAY, 2 days);
         assertEq(
             operation.operationId,
             timelock.hashOperation(
@@ -127,7 +129,7 @@ contract V2MigrationWorkflowTest is Test, MigrationConfig {
         assertEq(vault.migrationCount(), 0);
         (bytes32 scheduledId, uint256 readyAt) = scheduler.checkScheduled();
         assertEq(scheduledId, operation.operationId);
-        assertEq(readyAt, scheduledAt + 5 days);
+        assertEq(readyAt, scheduledAt + 2 days);
         assertFalse(timelock.hasRole(timelock.DEFAULT_ADMIN_ROLE(), DEPLOYER));
         assertFalse(timelock.hasRole(timelock.EXECUTOR_ROLE(), DEPLOYER));
         assertFalse(timelock.hasRole(timelock.DEFAULT_ADMIN_ROLE(), DEFAULT_BROADCAST_SENDER));
@@ -150,7 +152,7 @@ contract V2MigrationWorkflowTest is Test, MigrationConfig {
 
         assertEq(_schedule(), operation.operationId);
         (, uint256 readyAt) = scheduler.checkScheduled();
-        assertEq(readyAt, scheduledAt + TIMELOCK_DELAY);
+        assertEq(readyAt, scheduledAt + MIGRATION_TIMELOCK_DELAY);
 
         vm.warp(readyAt + 2 days);
         assertTrue(timelock.isOperationReady(operation.operationId));
@@ -170,7 +172,7 @@ contract V2MigrationWorkflowTest is Test, MigrationConfig {
         address alternateProposer = address(0xA11CE);
         vm.etch(alternateProposer, type(MigrationWorkflowCaller).runtimeCode);
         timelock.grantRole(timelock.PROPOSER_ROLE(), alternateProposer);
-        timelock.revokeRole(timelock.PROPOSER_ROLE(), PROPOSER);
+        timelock.revokeRole(timelock.PROPOSER_ROLE(), MIGRATION_PROPOSER);
         assertFalse(timelock.hasRole(timelock.DEFAULT_ADMIN_ROLE(), alternateProposer));
 
         assertEq(
@@ -192,18 +194,18 @@ contract V2MigrationWorkflowTest is Test, MigrationConfig {
 
     function test_schedule_RestartsDelayAfterCancellation() public {
         _schedule();
-        vm.prank(PROPOSER);
+        vm.prank(MIGRATION_PROPOSER);
         timelock.cancel(operation.operationId);
         vm.warp(block.timestamp + 1 days);
 
         assertEq(_schedule(), operation.operationId);
         assertTrue(timelock.isOperationPending(operation.operationId));
-        assertEq(timelock.getTimestamp(operation.operationId), block.timestamp + TIMELOCK_DELAY);
+        assertEq(timelock.getTimestamp(operation.operationId), block.timestamp + MIGRATION_TIMELOCK_DELAY);
     }
 
     function test_schedule_RejectsCompletedOperation() public {
         _schedule();
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
+        vm.warp(block.timestamp + MIGRATION_TIMELOCK_DELAY);
         _execute();
         vm.expectRevert(abi.encodeWithSelector(ScheduleV2Migration.AlreadyExecuted.selector, operation.operationId));
         _schedule();
@@ -228,7 +230,7 @@ contract V2MigrationWorkflowTest is Test, MigrationConfig {
         vm.expectRevert(
             abi.encodeWithSelector(BuildV2Migration.InvalidConfiguration.selector, "MIGRATION_CONFIGURATION_APPROVED")
         );
-        MigrationWorkflowCaller(PROPOSER).run(IMigrationWorkflow(address(productionScheduler)));
+        MigrationWorkflowCaller(MIGRATION_PROPOSER).run(IMigrationWorkflow(address(productionScheduler)));
     }
 
     function test_productionExecute_RejectsUnapprovedConfiguration() public {
@@ -249,7 +251,7 @@ contract V2MigrationWorkflowTest is Test, MigrationConfig {
 
     function test_execute_RejectsBeforeReady() public {
         _schedule();
-        vm.warp(block.timestamp + TIMELOCK_DELAY - 1);
+        vm.warp(block.timestamp + MIGRATION_TIMELOCK_DELAY - 1);
         vm.expectRevert(
             abi.encodeWithSelector(
                 ExecuteV2Migration.OperationNotReady.selector,
@@ -264,9 +266,9 @@ contract V2MigrationWorkflowTest is Test, MigrationConfig {
 
     function test_execute_RejectsCancelledOperation() public {
         _schedule();
-        vm.prank(PROPOSER);
+        vm.prank(MIGRATION_PROPOSER);
         timelock.cancel(operation.operationId);
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
+        vm.warp(block.timestamp + MIGRATION_TIMELOCK_DELAY);
         vm.expectRevert(abi.encodeWithSelector(ExecuteV2Migration.OperationNotReady.selector, operation.operationId, 0));
         _execute();
         assertFalse(timelock.isOperation(operation.operationId));
@@ -275,7 +277,7 @@ contract V2MigrationWorkflowTest is Test, MigrationConfig {
 
     function test_execute_RejectsCompletedOperation() public {
         _schedule();
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
+        vm.warp(block.timestamp + MIGRATION_TIMELOCK_DELAY);
         _execute();
         vm.expectRevert(abi.encodeWithSelector(ExecuteV2Migration.AlreadyExecuted.selector, operation.operationId));
         _execute();
@@ -286,7 +288,7 @@ contract V2MigrationWorkflowTest is Test, MigrationConfig {
     function test_execute_RejectsWhenPublicExecutionIsRevoked() public {
         _schedule();
         timelock.revokeRole(timelock.EXECUTOR_ROLE(), address(0));
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
+        vm.warp(block.timestamp + MIGRATION_TIMELOCK_DELAY);
         vm.expectRevert();
         _execute();
         vm.stopBroadcast();
@@ -309,7 +311,7 @@ contract V2MigrationWorkflowTest is Test, MigrationConfig {
     function test_execute_MigrationFailureRollsBackAndCanBeRetried() public {
         _schedule();
         vault.setFailMigration(true);
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
+        vm.warp(block.timestamp + MIGRATION_TIMELOCK_DELAY);
         vm.expectRevert(MigrationWorkflowTarget.MigrationRejected.selector);
         _execute();
         // A reverted script skips stopBroadcast; a new Forge invocation would start with fresh context.
@@ -331,14 +333,14 @@ contract V2MigrationWorkflowTest is Test, MigrationConfig {
         );
         scheduler.checkScheduled();
         _schedule();
-        vm.prank(PROPOSER);
+        vm.prank(MIGRATION_PROPOSER);
         timelock.cancel(operation.operationId);
         vm.expectRevert(
             abi.encodeWithSelector(ScheduleV2Migration.OperationNotScheduled.selector, operation.operationId)
         );
         scheduler.checkScheduled();
         _schedule();
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
+        vm.warp(block.timestamp + MIGRATION_TIMELOCK_DELAY);
         _execute();
         vm.expectRevert(
             abi.encodeWithSelector(ScheduleV2Migration.OperationNotScheduled.selector, operation.operationId)
@@ -352,7 +354,7 @@ contract V2MigrationWorkflowTest is Test, MigrationConfig {
         _schedule();
         vm.expectRevert(abi.encodeWithSelector(ExecuteV2Migration.OperationNotExecuted.selector, operation.operationId));
         executor.checkExecuted();
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
+        vm.warp(block.timestamp + MIGRATION_TIMELOCK_DELAY);
         vm.expectRevert(abi.encodeWithSelector(ExecuteV2Migration.OperationNotExecuted.selector, operation.operationId));
         executor.checkExecuted();
         assertEq(vault.migrationCount(), 0);
@@ -360,7 +362,7 @@ contract V2MigrationWorkflowTest is Test, MigrationConfig {
 
     function _assertConfigurationDriftRejected(BuildV2Migration.MigrationOperation memory changed) private {
         _schedule();
-        vm.warp(block.timestamp + TIMELOCK_DELAY);
+        vm.warp(block.timestamp + MIGRATION_TIMELOCK_DELAY);
         assertNotEq(changed.operationId, operation.operationId);
         assertFalse(timelock.isOperation(changed.operationId));
         executor.setOperation(changed);
@@ -371,7 +373,7 @@ contract V2MigrationWorkflowTest is Test, MigrationConfig {
     }
 
     function _schedule() private returns (bytes32) {
-        return MigrationWorkflowCaller(PROPOSER).run(IMigrationWorkflow(address(scheduler)));
+        return MigrationWorkflowCaller(MIGRATION_PROPOSER).run(IMigrationWorkflow(address(scheduler)));
     }
 
     function _execute() private returns (bytes32) {
