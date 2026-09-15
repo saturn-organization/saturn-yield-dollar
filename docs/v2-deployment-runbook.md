@@ -102,7 +102,7 @@ Copy the output addresses into [UpgradeConfig.sol](../script/v2/configs/UpgradeC
 3. **Redeem from the fund in STRCon** and send the tokens to the Saturn Global
    Capital Investments Ltd. Fireblocks Processor wallet:
    `0x09D6E34cE24D54890fF0BC6a090b5f880F8C729f`.
-   Timing: TBD.
+   Estimated timing: a few hours.
 
 4. **Transfer STRCon to the execution vehicle** in Saturn Vault Corporation:
    `0xb3C29aa9196785F0aa5ECA6Cb0BcF1E92D83A468`.
