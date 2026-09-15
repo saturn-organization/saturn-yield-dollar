@@ -54,7 +54,6 @@ Copy the output addresses into [UpgradeConfig.sol](../script/v2/configs/UpgradeC
 - Minimum duration: five days between scheduling and execution.
 - Set `UPGRADE_CONFIGURATION_APPROVED = true` in
   [UpgradeConfig.sol](../script/v2/configs/UpgradeConfig.sol).
-- Switch the frontend to v2 immediately after the upgrade executes.
 - The vault starts in **Elevated** mode: 25 bps deposits and 50 bps redemptions.
   Regular mode requires a separate `authorizeRegularMode(validUntil)` call by
   the market-mode manager. Existing vault and queue pause states are preserved.
@@ -150,25 +149,42 @@ Copy the output addresses into [UpgradeConfig.sol](../script/v2/configs/UpgradeC
    Confirm the mirror is retired at zero and the vault's STRCon custody and
    recognized balance reflect the delivery.
 
-## Step 4 — Cleanup (To Do)
+## Step 4 — Cleanup
+
+### 1. Onchain
 
 After the upgrade has been validated, revoke these obsolete roles on the proxies:
 
-| Proxy | Roles to revoke | Current holders |
+| Proxy | Role to revoke | Current holder |
 |---|---|---|
-| Vault | `PROCESSOR_ROLE`, `COMPLIANCE_ROLE` | TBD |
-| Queue | `PROCESSOR_ROLE`, `COMPLIANCE_ROLE`, `STAKED_USDAT_ROLE` | TBD |
+| Vault and queue | `PROCESSOR_ROLE` | `0x09D6E34cE24D54890fF0BC6a090b5f880F8C729f` |
+| Vault and queue | `COMPLIANCE_ROLE` | `0x10D59F776db12b4B271b2609CB8b7Ddd0A82703B` |
+| Queue | `STAKED_USDAT_ROLE` | `0xD166337499E176bbC38a1FBd113Ab144e5bd2Df7` |
 
-1. Find all current holders using role-grant/revoke events and `hasRole`.
-   Role IDs are `keccak256(bytes(roleName))`.
-2. Schedule and execute `revokeRole(roleId, holder)` through the role administrator
+1. Schedule and execute `revokeRole(roleId, holder)` through the role administrator
    for every obsolete grant. These calls are separate from the upgrade batch.
-3. Verify the old grants are removed and approved v2 roles remain.
+2. Verify the old grants are removed and approved v2 roles remain.
    Preserve the approved `DEFAULT_ADMIN_ROLE` timelock on both proxies;
    any extra active admins or v2 holders need separate review.
 
 Do not remove legacy oracle administration while the mirror still needs it.
 After retirement, check for other consumers before decommissioning it.
+
+### 2. Webapp
+
+1. Update the frontend to calculate and send `minSharePrice` instead of
+   `minUsdatReceived` for withdrawal requests.
+2. Add a countdown showing when an order is expected to be executed.
+3. Update the analytics page's data pulls and replace STRC holdings with STRCon
+   holdings.
+4. Add a Cancel Request button for withdrawal requests.
+
+### 3. Admin Portal
+
+1. Display the withdrawal queue as a table.
+2. Update vesting on the sUSDat page to use the new v2 variables.
+3. Replace Unvested STRC with Unvested USDat and remove Vested STRC.
+4. Replace Total STRC with Total STRCon and track the STRCon balance.
 
 ## Communication Plan (To Do)
 
@@ -181,3 +197,96 @@ After retirement, check for other consumers before decommissioning it.
    updating or cancelling requests. Confirm owners have a working way to do both.
    Queue pause blocks both actions; vault pause also blocks cancellation.
    Extend the grace period if those actions were unavailable.
+
+## Schedule
+
+Proposed timeline: Friday migration and Monday reopening, with processing
+stopped when the STRC transfer begins.
+
+### Wednesday — Announce the update
+
+- Publish the proposed timeline, including the processing hold from Monday
+  until the following Monday.
+- Explain that new reward distributions will temporarily stop; existing
+  rewards continue vesting.
+- Notify legacy request owners about the limit changes and their opportunity
+  to update or cancel requests before processing resumes.
+- Confirm DTC, ITN, and fund-redemption timing. Arrange any funding buffer in
+  advance.
+- Set the final reward-distribution cutoff so vesting finishes before migration
+  scheduling.
+
+### Friday — Schedule the upgrade
+
+1. Set `UPGRADE_CONFIGURATION_APPROVED = true`.
+2. Run `make upgrade-schedule`.
+3. Publish the proposal and its earliest Wednesday execution time.
+4. Complete remaining v1 settlements before Monday's transfer.
+
+### Monday — Stop processing and transfer STRC
+
+1. Stop withdrawal processing and STRC balance-changing operations.
+2. Reconcile the vault's recorded STRC against the shares being transferred.
+3. Submit the full-position DTC transfer from Clear Street to Alpaca.
+4. Announce that the processing hold has started.
+
+### Tuesday — Mint and deliver STRCon
+
+1. Once the shares arrive, execute the ITN mint into the Saturn Fund Ltd.
+   Tres-Ondo Account.
+2. Check the conversion:
+
+   ```text
+   STRCon conversion target = vault STRC shares / sValue applied at minting
+   ```
+
+3. In-kind redeem STRCon from the fund to the Saturn Global Capital Investments
+   Ltd. Fireblocks Processor wallet.
+4. Transfer the intended delivery to the Saturn Vault Corporation execution
+   vehicle.
+5. Date the deed-of-gift legal contract.
+6. Confirm the exact available delivery. Keep any excess inventory separate
+   from the migration amount.
+
+Tuesday is a target; transfers and minting may carry into Wednesday.
+
+### Wednesday — Execute the upgrade and schedule migration
+
+Proceed once the delivery is ready and legacy vesting is complete.
+
+1. After the five-day delay, run `make upgrade-execute`.
+2. Reset any remaining legacy `InProgress` requests so owners can update or
+   cancel them.
+3. Check the proposed delivery:
+
+   ```text
+   abs(delivery × STRCon oracle price − STRC mirror value)
+       ≤ 0.02 × total vault NAV
+   ```
+
+4. Set `EXPECTED_STRCON`, a migration deadline allowing the two-day wait plus
+   execution buffer, and `MIGRATION_CONFIGURATION_APPROVED = true`.
+5. Approve the vault to pull `EXPECTED_STRCON` from the execution vehicle.
+6. Run `make migrate-schedule`.
+7. Announce the upgrade and earliest migration execution time.
+
+### Friday — Execute migration
+
+1. After the full two-day delay, run `make migrate-execute`. It rechecks
+   funding, allowance, vesting, and valuation.
+2. Confirm the STRCon delivery and permanent retirement of the STRC mirror.
+3. Announce successful migration and that reopening checks are underway.
+
+### Friday through Monday — Verify and reopen
+
+1. Verify accounting, custody, and v2 operations.
+2. On Monday, schedule obsolete-role revocations through the five-day admin
+   timelock.
+3. Confirm the request-owner grace period has ended.
+4. Authorize Regular mode during market hours and resume normal processing.
+5. Announce reopening.
+
+Execute the role revocations after their five-day delay.
+
+If the off-chain delivery slips, move the Wednesday upgrade and subsequent
+dates rather than compressing the checks.
