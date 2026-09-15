@@ -5,8 +5,6 @@ Ethereum mainnet (`chain ID 1`). Auditor-reviewed baseline:
 
 ## **Initial parameters**
 
-Agreed values so far; remaining launch parameters are TBD.
-
 | Parameter | Value | Why |
 |---|---|---|
 | `INITIAL_EXECUTION_CAPACITY` | 6,000,000 USDat (`6_000_000e6`) | Shared buy/sell burst allowance with 20% headroom above the historical $5 million peak buying day. |
