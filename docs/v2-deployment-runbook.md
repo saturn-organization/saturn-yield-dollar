@@ -3,7 +3,7 @@
 Ethereum mainnet (`chain ID 1`). Auditor-reviewed baseline:
 [`f9bb4f99d9e0e021ae53a4fda5d6da5079fe8b99`](https://github.com/saturn-organization/saturn-yield-dollar/commit/f9bb4f99d9e0e021ae53a4fda5d6da5079fe8b99).
 
-## Initial parameters
+## **Initial parameters**
 
 Agreed values so far; remaining launch parameters are TBD.
 
@@ -18,7 +18,7 @@ Agreed values so far; remaining launch parameters are TBD.
 | `ELEVATED_REDEMPTION_FEE_BPS` | 50 bps (0.50%) | Additional liquidity allowance for exits processed in Elevated mode. |
 | `ELEVATED_DEPOSIT_FEE_BPS` | 25 bps (0.25%) | Keeps entry cheaper than Elevated exits while contributing to purchase costs. |
 
-## ✅ Step 1 — Deploy all necessary contracts
+## **✅ Step 1 — Deploy all necessary contracts**
 
 Set the [dependency inputs](./v2-deployment/DeployV2Dependencies.md), including
 expected addresses and hashes for the deployment nonce. Run the deployment script:
@@ -47,14 +47,14 @@ Copy the output addresses into [UpgradeConfig.sol](../script/v2/configs/UpgradeC
 | WithdrawalQueueERC721 implementation | `0xdAF6f8523D7A707D173A12041e1523FDF1373f23` |
 | StakedUSDat implementation | `0x2b7074CF6681382b70E239063931ebE83C0f4E0A` |
 
-## Step 2 — Schedule and execute the upgrade (5 days)
+## **Step 2 — Schedule and execute the upgrade (5 days)**
 
 ### Overview
 
 - Minimum duration: five days between scheduling and execution.
 - Set `UPGRADE_CONFIGURATION_APPROVED = true` in
   [UpgradeConfig.sol](../script/v2/configs/UpgradeConfig.sol).
-- The vault starts in **Elevated** mode: 25 bps deposits and 50 bps redemptions.
+- The vault starts in Elevated mode: 25 bps deposits and 50 bps redemptions.
   Regular mode requires a separate `authorizeRegularMode(validUntil)` call by
   the market-mode manager. Existing vault and queue pause states are preserved.
 - After the upgrade, withdrawals can only be processed from available USDat in
@@ -76,7 +76,7 @@ Copy the output addresses into [UpgradeConfig.sol](../script/v2/configs/UpgradeC
    make upgrade-execute
    ```
 
-## Step 3 — Schedule and execute migration
+## **Step 3 — Schedule and execute migration**
 
 ### Overview
 
@@ -93,23 +93,23 @@ Copy the output addresses into [UpgradeConfig.sol](../script/v2/configs/UpgradeC
 
 ### Execution steps
 
-1. **Move STRC from Clear Street to Alpaca.** Planning estimate: T+1 day.
+1. Move STRC from Clear Street to Alpaca. Planning estimate: T+1 day.
 
-2. **Mint STRCon through ITN** to the Saturn Fund Ltd. Tres-Ondo Account:
+2. Mint STRCon through ITN to the Saturn Fund Ltd. Tres-Ondo Account:
    `0xeAB18842D6ba63BCCd556e27f55ee7790907002B`.
    Timing is unconfirmed; current estimate: T+1 day.
 
-3. **Redeem from the fund in STRCon** and send the tokens to the Saturn Global
+3. Redeem from the fund in STRCon and send the tokens to the Saturn Global
    Capital Investments Ltd. Fireblocks Processor wallet:
    `0x09D6E34cE24D54890fF0BC6a090b5f880F8C729f`.
    Estimated timing: a few hours.
 
-4. **Transfer STRCon to the execution vehicle** in Saturn Vault Corporation:
+4. Transfer STRCon to the execution vehicle in Saturn Vault Corporation:
    `0xb3C29aa9196785F0aa5ECA6Cb0BcF1E92D83A468`.
 
-5. **Date the deed of gift legal contract.**
+5. Date the deed of gift legal contract.
 
-6. **Verify the STRCon delivery and valuation.** Use human-readable amounts,
+6. Verify the STRCon delivery and valuation. Use human-readable amounts,
    sValue, and prices, not raw contract integers:
 
    ```text
@@ -128,17 +128,17 @@ Copy the output addresses into [UpgradeConfig.sol](../script/v2/configs/UpgradeC
    MIGRATION_CONFIGURATION_APPROVED = true
    ```
 
-7. **Approve the vault to pull the STRCon amount from the execution vehicle.**
+7. Approve the vault to pull the STRCon amount from the execution vehicle.
    From `0xb3C29aa9196785F0aa5ECA6Cb0BcF1E92D83A468`, approve the vault proxy
    (`0xD166337499E176bbC38a1FBd113Ab144e5bd2Df7`) for `EXPECTED_STRCON`.
 
-8. **Schedule migration through Fireblocks:**
+8. Schedule migration through Fireblocks:
 
    ```bash
    make migrate-schedule
    ```
 
-9. **Execute the scheduled migration after the two-day delay:**
+9. Execute the scheduled migration after the two-day delay:
 
    ```bash
    make migrate-execute
@@ -149,7 +149,7 @@ Copy the output addresses into [UpgradeConfig.sol](../script/v2/configs/UpgradeC
    Confirm the mirror is retired at zero and the vault's STRCon custody and
    recognized balance reflect the delivery.
 
-## Step 4 — Cleanup
+## **Step 4 — Cleanup**
 
 ### 1. Onchain
 
@@ -186,19 +186,76 @@ After retirement, check for other consumers before decommissioning it.
 3. Replace Unvested STRC with Unvested USDat and remove Vested STRC.
 4. Replace Total STRC with Total STRCon and track the STRCon balance.
 
-## Communication Plan (To Do)
+## **Communication Plan (To Do)**
 
-1. Before upgrade execution, notify legacy request owners that processing will
-   remain stopped until migration and the owner grace period are complete.
-   Explain that existing limits are not converted: the old absolute
-   `minUsdatReceived` value becomes `minSharePrice`, a minimum net USDat payout
-   per `1e18` shares in 6-decimal units, after fees.
-2. Publish the post-upgrade grace-period end (**TBD**) and instructions for
-   updating or cancelling requests. Confirm owners have a working way to do both.
-   Queue pause blocks both actions; vault pause also blocks cancellation.
-   Extend the grace period if those actions were unavailable.
+### Wednesday announcement
 
-## Schedule
+#### What is happening?
+
+- Saturn is upgrading sUSDat to v2.
+- The vault's STRC backing is being migrated to STRCon, which will be held and
+  tracked on-chain.
+- Users do not need to migrate or exchange their tokens. Existing sUSDat stays
+  in their wallets.
+- Redemption processing will temporarily slow and then pause during the
+  transition. The timeline below explains when processing stops and resumes.
+- Yield distributions will pause and resume after the upgrade, including yield
+  earned during the pause. Users who stay through the transition will receive
+  that deferred yield rather than miss out on it.
+
+#### What is the timeline?
+
+Planned schedule:
+
+- Friday — Upgrade proposal: Submit the upgrade proposal to begin the
+  five-day timelock. Redemption processing slows.
+- Monday — STRC transfer: Begin moving STRC for conversion to STRCon.
+  Redemption processing pauses.
+- Wednesday — Upgrade and schedule migration: Execute the sUSDat v2 upgrade
+  and submit the migration proposal to the two-day timelock. Redemption
+  processing remains paused.
+- Friday — Migration: Execute the STRCon migration. Redemption processing
+  remains paused while final checks are completed.
+- Following Monday — Return to normal: Normal redemption processing is
+  expected to resume once checks and the request-owner grace period are complete.
+
+#### What changes for users?
+
+1. Per-share redemption limits: `minUsdatReceived` changes to `minSharePrice`.
+   Users set a minimum net USDat payout per sUSDat, after fees, instead of a
+   minimum total payout. Existing limits are not automatically converted and
+   need to be reviewed before processing resumes.
+2. Base and Elevated fees: Deposit/mint and redemption fees depend on the
+   vault's mode. The initial fees are:
+
+   - Base (Regular): 0% deposit/mint fee and 0.10% (10 bps) redemption fee.
+   - Elevated: 0.25% (25 bps) deposit/mint fee and 0.50% (50 bps) redemption fee.
+
+   The vault starts in Elevated mode after the upgrade. The redemption fee is
+   determined when a request is processed, not when submitted.
+3. Cancel requests: Users can cancel an open redemption request and recover
+   their escrowed sUSDat before it is processed.
+4. Temporary redemption delays: Redemption processing will be slower than
+   normal and then paused during the upgrade and migration. Normal processing
+   will resume once the transition and final checks are complete.
+
+### Follow-up announcements
+
+- Friday — Upgrade proposal: Announce that the upgrade is scheduled and share
+  the upgrade scheduling transaction. Etherscan link: TBD.
+- Wednesday — Upgrade and schedule migration: Announce that the upgrade has
+  executed and migration is scheduled. Share both transactions:
+
+  - Executed upgrade transaction — Etherscan link: TBD.
+  - Scheduled migration transaction — Etherscan link: TBD.
+
+- Friday — Migration: Announce that migration has executed and share the
+  migration execution transaction. Etherscan link: TBD. Confirm that redemption
+  processing remains paused while final checks are completed.
+- Following Monday — Return to normal: Announce when normal redemption
+  processing resumes.
+
+## **Schedule**
 
 Proposed timeline: Friday migration and Monday reopening, with processing
 stopped when the STRC transfer begins.
