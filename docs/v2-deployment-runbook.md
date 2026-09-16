@@ -58,7 +58,7 @@ Copy the output addresses into [UpgradeConfig.sol](../script/v2/configs/UpgradeC
 - After the upgrade, withdrawals can only be processed from available USDat in
   the vault. The legacy STRC position cannot be sold to replenish that buffer.
 - Operator hold: keep processing stopped until migration is complete, legacy
-  `InProgress` requests are cleared, and the owner grace period has ended.
+  `InProgress` requests are cleared, and the review period has ended.
 
 ### Execution steps
 
@@ -82,6 +82,8 @@ Copy the output addresses into [UpgradeConfig.sol](../script/v2/configs/UpgradeC
   timelock delay. Total time depends on the settlement timings below.
 - Migration uses the `PARAMETER_MANAGER_ROLE` timelock:
   `0x6F72de4F529a03Bfa883825152656a8c62CBB626`.
+- During the Wednesday-to-Monday review period, keep both the vault and queue
+  unpaused so users can update or cancel requests.
 - Stop mirror `transferInRewards` calls. At scheduling and execution, the vault
   must be unpaused, the mirror fully vested (`getUnvestedAmount() == 0`), and
   the recognized STRCon module balance zero.
@@ -236,6 +238,11 @@ Planned schedule:
 4. Temporary redemption delays: Redemption processing will be slower than
    normal and then paused during the upgrade and migration. Normal processing
    will resume once the transition and final checks are complete.
+5. Request review period: From Wednesday after the upgrade until Monday before
+   processing resumes, users can cancel pending withdrawal requests or update
+   their `minSharePrice`. Existing limits are not automatically converted from
+   total-payout amounts to per-share prices, so users should review and adjust
+   them during this window.
 
 ### Follow-up announcements
 
