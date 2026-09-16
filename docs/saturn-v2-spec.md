@@ -1087,8 +1087,8 @@ For storage compatibility, the v1 `depositFeeBps` slot stores
 | elevated deposit fee (`elevatedDepositFeeBps`) | stays in the vault | anti-dilution against higher-risk entry windows; `setElevatedDepositFee` (`PARAMETER_MANAGER_ROLE`), capped at 500 bps |
 | redemption fee (`baseRedemptionFeeBps` / `elevatedRedemptionFeeBps`) | stays in the vault | protects remaining holders against liquidity-sensitive exits; `setRedemptionFees` (`PARAMETER_MANAGER_ROLE`), `base ≤ elevated ≤ 500`; the net payout limit is checked after the active fee; each retained fee immediately accrues to remaining shares |
 
-The intended launch range for the redemption-fee tiers is approximately 5–10 bps; the exact
-base and elevated values remain approved launch parameters.
+The approved launch fees are **10 bps base redemption**, **50 bps elevated redemption**,
+and **25 bps elevated deposit**. Regular deposits remain fee-free (0 bps).
 
 `previewDeposit`/`previewMint` include `depositFeeBps()`. `previewWithdraw` returns zero because
 `withdraw()` is disabled. `previewRedeem(shares)` returns the same net payout used by
@@ -1104,13 +1104,17 @@ Capability-named (`keccak256("<NAME>_ROLE")`):
 |---|---|---|---|---|
 | `DEFAULT_ADMIN_ROLE` | Grant/revoke roles; authorize UUPS upgrades; execute `migrate` | StakedUSDat and queue, with separate grants | No other role | Yes |
 | `PARAMETER_MANAGER_ROLE` | Set vault fees, vesting/reward limits, migration parameters, `recoveryAddress`, and `surplusSource`; directly set the fixed policy's execution vehicle, tolerance and capacity; set the active STRCon oracle wrapper | Vault role registry, including direct authorization reads by the fixed policy, bound modules, and wrapper | No other role | Yes |
-| `MARKET_MODE_MANAGER_ROLE` | Set Elevated or Restricted and grant expiring Regular authorization for at most eight hours; cannot set fee amounts or clear hard pause | StakedUSDat | `OPERATOR_ROLE` only | No |
-| `OPERATOR_ROLE` | Execute `buy`/`sell`, transfer STRCMirrorModule rewards, and select/order queue requests for processing | StakedUSDat and queue, with separate grants | `MARKET_MODE_MANAGER_ROLE` only | No |
-| `SURPLUS_MANAGER_ROLE` | Start a capped surplus tranche from the configured `surplusSource`; cannot select the source or destination | StakedUSDat | No other role | No |
+| `MARKET_MODE_MANAGER_ROLE` | Set Elevated or Restricted and grant expiring Regular authorization for at most eight hours; cannot set fee amounts or clear hard pause | StakedUSDat | `OPERATOR_ROLE` and/or `SURPLUS_MANAGER_ROLE` only | No |
+| `OPERATOR_ROLE` | Execute `buy`/`sell`, transfer STRCMirrorModule rewards, and select/order queue requests for processing | StakedUSDat and queue, with separate grants | `MARKET_MODE_MANAGER_ROLE` and/or `SURPLUS_MANAGER_ROLE` only | No |
+| `SURPLUS_MANAGER_ROLE` | Start a capped surplus tranche from the configured `surplusSource`; cannot select the source or destination | StakedUSDat | `OPERATOR_ROLE` and/or `MARKET_MODE_MANAGER_ROLE` only | No |
 | `BLACKLISTER_ROLE` | Add/remove the canonical sUSDat blacklist; cannot move or destroy positions | StakedUSDat | No other role | No |
 | `ENFORCER_ROLE` | Seize locally blacklisted sUSDat positions, seize queue claims eligible under the sUSDat blacklist or USDat freeze list, and rescue untracked vault excess; cannot blacklist or freeze | StakedUSDat and queue, with separate grants | No other role | Yes |
 | `PAUSER_ROLE` | Invoke vault hard pause or queue-local pause; cannot unpause | StakedUSDat and queue, with separate grants | No other role | No |
 | `UNPAUSER_ROLE` | Unpause the vault or queue after recovery approval; cannot pause | StakedUSDat and queue, with separate grants | No other role | Yes |
+
+`OPERATOR_ROLE`, `MARKET_MODE_MANAGER_ROLE`, and `SURPLUS_MANAGER_ROLE` may share
+one address in any combination, including all three together; sharing is optional.
+All other cross-role co-location remains prohibited.
 
 Co-location and delay columns are normative control-manifest constraints, not enforced by
 `AccessControl`; deployment, role administration, and monitoring must enforce them. One

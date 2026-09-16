@@ -145,8 +145,10 @@ contract VaultQueueHarness {
         vault.endRedemptionBatch();
     }
 
-    function beginRedemptionBatch(IStakedUSDat vault) external {
+    function beginRedemptionBatchTwice(IStakedUSDat vault) external returns (bool success, bytes memory returnData) {
         vault.beginRedemptionBatch();
+        (success, returnData) = address(vault).call(abi.encodeCall(IStakedUSDat.beginRedemptionBatch, ()));
+        vault.endRedemptionBatch();
     }
 
     function redeemWithoutBatch(IStakedUSDat vault, uint256 shares, uint256 minSharePrice)
@@ -156,8 +158,13 @@ contract VaultQueueHarness {
         return vault.redeemQueuedShares(shares, minSharePrice);
     }
 
-    function endRedemptionBatch(IStakedUSDat vault) external {
+    function redeemAfterBatch(IStakedUSDat vault, uint256 shares, uint256 minSharePrice)
+        external
+        returns (bool success, bytes memory returnData)
+    {
+        vault.beginRedemptionBatch();
         vault.endRedemptionBatch();
+        return address(vault).call(abi.encodeCall(IStakedUSDat.redeemQueuedShares, (shares, minSharePrice)));
     }
 }
 
@@ -474,15 +481,15 @@ contract StakedUSDatQueuedRedemptionTest is Test {
         vm.expectRevert(IStakedUSDat.InvalidRedemptionBatch.selector);
         queueHarness.redeemWithoutBatch(vault, 40e18, 0);
 
-        queueHarness.beginRedemptionBatch(vault);
+        (bool secondBeginSucceeded, bytes memory secondBeginData) = queueHarness.beginRedemptionBatchTwice(vault);
+        assertFalse(secondBeginSucceeded);
+        assertEq(secondBeginData, abi.encodeWithSelector(IStakedUSDat.InvalidRedemptionBatch.selector));
 
-        vm.expectRevert(IStakedUSDat.InvalidRedemptionBatch.selector);
-        queueHarness.beginRedemptionBatch(vault);
+        (bool redeemAfterEndSucceeded, bytes memory redeemAfterEndData) = queueHarness.redeemAfterBatch(vault, 40e18, 0);
+        assertFalse(redeemAfterEndSucceeded);
+        assertEq(redeemAfterEndData, abi.encodeWithSelector(IStakedUSDat.InvalidRedemptionBatch.selector));
 
-        queueHarness.endRedemptionBatch(vault);
-
-        vm.expectRevert(IStakedUSDat.InvalidRedemptionBatch.selector);
-        queueHarness.redeemWithoutBatch(vault, 40e18, 0);
+        _assertVaultUnchanged();
     }
 
     function _assertVaultUnchanged() private view {

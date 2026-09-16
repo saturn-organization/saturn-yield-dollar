@@ -16,15 +16,19 @@ import {ISyntheticSharesOracle} from "../../src/v2/interfaces/oracles/ISynthetic
 import {STRCMirrorModule} from "../../src/v2/modules/MirrorSTRC/STRCMirrorModule.sol";
 import {STRConModule} from "../../src/v2/modules/STRCon/STRConModule.sol";
 import {STRConPriceOracle} from "../../src/v2/modules/STRCon/STRConPriceOracle.sol";
+import {DependenciesConfig} from "./configs/DependenciesConfig.sol";
 
 interface ILiveStakedUSDat {
     function asset() external view returns (address);
+
     function getStrcOracle() external view returns (address);
+
     function getWithdrawalQueue() external view returns (address);
 }
 
 interface ILiveWithdrawalQueue {
     function USDAT() external view returns (address);
+
     function STAKED_USDAT() external view returns (address);
 }
 
@@ -32,16 +36,8 @@ interface ILiveWithdrawalQueue {
  * @title DeployV2Dependencies
  * @notice Deploys and verifies the contracts needed before constructing the atomic v2 upgrade batch.
  * @dev This script does not upgrade either proxy, initialize v2, or execute migration.
- *
- * Required environment variables:
- * - V2_ORACLE_INITIAL_DEVIATION_BPS
- * - V2_EXPECTED_TRADE_EXECUTION_LOGIC_CODEHASH
- * - V2_EXPECTED_STRCON_PRICE_ORACLE_CODEHASH
- * - V2_EXPECTED_STRC_MIRROR_MODULE_CODEHASH
- * - V2_EXPECTED_STRCON_MODULE_CODEHASH
- * - V2_EXPECTED_EXECUTION_POLICY_CODEHASH
- * - V2_EXPECTED_WITHDRAWAL_QUEUE_IMPLEMENTATION_CODEHASH
- * - V2_EXPECTED_STAKED_USDAT_IMPLEMENTATION_CODEHASH
+ * Addresses and deployment settings are inherited from DependenciesConfig.sol.
+ * The production initial oracle deviation is fixed at 100 bps (1%).
  *
  * Forge detects the StakedUSDat link reference and prepends the deterministic
  * STRConTradeExecutionLogic CREATE2 deployment to the broadcast.
@@ -50,27 +46,14 @@ interface ILiveWithdrawalQueue {
  *   forge script script/v2/DeployV2Dependencies.s.sol:DeployV2Dependencies \
  *     --rpc-url $RPC_URL --broadcast --private-key $PRIVATE_KEY
  */
-contract DeployV2Dependencies is Script {
+contract DeployV2Dependencies is Script, DependenciesConfig {
     error CodeHashMismatch(address target, bytes32 expected, bytes32 actual);
+    error DeploymentAddressMismatch(string contractName, address expected, address actual);
     error InvalidBinding(string binding);
     error InvalidLibraryLink(address libraryAddress, uint256 references);
     error MissingCode(address target);
     error WrongChain(uint256 actualChainId);
 
-    uint256 private constant MAINNET_CHAIN_ID = 1;
-
-    address private constant USDAT = 0x23238f20b894f29041f48D88eE91131C395Aaa71;
-    address private constant STAKED_USDAT_PROXY = 0xD166337499E176bbC38a1FBd113Ab144e5bd2Df7;
-    address private constant WITHDRAWAL_QUEUE_PROXY = 0x4Bc9FEC04F0F95e9b42a3EF18F3C96fB57923D2e;
-    address private constant LEGACY_STRC_ORACLE = 0x5f7eCD0D045c393da6cb6c933c671AC305A871BF;
-
-    address private constant STRCON = 0xECABE1Ff8a9e1dC55899cf58dac8497ecE5Ae84c;
-    address private constant SYNTHETIC_SHARES_ORACLE = 0x9BC39DB6fbB44B91a48b8D5A6C208B82B1741bE6;
-    address private constant PRIMARY_FEED = 0xC353ac4b425f818Ad87E228bf816E15c2173AC07;
-    address private constant REFERENCE_FEED = 0x67d4Ae9f265270aE123c08D2657536771D19cD91;
-
-    address private constant CREATE2_DEPLOYER = 0x4e59b44847b379578588920cA78FbF26c0B4956C;
-    bytes32 private constant TRADE_LOGIC_SALT = bytes32(0);
     string private constant TRADE_LOGIC_ARTIFACT =
         "src/v2/libraries/STRConTradeExecutionLogic.sol:STRConTradeExecutionLogic";
 
@@ -99,10 +82,9 @@ contract DeployV2Dependencies is Script {
     }
 
     function run() external returns (Deployments memory deployed) {
-        require(block.chainid == MAINNET_CHAIN_ID, WrongChain(block.chainid));
+        require(block.chainid == EXPECTED_CHAIN_ID, WrongChain(block.chainid));
 
-        OracleConfig memory oracleConfig =
-            OracleConfig({initialDeviationBps: vm.envUint("V2_ORACLE_INITIAL_DEVIATION_BPS")});
+        OracleConfig memory oracleConfig = OracleConfig({initialDeviationBps: V2_ORACLE_INITIAL_DEVIATION_BPS});
         ExpectedCodeHashes memory expectedCodeHashes = _loadExpectedCodeHashes();
         address legacyStrcOracle = _validateLiveBindings();
 
@@ -110,6 +92,7 @@ contract DeployV2Dependencies is Script {
         deployed = _deploy(oracleConfig, legacyStrcOracle, _tradeExecutionLogicAddress());
         vm.stopBroadcast();
 
+        _verifyDeploymentAddresses(deployed);
         _verifyBindings(deployed, oracleConfig, legacyStrcOracle);
         _logDeploymentManifest(deployed, oracleConfig, legacyStrcOracle);
         _verifyCodeHashes(deployed, expectedCodeHashes);
@@ -118,10 +101,10 @@ contract DeployV2Dependencies is Script {
     /**
      * @notice Runs the production deployment path without broadcast or environment inputs.
      * @dev Used by the pinned mock-fork rehearsal so constructor and dependency changes
-     * cannot drift from this script.
+     * cannot drift from this script. Local rehearsal addresses need not match production predictions.
      */
     function deployForFork(OracleConfig memory oracleConfig) public returns (Deployments memory deployed) {
-        require(block.chainid == MAINNET_CHAIN_ID, WrongChain(block.chainid));
+        require(block.chainid == EXPECTED_CHAIN_ID, WrongChain(block.chainid));
         address legacyStrcOracle = _validateLiveBindings();
         address linkedTradeExecutionLogic = _linkedTradeExecutionLogicAddress();
 
@@ -211,6 +194,24 @@ contract DeployV2Dependencies is Script {
         _requireContract(legacyStrcOracle);
     }
 
+    function _verifyDeploymentAddresses(Deployments memory deployed) internal pure {
+        _requireDeploymentAddress(
+            "STRConTradeExecutionLogic", EXPECTED_TRADE_EXECUTION_LOGIC, deployed.tradeExecutionLogic
+        );
+        _requireDeploymentAddress("STRConPriceOracle", EXPECTED_STRCON_PRICE_ORACLE, deployed.strconPriceOracle);
+        _requireDeploymentAddress("STRCMirrorModule", EXPECTED_STRC_MIRROR_MODULE, deployed.strcMirrorModule);
+        _requireDeploymentAddress("STRConModule", EXPECTED_STRCON_MODULE, deployed.strconModule);
+        _requireDeploymentAddress("STRConExecutionPolicy", EXPECTED_EXECUTION_POLICY, deployed.executionPolicy);
+        _requireDeploymentAddress(
+            "WithdrawalQueueERC721 implementation",
+            EXPECTED_WITHDRAWAL_QUEUE_IMPLEMENTATION,
+            deployed.withdrawalQueueImplementation
+        );
+        _requireDeploymentAddress(
+            "StakedUSDat implementation", EXPECTED_STAKED_USDAT_IMPLEMENTATION, deployed.stakedUsdatImplementation
+        );
+    }
+
     function _verifyBindings(Deployments memory deployed, OracleConfig memory oracleConfig, address legacyStrcOracle)
         private
         view
@@ -287,14 +288,14 @@ contract DeployV2Dependencies is Script {
         require(lastUpdated == 0, InvalidBinding("execution policy last update"));
     }
 
-    function _loadExpectedCodeHashes() private view returns (ExpectedCodeHashes memory expected) {
-        expected.tradeExecutionLogic = vm.envBytes32("V2_EXPECTED_TRADE_EXECUTION_LOGIC_CODEHASH");
-        expected.strconPriceOracle = vm.envBytes32("V2_EXPECTED_STRCON_PRICE_ORACLE_CODEHASH");
-        expected.strcMirrorModule = vm.envBytes32("V2_EXPECTED_STRC_MIRROR_MODULE_CODEHASH");
-        expected.strconModule = vm.envBytes32("V2_EXPECTED_STRCON_MODULE_CODEHASH");
-        expected.executionPolicy = vm.envBytes32("V2_EXPECTED_EXECUTION_POLICY_CODEHASH");
-        expected.withdrawalQueueImplementation = vm.envBytes32("V2_EXPECTED_WITHDRAWAL_QUEUE_IMPLEMENTATION_CODEHASH");
-        expected.stakedUsdatImplementation = vm.envBytes32("V2_EXPECTED_STAKED_USDAT_IMPLEMENTATION_CODEHASH");
+    function _loadExpectedCodeHashes() internal pure returns (ExpectedCodeHashes memory expected) {
+        expected.tradeExecutionLogic = V2_EXPECTED_TRADE_EXECUTION_LOGIC_CODEHASH;
+        expected.strconPriceOracle = V2_EXPECTED_STRCON_PRICE_ORACLE_CODEHASH;
+        expected.strcMirrorModule = V2_EXPECTED_STRC_MIRROR_MODULE_CODEHASH;
+        expected.strconModule = V2_EXPECTED_STRCON_MODULE_CODEHASH;
+        expected.executionPolicy = V2_EXPECTED_EXECUTION_POLICY_CODEHASH;
+        expected.withdrawalQueueImplementation = V2_EXPECTED_WITHDRAWAL_QUEUE_IMPLEMENTATION_CODEHASH;
+        expected.stakedUsdatImplementation = V2_EXPECTED_STAKED_USDAT_IMPLEMENTATION_CODEHASH;
     }
 
     function _verifyCodeHashes(Deployments memory deployed, ExpectedCodeHashes memory expected) private view {
@@ -333,6 +334,10 @@ contract DeployV2Dependencies is Script {
 
     function _requireContract(address target) private view {
         require(target.code.length != 0, MissingCode(target));
+    }
+
+    function _requireDeploymentAddress(string memory contractName, address expected, address actual) private pure {
+        require(actual == expected, DeploymentAddressMismatch(contractName, expected, actual));
     }
 
     function _requireCodeHash(address target, bytes32 expected) private view {
