@@ -34,7 +34,7 @@ are in `DependenciesConfig.sol`. The existing proxies are not redeployed.
 | Input | Value | Where it is supplied |
 |---|---|---|
 | Deployment signer | `0x59Ebb7143dDDd7b045dE7B0bd0F99446143F1624` | Forge wallet/signing configuration. |
-| Deployment starting nonce | `64` | Historical starting nonce for this deployment, not the signer's current nonce. |
+| Deployment starting nonce | `71` | Historical starting nonce for this deployment, not the signer's current nonce. |
 | `V2_ORACLE_INITIAL_DEVIATION_BPS` | `100` bps (`1%`) | Constant in `DependenciesConfig.sol`, not an environment variable. See the [recommendation](../drafts/strcon-feed-deviation-findings.md#recommendation). |
 
 Oracle staleness and price bounds use contract defaults; no additional inputs are required.
@@ -55,8 +55,8 @@ All seven hashes are `bytes32` constants in `DependenciesConfig.sol`, not enviro
 | `V2_EXPECTED_WITHDRAWAL_QUEUE_IMPLEMENTATION_CODEHASH` | `0x537d27c7b1574e4ab94867b9f5719414169c5941387346bca88b84643612256d` | WithdrawalQueueERC721 implementation. |
 | `V2_EXPECTED_STAKED_USDAT_IMPLEMENTATION_CODEHASH` | `0xec3b77f722a89eec23e7dfb2ddfe63e4d82f37adbc5f75a269ed2c82c3ad0300` | StakedUSDat implementation. |
 
-The policy and both implementation hashes have been recalculated for the `64`–`70`
-nonce plan; the other four are unchanged. Regenerate affected hashes if the build,
+The library, policy, and both implementation hashes have been recalculated for the
+`71`–`77` deployment plan; the other three are unchanged. Regenerate affected hashes if the build,
 bindings, library address, or nonce sequence changes. All seven hashes match the
 supplied deployment manifest.
 
@@ -78,7 +78,7 @@ constructors automatically.
 | WithdrawalQueueERC721 implementation | `76` | `0xdAF6f8523D7A707D173A12041e1523FDF1373f23` | Copy to upgrade builder `WITHDRAWAL_QUEUE_IMPLEMENTATION`. |
 | StakedUSDat implementation | `77` | `0x2b7074CF6681382b70E239063931ebE83C0f4E0A` | Copy to upgrade builder `STAKED_USDAT_IMPLEMENTATION`. |
 
-The library prediction uses the configured CREATE2 factory, zero salt, and current
+The library prediction uses the configured CREATE2 factory, salt `1`, and current
 creation bytecode. Recalculate affected predictions if the build or nonce sequence
 changes for a new deployment. The addresses above also match the completed deployment manifest.
 
