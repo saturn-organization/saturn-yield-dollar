@@ -47,5 +47,5 @@ abstract contract UpgradeConfig is SharedConfig {
 
     bytes32 public constant UPGRADE_PREDECESSOR = bytes32(0);
     bytes32 public constant BATCH_SALT = bytes32(0);
-    bool public constant UPGRADE_CONFIGURATION_APPROVED = false;
+    bool public constant UPGRADE_CONFIGURATION_APPROVED = true;
 }

@@ -29,7 +29,7 @@ upgrade-schedule:
 	@$(LOAD_ENV) \
 		: "$${RPC_URL:?Set RPC_URL before running this target}"; \
 		: "$${ADMIN:?Set ADMIN to the Fireblocks proposer address}"; \
-		fireblocks-json-rpc --http -- \
+		npx @fireblocks/fireblocks-json-rpc --http --rpcUrl "$$RPC_URL" -- \
 			forge script script/v2/upgrade/ScheduleV2Upgrade.s.sol:ScheduleV2Upgrade \
 			--sender "$$ADMIN" --slow --broadcast --unlocked --rpc-url {}
 	@$(LOAD_ENV) \
@@ -66,7 +66,7 @@ migrate-schedule:
 	@$(LOAD_ENV) \
 		: "$${RPC_URL:?Set RPC_URL before running this target}"; \
 		: "$${MIGRATION_PROPOSER:?Set MIGRATION_PROPOSER to the Fireblocks migration proposer address}"; \
-		fireblocks-json-rpc --http -- \
+		npx @fireblocks/fireblocks-json-rpc --http --rpcUrl "$$RPC_URL" -- \
 			forge script script/v2/migrate/ScheduleV2Migration.s.sol:ScheduleV2Migration \
 			--sender "$$MIGRATION_PROPOSER" --slow --broadcast --unlocked --rpc-url {}
 	@$(LOAD_ENV) \
