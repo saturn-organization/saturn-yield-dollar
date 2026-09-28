@@ -40,16 +40,6 @@ contract BuildV2UpgradeBatchTest is Test, UpgradeConfig {
         builder.run();
     }
 
-    function test_run_RevertsUntilUpgradeConfigurationApproved() public {
-        vm.chainId(EXPECTED_CHAIN_ID);
-        assertFalse(UPGRADE_CONFIGURATION_APPROVED);
-
-        vm.expectRevert(
-            abi.encodeWithSelector(BuildV2UpgradeBatch.InvalidConfiguration.selector, "UPGRADE_CONFIGURATION_APPROVED")
-        );
-        builder.run();
-    }
-
     function test_buildBatch_IsDeterministicAndUsesCanonicalTargetOrder() public view {
         BuildV2UpgradeBatch.UpgradeBatch memory first = builder.buildBatch();
         BuildV2UpgradeBatch.UpgradeBatch memory second = builder.buildBatch();

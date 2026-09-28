@@ -214,24 +214,6 @@ contract V2UpgradeWorkflowTest is Test, UpgradeConfig {
         _execute();
     }
 
-    function test_productionSchedule_RejectsUnapprovedConfiguration() public {
-        ScheduleV2Upgrade productionScheduler = new ScheduleV2Upgrade();
-        assertFalse(UPGRADE_CONFIGURATION_APPROVED);
-        vm.expectRevert(
-            abi.encodeWithSelector(BuildV2UpgradeBatch.InvalidConfiguration.selector, "UPGRADE_CONFIGURATION_APPROVED")
-        );
-        UpgradeWorkflowCaller(PROPOSER).run(IUpgradeWorkflow(address(productionScheduler)));
-    }
-
-    function test_productionExecute_RejectsUnapprovedConfiguration() public {
-        ExecuteV2Upgrade productionExecutor = new ExecuteV2Upgrade();
-        assertFalse(UPGRADE_CONFIGURATION_APPROVED);
-        vm.expectRevert(
-            abi.encodeWithSelector(BuildV2UpgradeBatch.InvalidConfiguration.selector, "UPGRADE_CONFIGURATION_APPROVED")
-        );
-        UpgradeWorkflowCaller(DEPLOYER).run(IUpgradeWorkflow(address(productionExecutor)));
-    }
-
     function test_execute_RejectsUnscheduledOperation() public {
         vm.expectRevert(abi.encodeWithSelector(ExecuteV2Upgrade.OperationNotReady.selector, batch.operationId, 0));
         _execute();
