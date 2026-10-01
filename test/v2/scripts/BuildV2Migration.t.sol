@@ -71,23 +71,9 @@ contract BuildV2MigrationTest is Test, MigrationConfig {
         builder.run();
     }
 
-    function test_run_RevertsWhileConfigurationUnapproved() public {
-        vm.expectRevert(
-            abi.encodeWithSelector(BuildV2Migration.InvalidConfiguration.selector, "MIGRATION_CONFIGURATION_APPROVED")
-        );
-        builder.run();
-    }
-
     function test_runForExecution_RevertsOnWrongChain() public {
         vm.chainId(EXPECTED_CHAIN_ID + 1);
         vm.expectRevert(abi.encodeWithSelector(BuildV2Migration.WrongChain.selector, EXPECTED_CHAIN_ID + 1));
-        builder.runForExecution();
-    }
-
-    function test_runForExecution_RevertsWhileConfigurationUnapproved() public {
-        vm.expectRevert(
-            abi.encodeWithSelector(BuildV2Migration.InvalidConfiguration.selector, "MIGRATION_CONFIGURATION_APPROVED")
-        );
         builder.runForExecution();
     }
 

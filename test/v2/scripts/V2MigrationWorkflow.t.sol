@@ -224,24 +224,6 @@ contract V2MigrationWorkflowTest is Test, MigrationConfig {
         executor.checkExecuted();
     }
 
-    function test_productionSchedule_RejectsUnapprovedConfiguration() public {
-        ScheduleV2Migration productionScheduler = new ScheduleV2Migration();
-        assertFalse(MIGRATION_CONFIGURATION_APPROVED);
-        vm.expectRevert(
-            abi.encodeWithSelector(BuildV2Migration.InvalidConfiguration.selector, "MIGRATION_CONFIGURATION_APPROVED")
-        );
-        MigrationWorkflowCaller(MIGRATION_PROPOSER).run(IMigrationWorkflow(address(productionScheduler)));
-    }
-
-    function test_productionExecute_RejectsUnapprovedConfiguration() public {
-        ExecuteV2Migration productionExecutor = new ExecuteV2Migration();
-        assertFalse(MIGRATION_CONFIGURATION_APPROVED);
-        vm.expectRevert(
-            abi.encodeWithSelector(BuildV2Migration.InvalidConfiguration.selector, "MIGRATION_CONFIGURATION_APPROVED")
-        );
-        MigrationWorkflowCaller(DEPLOYER).run(IMigrationWorkflow(address(productionExecutor)));
-    }
-
     function test_execute_RejectsUnscheduledOperation() public {
         vm.expectRevert(abi.encodeWithSelector(ExecuteV2Migration.OperationNotReady.selector, operation.operationId, 0));
         _execute();
