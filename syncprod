@@ -10,5 +10,6 @@ set +a
 # Resolve 1Password references
 export FIREBLOCKS_API_KEY=$(op read "$FIREBLOCKS_API_KEY_REF")
 export FIREBLOCKS_API_PRIVATE_KEY_PATH=$(op read "$FIREBLOCKS_PRIVATE_KEY_REF")
+export PRIVATE_KEY=$(op read "$PRIVATE_KEY_REF")
 
 echo "Production Environment synced."

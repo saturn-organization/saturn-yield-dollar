@@ -5,6 +5,7 @@ libs = ["lib"]
 solc = "0.8.36"
 optimizer = true
 optimizer_runs = 150
+create2_library_salt = "0x0000000000000000000000000000000000000000000000000000000000000001"
 remappings = [
     "solady/=lib/solady/src/",
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
