@@ -74,27 +74,26 @@ Record wallet controls or the governance reference for every holder.
 
 | Constant to set | Holder address | Role / constraint | Controls / signers / quorum reference |
 |---|---|---|---|
-| `VAULT_PARAMETER_MANAGER` | `0x6F72de4F529a03Bfa883825152656a8c62CBB626` | `PARAMETER_MANAGER_ROLE`; timelock required. | 2-day timelock (user-provided); controls TBD. |
+| `VAULT_PARAMETER_MANAGER` | `0x6F72de4F529a03Bfa883825152656a8c62CBB626` | `PARAMETER_MANAGER_ROLE`; timelock required. | 1-hour timelock (user-provided); controls TBD. |
 | `VAULT_MARKET_MODE_MANAGER` | `0xC35580434261f667d6abBDa9E3dC1DC31e5A1b92` | `MARKET_MODE_MANAGER_ROLE`. | Fireblocks MPC wallet; approvers / approval quorum TBD. |
 | `VAULT_OPERATOR` | `0xC35580434261f667d6abBDa9E3dC1DC31e5A1b92` | `OPERATOR_ROLE`. | Fireblocks MPC wallet; approvers / approval quorum TBD. |
 | `VAULT_SURPLUS_MANAGER` | `0xC35580434261f667d6abBDa9E3dC1DC31e5A1b92` | `SURPLUS_MANAGER_ROLE`. | Fireblocks MPC wallet; approvers / approval quorum TBD. |
 | `VAULT_BLACKLISTER` | `0xf5a93281ac8604f99755cc489317e75aC334cfE2` | `BLACKLISTER_ROLE`. | Fireblocks MPC wallet; approvers / approval quorum TBD. |
-| `VAULT_ENFORCER` | `0x6F72de4F529a03Bfa883825152656a8c62CBB626` | `ENFORCER_ROLE`; timelock required. | 2-day timelock (user-provided); controls TBD. |
+| `VAULT_ENFORCER` | `0x6F72de4F529a03Bfa883825152656a8c62CBB626` | `ENFORCER_ROLE`; timelock required. | 1-hour timelock (user-provided); controls TBD. |
 | `VAULT_PAUSER` | `0xf5a93281ac8604f99755cc489317e75aC334cfE2` | `PAUSER_ROLE`. | Fireblocks MPC wallet; approvers / approval quorum TBD. |
-| `VAULT_UNPAUSER` | `0x6F72de4F529a03Bfa883825152656a8c62CBB626` | `UNPAUSER_ROLE`; timelock required. | 2-day timelock (user-provided); controls TBD. |
+| `VAULT_UNPAUSER` | `0x6F72de4F529a03Bfa883825152656a8c62CBB626` | `UNPAUSER_ROLE`; timelock required. | 1-hour timelock (user-provided); controls TBD. |
 | `QUEUE_OPERATOR` | `0xC35580434261f667d6abBDa9E3dC1DC31e5A1b92` | Queue `OPERATOR_ROLE`; matches `VAULT_OPERATOR`. | Fireblocks MPC wallet; approvers / approval quorum TBD. |
-| `QUEUE_ENFORCER` | `0x6F72de4F529a03Bfa883825152656a8c62CBB626` | Queue `ENFORCER_ROLE`; timelock required; matches `VAULT_ENFORCER`. | 2-day timelock (user-provided); controls TBD. |
+| `QUEUE_ENFORCER` | `0x6F72de4F529a03Bfa883825152656a8c62CBB626` | Queue `ENFORCER_ROLE`; timelock required; matches `VAULT_ENFORCER`. | 1-hour timelock (user-provided); controls TBD. |
 | `QUEUE_PAUSER` | `0xf5a93281ac8604f99755cc489317e75aC334cfE2` | Queue `PAUSER_ROLE`; matches `VAULT_PAUSER`. | Fireblocks MPC wallet; approvers / approval quorum TBD. |
-| `QUEUE_UNPAUSER` | `0x6F72de4F529a03Bfa883825152656a8c62CBB626` | Queue `UNPAUSER_ROLE`; timelock required; matches `VAULT_UNPAUSER`. | 2-day timelock (user-provided); controls TBD. |
+| `QUEUE_UNPAUSER` | `0x6F72de4F529a03Bfa883825152656a8c62CBB626` | Queue `UNPAUSER_ROLE`; timelock required; matches `VAULT_UNPAUSER`. | 1-hour timelock (user-provided); controls TBD. |
 
 Per [specification §2.8](../saturn-v2-spec.md#28-roles), operator, market-mode
-manager, and surplus manager may share one address in any combination. All other
-cross-role co-location remains prohibited. Holding the same role on both proxies
-is permitted. The builder checks nonzero role addresses but does not enforce
-this separation or verify operational timelock controls.
-
-Pending spec review: §2.8 currently prohibits both the shared
-parameter-manager/enforcer/unpauser timelock and the shared blacklister/pauser wallet.
+manager, and surplus manager may share one address in any combination. Parameter
+manager, enforcer, and unpauser may share one timelock; blacklister and pauser may
+share one wallet. The current launch role assignments use this approved sharing.
+All other cross-role co-location remains prohibited. Holding the same role on both
+proxies is permitted. The builder checks nonzero role addresses but does not enforce
+these sharing constraints or verify operational timelock controls.
 
 `DEFAULT_ADMIN_ROLE` is preserved, not supplied to either initializer. The builder
 requires `TIMELOCK` to hold it on both proxies. Record the complete existing holder
@@ -105,16 +104,16 @@ registry and need no separate operational role address inputs here.
 ### Governance controls supporting those role assignments
 
 The deployment script does not create governance timelocks. Identify and verify
-these contracts before selecting the role addresses. Each column represents a
-distinct role's timelock; record separate instances if vault and queue use
-different holders for the same role. These records support configuration review
-and are not extra arguments to `BuildV2UpgradeBatch`.
+these contracts before selecting the role addresses. Each column records a role's
+timelock; approved shared roles may refer to the same instance. Record separate
+instances if vault and queue use different holders for the same role. These records
+support configuration review and are not extra arguments to `BuildV2UpgradeBatch`.
 
 | Control | Admin / upgrade | Parameter manager | Enforcement | Unpause |
 |---|---|---|---|---|
 | Contract address | `TIMELOCK` above | `0x6F72de4F529a03Bfa883825152656a8c62CBB626` | `0x6F72de4F529a03Bfa883825152656a8c62CBB626` | `0x6F72de4F529a03Bfa883825152656a8c62CBB626` |
 | Contract version / source | TBD | TBD | TBD | TBD |
-| Minimum delay, seconds | `432000` (script requires 5 days) | `172800` (user-provided; verify live) | `172800` (user-provided; verify live) | `172800` (user-provided; verify live) |
+| Minimum delay, seconds | `432000` (script requires 5 days) | `3600` (user-provided; verify live) | `3600` (user-provided; verify live) | `3600` (user-provided; verify live) |
 | Timelock admin holder(s) | TBD | TBD | TBD | TBD |
 | Proposer address(es) | `ADMIN` loaded by `source syncprod`; complete set TBD | TBD | TBD | TBD |
 | Executor address(es) / open execution | Open execution required via role grant to `address(0)`; complete set TBD | TBD | TBD | TBD |

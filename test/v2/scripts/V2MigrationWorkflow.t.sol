@@ -115,7 +115,7 @@ contract V2MigrationWorkflowTest is Test, MigrationConfig {
 
     function test_scheduleAndExecute_UsesExactOperationAndOpenExecutor() public {
         uint256 scheduledAt = block.timestamp;
-        assertEq(MIGRATION_TIMELOCK_DELAY, 2 days);
+        assertEq(MIGRATION_TIMELOCK_DELAY, 1 hours);
         assertEq(
             operation.operationId,
             timelock.hashOperation(
@@ -129,7 +129,7 @@ contract V2MigrationWorkflowTest is Test, MigrationConfig {
         assertEq(vault.migrationCount(), 0);
         (bytes32 scheduledId, uint256 readyAt) = scheduler.checkScheduled();
         assertEq(scheduledId, operation.operationId);
-        assertEq(readyAt, scheduledAt + 2 days);
+        assertEq(readyAt, scheduledAt + 1 hours);
         assertFalse(timelock.hasRole(timelock.DEFAULT_ADMIN_ROLE(), DEPLOYER));
         assertFalse(timelock.hasRole(timelock.EXECUTOR_ROLE(), DEPLOYER));
         assertFalse(timelock.hasRole(timelock.DEFAULT_ADMIN_ROLE(), DEFAULT_BROADCAST_SENDER));

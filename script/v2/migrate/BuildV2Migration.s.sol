@@ -178,9 +178,27 @@ contract BuildV2Migration is Script, MigrationConfig {
         uint256 strconValue = Math.mulDiv(EXPECTED_STRCON, module.getPrice(), 1e20);
         uint256 navAfter = navBefore - mirrorValue + strconValue;
         uint256 delta = navAfter >= navBefore ? navAfter - navBefore : navBefore - navAfter;
+        console.log(
+            "Projected vault NAV delta:",
+            string.concat(navAfter < navBefore ? "-" : "+", _formatPercentage(delta, navBefore))
+        );
+        console.log("Maximum absolute NAV delta:", _formatPercentage(EXPECTED_MIGRATION_TOLERANCE_BPS, 10_000));
         require(
             delta <= Math.mulDiv(navBefore, EXPECTED_MIGRATION_TOLERANCE_BPS, 10_000),
             InvalidConfiguration("projected migration NAV")
+        );
+    }
+
+    // Round the magnitude up so the displayed percentage never understates the delta.
+    function _formatPercentage(uint256 value, uint256 basis) internal pure returns (string memory) {
+        uint256 scaled = Math.mulDiv(value, 1_000_000, basis, Math.Rounding.Ceil);
+        uint256 fraction = scaled % 10_000;
+        return string.concat(
+            vm.toString(scaled / 10_000),
+            ".",
+            fraction < 10 ? "000" : fraction < 100 ? "00" : fraction < 1_000 ? "0" : "",
+            vm.toString(fraction),
+            "%"
         );
     }
 

@@ -42,7 +42,7 @@ contract V2MockMainnetForkTest is Test {
     uint256 private constant PINNED_MAINNET_BLOCK = 25_627_322;
     uint256 private constant MAINNET_CHAIN_ID = 1;
     uint256 private constant TIMELOCK_DELAY = 5 days;
-    uint256 private constant PARAMETER_TIMELOCK_DELAY = 2 days;
+    uint256 private constant PARAMETER_TIMELOCK_DELAY = 1 hours;
     uint256 private constant REQUEST_WORDS = 5;
     uint256 private constant REQUESTED_STATUS = 1;
     uint256 private constant IN_PROGRESS_STATUS = 2;

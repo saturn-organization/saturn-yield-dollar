@@ -167,7 +167,7 @@ those figures. These are not guarantees about total market losses.
 
 Starting higher and reducing later is possible through
 [`setExecutionTolerance()`](../../src/v2/STRConExecutionPolicy.sol), controlled by
-the configured **two-day parameter-manager timelock**. Reassess **50 bps** after
+the configured **one-hour parameter-manager timelock**. Reassess **50 bps** after
 timed buy and sell evidence. The selected 75 bps setting has not yet been validated
 for the 5–10 minute delay.
 

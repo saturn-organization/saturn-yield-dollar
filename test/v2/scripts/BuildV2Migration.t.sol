@@ -17,6 +17,10 @@ contract BuildV2MigrationHarness is BuildV2Migration {
     function validateProductionState() external view {
         _validateProductionState(buildOperation());
     }
+
+    function formatPercentage(uint256 value, uint256 basis) external pure returns (string memory) {
+        return _formatPercentage(value, basis);
+    }
 }
 
 contract MigrationPreflightVaultMock is AccessControl {
@@ -44,7 +48,7 @@ contract BuildV2MigrationTest is Test, MigrationConfig {
         assertEq(builder.TIMELOCK_DELAY(), TIMELOCK_DELAY);
         assertEq(builder.TIMELOCK_DELAY(), 5 days);
         assertEq(builder.MIGRATION_TIMELOCK_DELAY(), MIGRATION_TIMELOCK_DELAY);
-        assertEq(builder.MIGRATION_TIMELOCK_DELAY(), 2 days);
+        assertEq(builder.MIGRATION_TIMELOCK_DELAY(), 1 hours);
         assertEq(builder.MAX_MIGRATION_TOLERANCE_BPS(), MAX_MIGRATION_TOLERANCE_BPS);
         assertEq(builder.TIMELOCK(), TIMELOCK);
         assertEq(builder.PROPOSER(), PROPOSER);
@@ -98,9 +102,9 @@ contract BuildV2MigrationTest is Test, MigrationConfig {
         harness.validateDeadline(readyAt + 1, true);
     }
 
-    function test_validateDeadline_ExecutionUsesOriginalDeadlineAfterTwoDays() public {
+    function test_validateDeadline_ExecutionUsesOriginalDeadlineAfterOneHour() public {
         vm.warp(1_800_000_000);
-        assertEq(MIGRATION_TIMELOCK_DELAY, 2 days);
+        assertEq(MIGRATION_TIMELOCK_DELAY, 1 hours);
         uint256 deadline = block.timestamp + MIGRATION_TIMELOCK_DELAY + 1;
         harness.validateDeadline(deadline, true);
 
@@ -132,6 +136,19 @@ contract BuildV2MigrationTest is Test, MigrationConfig {
 
         vm.expectRevert(abi.encodeWithSelector(BuildV2Migration.InvalidConfiguration.selector, "vault paused"));
         harness.validateProductionState();
+    }
+
+    function test_formatPercentage_ShowsFourDecimalPlaces() public view {
+        assertEq(harness.formatPercentage(0, 100_000_000), "0.0000%");
+        assertEq(harness.formatPercentage(10_000, 100_000_000), "0.0100%");
+        assertEq(harness.formatPercentage(1_234_500, 100_000_000), "1.2345%");
+        assertEq(harness.formatPercentage(100_000_000, 100_000_000), "100.0000%");
+    }
+
+    function test_formatPercentage_DistinguishesToleranceFromExcess() public view {
+        assertEq(harness.formatPercentage(200, 10_000), "2.0000%");
+        assertEq(harness.formatPercentage(2_000_000, 100_000_000), "2.0000%");
+        assertEq(harness.formatPercentage(2_000_001, 100_000_000), "2.0001%");
     }
 
     function test_validateProductionState_RejectsAdminWithoutParameterManager() public {
@@ -172,7 +189,7 @@ contract BuildV2MigrationTest is Test, MigrationConfig {
 
         assertEq(builder.MIGRATION_TIMELOCK(), 0x6F72de4F529a03Bfa883825152656a8c62CBB626);
         assertEq(builder.MIGRATION_PROPOSER(), 0x7A5A4064005584bc727666ec82548A9139d5F21e);
-        assertEq(builder.MIGRATION_TIMELOCK_DELAY(), 2 days);
+        assertEq(builder.MIGRATION_TIMELOCK_DELAY(), 1 hours);
         assertEq(operation.target, builder.STAKED_USDAT_PROXY());
         assertEq(operation.value, 0);
         assertEq(operation.payload, expectedPayload);

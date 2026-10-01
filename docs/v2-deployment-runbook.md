@@ -78,7 +78,7 @@ Copy the output addresses into [UpgradeConfig.sol](../script/v2/configs/UpgradeC
 
 ### Overview
 
-- Duration: off-chain transfers and minting, followed by a minimum two-day
+- Duration: off-chain transfers and minting, followed by a minimum one-hour
   timelock delay. Total time depends on the settlement timings below.
 - Migration uses the `PARAMETER_MANAGER_ROLE` timelock:
   `0x6F72de4F529a03Bfa883825152656a8c62CBB626`.
@@ -138,7 +138,7 @@ Copy the output addresses into [UpgradeConfig.sol](../script/v2/configs/UpgradeC
    make migrate-schedule
    ```
 
-9. Execute the scheduled migration after the two-day delay:
+9. Execute the scheduled migration after the one-hour delay:
 
    ```bash
    make migrate-execute
@@ -212,10 +212,10 @@ Planned schedule:
 - Monday — STRC transfer: Begin moving STRC for conversion to STRCon.
   Redemption processing pauses.
 - Wednesday — Upgrade and schedule migration: Execute the sUSDat v2 upgrade
-  and submit the migration proposal to the two-day timelock. Redemption
+  and submit the migration proposal to the one-hour timelock. Redemption
   processing remains paused.
-- Friday — Migration: Execute the STRCon migration. Redemption processing
-  remains paused while final checks are completed.
+- Wednesday — Migration: After the one-hour delay, execute the STRCon migration.
+  Redemption processing remains paused while final checks are completed.
 - Following Monday — Return to normal: Normal redemption processing is
   expected to resume once checks and the request-owner grace period are complete.
 
@@ -326,20 +326,20 @@ Proceed once the delivery is ready and legacy vesting is complete.
        ≤ 0.02 × total vault NAV
    ```
 
-4. Set `EXPECTED_STRCON`, a migration deadline allowing the two-day wait plus
+4. Set `EXPECTED_STRCON`, a migration deadline allowing the one-hour wait plus
    execution buffer, and `MIGRATION_CONFIGURATION_APPROVED = true`.
 5. Approve the vault to pull `EXPECTED_STRCON` from the execution vehicle.
 6. Run `make migrate-schedule`.
 7. Announce the upgrade and earliest migration execution time.
 
-### Friday — Execute migration
+### Wednesday — Execute migration
 
-1. After the full two-day delay, run `make migrate-execute`. It rechecks
+1. After the full one-hour delay, run `make migrate-execute`. It rechecks
    funding, allowance, vesting, and valuation.
 2. Confirm the STRCon delivery and permanent retirement of the STRC mirror.
 3. Announce successful migration and that reopening checks are underway.
 
-### Friday through Monday — Verify and reopen
+### Wednesday through Monday — Verify and reopen
 
 1. Verify accounting, custody, and v2 operations.
 2. On Monday, schedule obsolete-role revocations through the five-day admin
